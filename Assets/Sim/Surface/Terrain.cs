@@ -54,7 +54,9 @@ public readonly unsafe struct Terrain {
         GridPosition(direction, out double row, out double column, out double latitude);
 
         double survey = Survey(row, column, latitude, footprint);
-        double height = survey * VerticalScale + Relief.Detail(direction * Radius, footprint, Gradient(direction, row, column, latitude));
+        Vector3d position = direction * Radius;
+        Vector3d gradient = Gradient(direction, row, column, latitude);
+        double height = Relief.Strata(position, survey * VerticalScale + Relief.Detail(position, footprint, gradient), gradient.Length, footprint);
         double level = WaterLevel(row, column);
 
         if (!double.IsNaN(level) && survey >= level) {

@@ -51,6 +51,11 @@ public static class ProjectSetup {
         rockTemplate.SetTexture("_GroundAlbedo", groundTemplate.GetTexture("_GroundAlbedo"));
         rockTemplate.SetTexture("_GroundNormal", groundTemplate.GetTexture("_GroundNormal"));
         Material rock = SaveMaterial(rockTemplate, "Rock");
+        Material grass = SaveMaterial(new Material(Shader.Find("MaxQ/Grass")), "Grass");
+        Material treeTemplate = new Material(Shader.Find("MaxQ/Tree"));
+        treeTemplate.SetTexture("_GroundAlbedo", groundTemplate.GetTexture("_GroundAlbedo"));
+        treeTemplate.SetTexture("_GroundNormal", groundTemplate.GetTexture("_GroundNormal"));
+        Material tree = SaveMaterial(treeTemplate, "Tree");
         Material water = SaveMaterial(new Material(Shader.Find("MaxQ/Water")), "Water");
 
         Material sky = new Material(Shader.Find("Skybox/Panoramic"));
@@ -59,7 +64,7 @@ public static class ProjectSetup {
         sky.SetFloat("_Exposure", 1.0f);
         sky = SaveMaterial(sky, "Sky");
 
-        BuildScene(surface, line, sky, ground, water, rock);
+        BuildScene(surface, line, sky, ground, water, rock, grass, tree);
 
         AssetDatabase.SaveAssets();
         Debug.Log("Max-Q setup complete");
@@ -84,7 +89,7 @@ public static class ProjectSetup {
         SerializedObject settings = new SerializedObject(pipeline);
         settings.FindProperty("m_MainLightShadowsSupported").boolValue = true;
         settings.FindProperty("m_SoftShadowsSupported").boolValue = true;
-        settings.FindProperty("m_SoftShadowQuality").intValue = (int)SoftShadowQuality.Medium;
+        settings.FindProperty("m_SoftShadowQuality").intValue = (int)SoftShadowQuality.High;
         settings.ApplyModifiedPropertiesWithoutUndo();
 
         EditorUtility.SetDirty(pipeline);
@@ -174,7 +179,7 @@ public static class ProjectSetup {
 
     }
 
-    private static void BuildScene(Material surface, Material line, Material sky, Material ground, Material water, Material rock) {
+    private static void BuildScene(Material surface, Material line, Material sky, Material ground, Material water, Material rock, Material grass, Material tree) {
 
         EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
@@ -221,6 +226,9 @@ public static class ProjectSetup {
         view.FindProperty("_groundMaterial").objectReferenceValue = ground;
         view.FindProperty("_waterMaterial").objectReferenceValue = water;
         view.FindProperty("_rockMaterial").objectReferenceValue = rock;
+        view.FindProperty("_grassMaterial").objectReferenceValue = grass;
+        view.FindProperty("_treeMaterial").objectReferenceValue = tree;
+        view.FindProperty("_vegetation").objectReferenceValue = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Game/Planet/Ground/Vegetation.compute");
         view.FindProperty("_atmosphereTables").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>($"{Sky}/AtmosphereLuts.shader");
         view.FindProperty("_atmosphereSky").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>($"{Sky}/AtmosphereSky.shader");
         view.FindProperty("_exposure").objectReferenceValue = AssetDatabase.LoadAssetAtPath<ComputeShader>($"{Sky}/Exposure.compute");

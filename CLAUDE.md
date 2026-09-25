@@ -10,14 +10,15 @@ patched conics, 1/5 Earth scale. Personal project, never distributed. Successor 
   mechanics. **No `UnityEngine` reference** - the compiler enforces it.
   - `Numerics/` vectors and maths types, `Orbits/` conics, patches, maneuvers and prediction,
     `Bodies/` celestial bodies and the system catalogue, `Surface/` the terrain function (memory-mapped
-    survey plus procedural relief; Burst-compatible, so the renderer and physics share it), `Vessels/`
+    survey plus procedural relief and cliff strata; Burst-compatible, so the renderer and physics share it), `Vessels/`
     vessels, `Compatibility/` polyfills.
   - `Tests/` - assembly `MaxQ.Sim.Tests`, EditMode tests mirroring the sim folders.
 - `Assets/Game/` - assembly `MaxQ.Game`. Rendering, input, UI. No physics.
   - `Map/` the map view and free camera (`Rendering/` bodies and lines, `Overlay/` HUD), `Planet/`
     surveyed bodies (`Sun.cs` the shadow-casting light and its per-frame cascade fit; `Ground/` CDLOD
-    quadtree, Burst patch jobs with horizon occlusion and boulder scatter, streamed colour tiles, ground,
-    water and rock shaders; `Sky/` atmosphere tables, RenderGraph passes and eye adaptation),
+    quadtree, Burst patch jobs with horizon occlusion and rock and plant scatter, streamed colour tiles, ground,
+    water, rock, grass and tree shaders, and `Vegetation` choosing plants on the GPU from the ground's materials;
+    `Sky/` atmosphere tables, RenderGraph passes and eye adaptation),
     `Diagnostics/` capture tooling (`-only <text>` filters shots), `Editor/` setup, build and tile baking,
     `Scenes/`, `Settings/` (pipeline, materials, UI panel), `Art/`.
 - Colour space is Linear; lighting is in physical units with auto-exposure, so never tune colours by eye in gamma.

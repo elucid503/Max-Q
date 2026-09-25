@@ -23,11 +23,12 @@ internal struct PatchJob : IJob {
 
     public const int Quads = 32;
     public const int Vertices = Quads + 1;
-    public const int Texels = 2 * Quads + 1;
+    public const int TexelsPerQuad = 4;
+    public const int Texels = TexelsPerQuad * Quads + 1;
 
     public const int GroundVertices = Vertices * Vertices + 4 * Vertices;
-    public const int WaterVertices = Vertices * Vertices;
-    public const int MaxIndices = 2 * Quads * Quads * 6 + 4 * Quads * 6;
+    public const int WaterVertices = Vertices * Vertices + 4 * Vertices;
+    public const int MaxIndices = 2 * (Quads * Quads * 6 + 4 * Quads * 6);
 
     // Water depth range the detail texture encodes, metres either side of the surface. Depth is stored as a signed
     // square root: fine near the shore, and it never saturates, so coarse patches keep smooth coastlines.
@@ -39,22 +40,67 @@ internal struct PatchJob : IJob {
     public const int InfoGroundIndices = 3;
     public const int InfoWaterIndices = 4;
     public const int InfoRocks = 5;
+    public const int InfoTufts = 6;
+    public const int InfoTrees = 7;
 
     // Added to a skirt vertex's first texture coordinate; must match SKIRT_FLAG in Ground.hlsl.
     private const float SkirtFlag = 2.0f;
-    public const int InfoLength = 6;
+    public const int InfoLength = 8;
 
-    // Boulders are strewn by the patches of one level, a few hundred metres across: two chances per quad, each taken
-    // more often the steeper the ground, as two float4s per boulder (position in kilometres from the patch centre and
-    // size in metres; orientation as a quaternion), all in the patch's scene axes.
+    // Places where grass or trees may grow; the ground's materials decide which do, on the GPU (see Vegetation). Each is
+    // two float4s in the patch's scene axes: position in kilometres from the patch centre and a random number; the place
+    // on the patch (0 to 1 each way). Tufts cover the finest patches, three to a quad, on the mesh's own triangles so
+    // they stand on exactly the ground drawn. Trees stand on patches of the boulder level, two chances to a quad.
+    public const int TuftDepth = GroundView.MaxDepth;
+    public const int TreeDepth = RockDepth;
+    private const int TuftsPerQuad = 3;
+    private const int TreesPerQuad = 2;
+    public const int MaxTufts = Quads * Quads * TuftsPerQuad;
+    public const int MaxTrees = Quads * Quads * TreesPerQuad;
+    public const int PlantLength = 2 * Quads * Quads * TuftsPerQuad;
+
+    // Metres of ground detail a tree's footing keeps; finer relief would not move a trunk.
+    private const double TreeFootprint = 1.0;
+
+    // Boulders are strewn by the patches of one level, a few hundred metres across, and outcrops of bedrock by a coarser
+    // one, a few kilometres across: chances per quad, each taken more often the steeper the ground. Each rock is three
+    // float4s in the patch's scene axes: position in kilometres from the patch centre and size in metres; orientation as
+    // a quaternion; and a random number that picks its shape, its place on the patch (0 to 1 each way, for its colour),
+    // and one for an outcrop.
     public const int RockDepth = 13;
+    public const int OutcropDepth = 11;
     public const int MaxRocks = 512;
-    public const int RockLength = 2 * MaxRocks;
-    private const int RockChances = 2;
-    private const double FlatRockChance = 0.01;
-    private const double SteepRockChance = 0.35;
-    private const double SmallestRock = 0.3;
-    private const double LargestRock = 3.0;
+    public const int RockLength = 3 * MaxRocks;
+
+    private readonly struct Strewing {
+
+        public readonly int Chances;
+        public readonly double FlatChance;
+        public readonly double SteepChance;
+        public readonly double SlopeStart;
+        public readonly double SlopeFull;
+        public readonly double Smallest;
+        public readonly double Largest;
+        public readonly bool Outcrops;
+
+        public Strewing(int chances, double flatChance, double steepChance, double slopeStart, double slopeFull, double smallest, double largest, bool outcrops) {
+
+            Chances = chances;
+            FlatChance = flatChance;
+            SteepChance = steepChance;
+            SlopeStart = slopeStart;
+            SlopeFull = slopeFull;
+            Smallest = smallest;
+            Largest = largest;
+            Outcrops = outcrops;
+
+        }
+
+    }
+
+    // Stones and boulders anywhere, gathering on steep ground; outcrops only where the ground is steep enough to be bare.
+    private static readonly Strewing Boulders = new Strewing(2, 0.01, 0.35, 0.3, 0.9, 0.3, 3.0, false);
+    private static readonly Strewing Outcrops = new Strewing(1, 0.0, 0.1, 0.6, 1.2, 5.0, 20.0, true);
 
     // Each vertex's horizon in eight directions, as the sine of its elevation in bytes. A patch searches out to
     // HorizonReach of its own vertices and takes its parent's horizon where that is higher, so every level adds the
@@ -94,6 +140,7 @@ internal struct PatchJob : IJob {
     public NativeArray<double> Info;
     public NativeArray<byte> Horizons;
     public NativeArray<float4> Rocks;
+    public NativeArray<float4> Plants;
 
     // Empty for a root.
     [ReadOnly]
@@ -193,12 +240,15 @@ internal struct PatchJob : IJob {
         Info[InfoMinHeight] = minHeight;
         Info[InfoMaxHeight] = maxHeight;
         Info[InfoRadius] = reach + 0.5 * (maxHeight - minHeight);
-        Info[InfoRocks] = Depth == RockDepth ? ScatterRocks(ground, a0, b0, span, centre) : 0;
+        Info[InfoTufts] = Depth == TuftDepth ? ScatterTufts(ground, heights, levels, centre) : 0;
+        Info[InfoTrees] = Depth == TreeDepth ? ScatterTrees(a0, b0, span, centre) : 0;
+        Info[InfoRocks] = Depth == RockDepth ? ScatterRocks(ground, a0, b0, span, centre, Boulders) :
+            Depth == OutcropDepth ? ScatterRocks(ground, a0, b0, span, centre, Outcrops) : 0;
 
     }
 
-    // Where boulders lie: the same everywhere a patch of this level is built, as each chance hashes its place on the planet.
-    private int ScatterRocks(NativeArray<Vector3d> ground, double a0, double b0, double span, Vector3d centre) {
+    // Where rocks lie: the same everywhere a patch of this level is built, as each chance hashes its place on the planet.
+    private int ScatterRocks(NativeArray<Vector3d> ground, double a0, double b0, double span, Vector3d centre, Strewing strewing) {
 
         double finest = Footprint(Terrain.Radius, GroundView.MaxDepth);
         int count = 0;
@@ -212,11 +262,12 @@ internal struct PatchJob : IJob {
                 Vector3d normal = Vector3d.Cross(ground[v + 1] - ground[v], ground[v + Vertices] - ground[v]).Normalized;
                 double cosine = Math.Abs(Vector3d.Dot(normal, up));
                 double slope = Math.Sqrt(Math.Max(1.0 - cosine * cosine, 0.0)) / Math.Max(cosine, 0.05);
-                double chance = FlatRockChance + (SteepRockChance - FlatRockChance) * Math.Clamp((slope - 0.3) / 0.6, 0.0, 1.0);
+                double steepness = Math.Clamp((slope - strewing.SlopeStart) / (strewing.SlopeFull - strewing.SlopeStart), 0.0, 1.0);
+                double chance = strewing.FlatChance + (strewing.SteepChance - strewing.FlatChance) * steepness;
 
-                for (int c = 0; c < RockChances; c++) {
+                for (int c = 0; c < strewing.Chances; c++) {
 
-                    uint4 hash = new uint4(math.hash(new int4(Face, X * Quads + i, Y * Quads + j, c)), 0u, 0u, 0u);
+                    uint4 hash = new uint4(math.hash(new int4(Face, X * Quads + i, Y * Quads + j, c + (strewing.Outcrops ? 16 : 0))), 0u, 0u, 0u);
 
                     hash.y = math.hash(hash.xx + 0x68E31DA4u);
                     hash.z = math.hash(hash.yy + 0xB5297A4Du);
@@ -240,22 +291,113 @@ internal struct PatchJob : IJob {
 
                     }
 
-                    // Mostly stones, now and then a boulder.
-                    double size = SmallestRock * Math.Pow(LargestRock / SmallestRock, unit.w * unit.w * unit.w);
+                    // Mostly small ones, now and then a big one. Outcrops lean with the slope and sink into it, so the
+                    // downhill side stays buried.
+                    double size = strewing.Smallest * Math.Pow(strewing.Largest / strewing.Smallest, unit.w * unit.w * unit.w);
                     float3 upScene = math.normalize(Scene(direction));
+
+                    if (strewing.Outcrops) {
+
+                        upScene = math.normalize(math.lerp(upScene, math.normalize(Scene(normal * Math.Sign(Vector3d.Dot(normal, up)))), 0.7f));
+                        height -= size * 0.25 * Math.Min(slope, 1.5);
+
+                    }
+
                     float3 side = math.normalize(math.cross(upScene, math.abs(upScene.y) < 0.9f ? new float3(0.0f, 1.0f, 0.0f) : new float3(1.0f, 0.0f, 0.0f)));
                     float yaw = unit.y * 1_000.0f;
                     float3 forward = math.cross(side, upScene) * math.cos(yaw) + side * math.sin(yaw);
                     quaternion tilt = quaternion.Euler((unit.z - 0.5f) * 0.5f, 0.0f, (unit.w - 0.5f) * 0.5f);
 
-                    Rocks[2 * count] = new float4(Scene(direction * (Terrain.Radius + height) - centre), (float)size);
-                    Rocks[2 * count + 1] = math.mul(quaternion.LookRotation(forward, upScene), tilt).value;
+                    Rocks[3 * count] = new float4(Scene(direction * (Terrain.Radius + height) - centre), (float)size);
+                    Rocks[3 * count + 1] = math.mul(quaternion.LookRotation(forward, upScene), tilt).value;
+                    Rocks[3 * count + 2] = new float4(math.hash(hash) / 4_294_967_296.0f, (i + unit.y) / Quads, (j + unit.z) / Quads, strewing.Outcrops ? 1.0f : 0.0f);
 
                     if (++count == MaxRocks) {
 
                         return count;
 
                     }
+
+                }
+
+            }
+
+        }
+
+        return count;
+
+    }
+
+    private int ScatterTufts(NativeArray<Vector3d> ground, NativeArray<double> heights, NativeArray<double> levels, Vector3d centre) {
+
+        int count = 0;
+
+        for (int j = 0; j < Quads; j++) {
+
+            for (int i = 0; i < Quads; i++) {
+
+                int a = j * Vertices + i;
+                int b = a + 1;
+                int c = a + Vertices;
+                int d = c + 1;
+
+                if (Below(heights, levels, a, -0.3) || Below(heights, levels, b, -0.3) || Below(heights, levels, c, -0.3) || Below(heights, levels, d, -0.3)) {
+
+                    continue;
+
+                }
+
+                for (int t = 0; t < TuftsPerQuad; t++) {
+
+                    uint hash = math.hash(new int4(Face, X * Quads + i, Y * Quads + j, t + 32));
+                    float s = (hash & 0xFFFFu) / 65_536.0f;
+                    float u = (hash >> 16) / 65_536.0f;
+
+                    // The mesh splits each quad into (a, b, c) and (b, d, c).
+                    Vector3d p = s + u < 1.0f
+                        ? ground[a] + (ground[b] - ground[a]) * s + (ground[c] - ground[a]) * u
+                        : ground[d] + (ground[c] - ground[d]) * (1.0f - s) + (ground[b] - ground[d]) * (1.0f - u);
+
+                    Plants[2 * count] = new float4(Scene(p - centre), math.hash(new uint2(hash, 7u)) / 4_294_967_296.0f);
+                    Plants[2 * count + 1] = new float4((i + s) / Quads, (j + u) / Quads, 0.0f, 0.0f);
+                    count++;
+
+                }
+
+            }
+
+        }
+
+        return count;
+
+    }
+
+    private int ScatterTrees(double a0, double b0, double span, Vector3d centre) {
+
+        int count = 0;
+
+        for (int j = 0; j < Quads; j++) {
+
+            for (int i = 0; i < Quads; i++) {
+
+                for (int t = 0; t < TreesPerQuad; t++) {
+
+                    uint hash = math.hash(new int4(Face, X * Quads + i, Y * Quads + j, t + 48));
+                    float s = (hash & 0xFFFFu) / 65_536.0f;
+                    float u = (hash >> 16) / 65_536.0f;
+                    Vector3d direction = CubeFace.Direction(Face, a0 + (i + s) * span / Quads, b0 + (j + u) * span / Quads);
+                    double height = Terrain.HeightAt(direction, TreeFootprint);
+                    double level = Terrain.WaterLevelAt(direction);
+
+                    if (!double.IsNaN(level) && height < level + 0.5) {
+
+                        continue;
+
+                    }
+
+                    Plants[2 * count] = new float4(Scene(direction * (Terrain.Radius + height) - centre), math.hash(new uint2(hash, 11u)) / 4_294_967_296.0f);
+                    Plants[2 * count + 1] = new float4((i + s) / Quads, (j + u) / Quads, 0.0f, 0.0f);
+                    count++;
 
                 }
 
@@ -365,22 +507,7 @@ internal struct PatchJob : IJob {
         }
 
         // Skirts hang below each edge to hide the cracks of a neighbour that is still streaming in.
-        for (int edge = 0; edge < 4; edge++) {
-
-            for (int k = 0; k < Vertices; k++) {
-
-                int v = EdgeVertex(edge, k);
-                Vector3d drop = directions[v] * skirt;
-
-                Vertex hanging = MakeVertex(ground[v] - drop, coarse[v] - drop, centre, v % Vertices, v / Vertices, ref low, ref high);
-
-                // Skirts carry their texture coordinates shifted by SkirtFlag, so the sun's shadow pass can leave them out.
-                hanging.Uv.x += SkirtFlag;
-                vertices[Vertices * Vertices + edge * Vertices + k] = hanging;
-
-            }
-
-        }
+        WriteSkirts(vertices, 0, ground, coarse, directions, centre, skirt, ref low, ref high);
 
         // The water sheet: flat at each body's level, morphing on its own edges and diagonals like the ground.
         NativeArray<Vector3d> sheet = new NativeArray<Vector3d>(Vertices * Vertices, Allocator.Temp);
@@ -408,6 +535,9 @@ internal struct PatchJob : IJob {
             }
 
         }
+
+        // The sheet hangs skirts too: neighbouring levels' sheets meet only to within rounding, which shows sky between them.
+        WriteSkirts(vertices, GroundVertices, sheet, sheetCoarse, directions, centre, skirt, ref low, ref high);
 
         int count = 0;
         double deep = Math.Max(2.0, 0.05 * footprint);
@@ -488,6 +618,30 @@ internal struct PatchJob : IJob {
 
         }
 
+        for (int edge = 0; edge < 4; edge++) {
+
+            for (int k = 0; k < Quads; k++) {
+
+                int v0 = EdgeVertex(edge, k);
+                int v1 = EdgeVertex(edge, k + 1);
+
+                if (!Wet(heights, levels, v0, v1, v1)) {
+
+                    continue;
+
+                }
+
+                int s0 = GroundVertices + Vertices * Vertices + edge * Vertices + k;
+                int s1 = s0 + 1;
+                float3 outward = vertices[v0].Position + vertices[v1].Position;
+
+                AddFacing(indices, ref count, vertices, GroundVertices + v0, GroundVertices + v1, s0, outward);
+                AddFacing(indices, ref count, vertices, GroundVertices + v1, s1, s0, outward);
+
+            }
+
+        }
+
         Bounds bounds = new Bounds((Vector3)((low + high) * 0.5f), (Vector3)(high - low));
 
         Mesh.subMeshCount = 2;
@@ -496,6 +650,29 @@ internal struct PatchJob : IJob {
 
         Info[InfoGroundIndices] = groundCount;
         Info[InfoWaterIndices] = count - groundCount;
+
+    }
+
+    // One surface's skirts, after its grid of vertices from first: each edge vertex dropped straight down.
+    private static void WriteSkirts(NativeArray<Vertex> vertices, int first, NativeArray<Vector3d> surface, NativeArray<Vector3d> coarse,
+        NativeArray<Vector3d> directions, Vector3d centre, double depth, ref float3 low, ref float3 high) {
+
+        for (int edge = 0; edge < 4; edge++) {
+
+            for (int k = 0; k < Vertices; k++) {
+
+                int v = EdgeVertex(edge, k);
+                Vector3d drop = directions[v] * depth;
+
+                Vertex hanging = MakeVertex(surface[v] - drop, coarse[v] - drop, centre, v % Vertices, v / Vertices, ref low, ref high);
+
+                // Skirts carry their texture coordinates shifted by SkirtFlag, so the sun's shadow pass can leave them out.
+                hanging.Uv.x += SkirtFlag;
+                vertices[first + Vertices * Vertices + edge * Vertices + k] = hanging;
+
+            }
+
+        }
 
     }
 
@@ -659,8 +836,8 @@ internal struct PatchJob : IJob {
 
     }
 
-    // Normals from the terrain sampled at twice the vertex density, the signed water depth under each texel, and the
-    // vertices' occlusion spread across the texels between them.
+    // Normals from the terrain sampled at four times the vertex density, so ridges and cliff bands too fine for the mesh
+    // still shade; the signed water depth under each texel; and the vertices' occlusion spread across the texels between them.
     private void WriteDetail(double a0, double b0, double span, double footprint, NativeArray<float> occlusion) {
 
         const int samples = Texels + 2;
@@ -668,14 +845,14 @@ internal struct PatchJob : IJob {
         NativeArray<Vector3d> points = new NativeArray<Vector3d>(samples * samples, Allocator.Temp);
         NativeArray<double> depths = new NativeArray<double>(Texels * Texels, Allocator.Temp);
         double radius = Terrain.Radius;
-        double step = span / (2 * Quads);
+        double step = span / (TexelsPerQuad * Quads);
 
         for (int l = 0; l < samples; l++) {
 
             for (int k = 0; k < samples; k++) {
 
                 Vector3d direction = CubeFace.Direction(Face, a0 + (k - 1) * step, b0 + (l - 1) * step);
-                double height = Terrain.HeightAt(direction, 0.5 * footprint);
+                double height = Terrain.HeightAt(direction, footprint / TexelsPerQuad);
 
                 points[l * samples + k] = direction * (radius + height);
 
@@ -714,12 +891,16 @@ internal struct PatchJob : IJob {
                 double depth = depths[l * Texels + k];
 
                 Detail[t + 2] = Unorm((float)(0.5 + 0.5 * Math.Sign(depth) * Math.Sqrt(Math.Min(Math.Abs(depth), WaterDepthRange) / WaterDepthRange)));
-                int i0 = k / 2;
-                int j0 = l / 2;
-                int i1 = Math.Min(i0 + (k & 1), Quads);
-                int j1 = Math.Min(j0 + (l & 1), Quads);
+                int i0 = k / TexelsPerQuad;
+                int j0 = l / TexelsPerQuad;
+                int i1 = Math.Min(i0 + 1, Quads);
+                int j1 = Math.Min(j0 + 1, Quads);
+                float fx = (k % TexelsPerQuad) / (float)TexelsPerQuad;
+                float fy = (l % TexelsPerQuad) / (float)TexelsPerQuad;
+                float top = math.lerp(occlusion[j0 * Vertices + i0], occlusion[j0 * Vertices + i1], fx);
+                float bottom = math.lerp(occlusion[j1 * Vertices + i0], occlusion[j1 * Vertices + i1], fx);
 
-                Detail[t + 3] = Unorm(0.25f * (occlusion[j0 * Vertices + i0] + occlusion[j0 * Vertices + i1] + occlusion[j1 * Vertices + i0] + occlusion[j1 * Vertices + i1]));
+                Detail[t + 3] = Unorm(math.lerp(top, bottom, fy));
 
             }
 

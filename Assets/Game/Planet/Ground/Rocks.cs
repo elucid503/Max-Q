@@ -9,146 +9,265 @@ using UnityEngine.Rendering;
 
 namespace MaxQ.Game.Planet.Ground;
 
-/// <summary>Draws the boulders the ground's patches strew: a few procedural stones, each in a near and a far detail, drawn
-/// instanced. Boulders shrink away short of a distance that grows with their size, so none pops out.</summary>
-public sealed class Rocks {
+/// <summary>Draws the rocks the ground's patches strew: a dozen procedural stones in three families (rounded, angular and
+/// slabby), each in a near and a far detail. Every shape shares one topology, so each patch's rocks draw in one indexed
+/// procedural call per detail, and the shader takes their colour from the patch's satellite tile. Rocks shrink away
+/// short of a distance that grows with their size, so none pops out.</summary>
+public sealed class Rocks : IDisposable {
 
-    private const int Shapes = 4;
-    private const int Batch = 1023;
+    private const int Shapes = 12;
+    private const int Capacity = 16_384;
 
-    // Metres of distance per metre of boulder at which a boulder is gone, and where it swaps to its far detail.
+    // Metres of distance per metre of rock at which a rock is gone, and where it swaps to its far detail.
     private const float Reach = 120.0f;
     private const float NearReach = 25.0f;
     private const float Fade = 0.25f;
 
-    private readonly Mesh[] _near = new Mesh[Shapes];
-    private readonly Mesh[] _far = new Mesh[Shapes];
-    private readonly Matrix4x4[][] _batches = new Matrix4x4[2 * Shapes][];
-    private readonly int[] _counts = new int[2 * Shapes];
-    private readonly Bounds[] _bounds = new Bounds[2 * Shapes];
-    private RenderParams _params;
+    private static readonly int VerticesId = Shader.PropertyToID("_RockVertices");
+    private static readonly int InstancesId = Shader.PropertyToID("_RockInstances");
+    private static readonly int ShapeVerticesId = Shader.PropertyToID("_RockShapeVertices");
+    private static readonly int OffsetId = Shader.PropertyToID("_RockInstanceOffset");
+    private static readonly int ColourId = Shader.PropertyToID("_Colour");
+    private static readonly int ColourRectId = Shader.PropertyToID("_ColourRect");
 
-    public Rocks(Material material) {
+    private sealed class Detail {
 
-        for (int shape = 0; shape < Shapes; shape++) {
-
-            _near[shape] = Boulder(shape, 4);
-            _far[shape] = Boulder(shape, 2);
-            _batches[2 * shape] = new Matrix4x4[Batch];
-            _batches[2 * shape + 1] = new Matrix4x4[Batch];
-
-        }
-
-        _params = new RenderParams(material) {
-
-            shadowCastingMode = ShadowCastingMode.On,
-            receiveShadows = true,
-
-        };
+        public GraphicsBuffer Vertices;
+        public GraphicsBuffer Indices;
+        public int ShapeVertices;
 
     }
 
-    /// <summary>Queues one patch's boulders, the patch standing at <paramref name="position"/> turned by
-    /// <paramref name="rotation"/>, as seen from <paramref name="camera"/>.</summary>
-    public void Add(float4[] rocks, int count, Vector3 position, Quaternion rotation, Vector3 camera) {
+    private struct Batch {
 
-        for (int i = 0; i < count; i++) {
+        public Detail Detail;
+        public int Offset;
+        public int Count;
+        public Texture Colour;
+        public Vector4 Rect;
+        public Bounds Bounds;
 
-            float4 placed = rocks[2 * i];
+    }
+
+    private readonly Material _material;
+    private readonly Detail _near;
+    private readonly Detail _far;
+    private readonly GraphicsBuffer _instances;
+    private readonly float4[] _staging = new float4[3 * Capacity];
+    private readonly List<Batch> _batches = new List<Batch>();
+    private readonly List<MaterialPropertyBlock> _blocks = new List<MaterialPropertyBlock>();
+    private int _count;
+
+    public Rocks(Material material) {
+
+        _material = material;
+        _near = Build(4);
+        _far = Build(2);
+        _instances = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 3 * Capacity, 16);
+
+    }
+
+    /// <summary>Queues one patch's rocks, the patch standing at <paramref name="position"/> turned by
+    /// <paramref name="rotation"/> and coloured by its satellite tile, as seen from <paramref name="camera"/>.</summary>
+    public void Add(float4[] rocks, Texture colour, Vector4 rect, Vector3 position, Quaternion rotation, Vector3 camera) {
+
+        AddDetail(_near, rocks, colour, rect, position, rotation, camera);
+        AddDetail(_far, rocks, colour, rect, position, rotation, camera);
+
+    }
+
+    private void AddDetail(Detail detail, float4[] rocks, Texture colour, Vector4 rect, Vector3 position, Quaternion rotation, Vector3 camera) {
+
+        Batch batch = new Batch { Detail = detail, Offset = _count, Colour = colour, Rect = rect };
+
+        for (int i = 0; i < rocks.Length / 3 && _count < Capacity; i++) {
+
+            float4 placed = rocks[3 * i];
             Vector3 at = position + rotation * new Vector3(placed.x, placed.y, placed.z);
             float distance = Vector3.Distance(at, camera) * 1_000.0f;
             float reach = placed.w * Reach;
 
-            if (distance >= reach) {
+            if (distance >= reach || (distance < placed.w * NearReach) != (detail == _near)) {
 
                 continue;
 
             }
 
-            float4 turn = rocks[2 * i + 1];
+            float4 turn = rocks[3 * i + 1];
+            Quaternion facing = rotation * new Quaternion(turn.x, turn.y, turn.z, turn.w);
             float size = placed.w * Mathf.Clamp01((reach - distance) / (Fade * reach)) / 1_000.0f;
-            int batch = 2 * (i % Shapes) + (distance < placed.w * NearReach ? 0 : 1);
 
-            // Each batch's bounds hug its boulders: URP fits the shadow cascades' depth range to what casts into them.
-            if (_counts[batch] == 0) {
+            // Each batch's bounds hug its rocks: URP fits the shadow cascades' depth range to what casts into them.
+            if (batch.Count == 0) {
 
-                _bounds[batch] = new Bounds(at, Vector3.one * size);
+                batch.Bounds = new Bounds(at, Vector3.one * size);
 
             } else {
 
-                _bounds[batch].Encapsulate(new Bounds(at, Vector3.one * size));
+                batch.Bounds.Encapsulate(new Bounds(at, Vector3.one * size));
 
             }
 
-            _batches[batch][_counts[batch]++] = Matrix4x4.TRS(at, rotation * new Quaternion(turn.x, turn.y, turn.z, turn.w), Vector3.one * size);
+            _staging[3 * _count] = new float4(at.x, at.y, at.z, size);
+            _staging[3 * _count + 1] = new float4(facing.x, facing.y, facing.z, facing.w);
+            _staging[3 * _count + 2] = rocks[3 * i + 2];
+            _count++;
+            batch.Count++;
 
-            if (_counts[batch] == Batch) {
+        }
 
-                Flush(batch);
+        if (batch.Count > 0) {
 
-            }
+            _batches.Add(batch);
 
         }
 
     }
 
-    /// <summary>Draws whatever is still queued.</summary>
+    /// <summary>Draws whatever is queued and starts the next frame's queue.</summary>
     public void Draw() {
 
-        for (int batch = 0; batch < _batches.Length; batch++) {
+        if (_count > 0) {
 
-            Flush(batch);
+            _instances.SetData(_staging, 0, 0, 3 * _count);
+
+        }
+
+        for (int i = 0; i < _batches.Count; i++) {
+
+            Batch batch = _batches[i];
+
+            if (_blocks.Count <= i) {
+
+                _blocks.Add(new MaterialPropertyBlock());
+
+            }
+
+            MaterialPropertyBlock block = _blocks[i];
+
+            block.SetBuffer(VerticesId, batch.Detail.Vertices);
+            block.SetBuffer(InstancesId, _instances);
+            block.SetInt(ShapeVerticesId, batch.Detail.ShapeVertices);
+            block.SetInt(OffsetId, batch.Offset);
+            block.SetTexture(ColourId, batch.Colour);
+            block.SetVector(ColourRectId, batch.Rect);
+
+            RenderParams parameters = new RenderParams(_material) {
+
+                matProps = block,
+                worldBounds = batch.Bounds,
+                shadowCastingMode = ShadowCastingMode.On,
+                receiveShadows = true,
+
+            };
+
+            Graphics.RenderPrimitivesIndexed(parameters, MeshTopology.Triangles, batch.Detail.Indices, batch.Detail.Indices.count, 0, batch.Count);
+
+        }
+
+        _batches.Clear();
+        _count = 0;
+
+    }
+
+    public void Dispose() {
+
+        _instances.Release();
+
+        foreach (Detail detail in new[] { _near, _far }) {
+
+            detail.Vertices.Release();
+            detail.Indices.Release();
 
         }
 
     }
 
-    private void Flush(int batch) {
+    // Every shape at one detail, one after another in a vertex buffer, sharing the icosphere's triangles.
+    private static Detail Build(int subdivisions) {
 
-        if (_counts[batch] == 0) {
-
-            return;
-
-        }
-
-        Mesh mesh = (batch & 1) == 0 ? _near[batch / 2] : _far[batch / 2];
-
-        _params.worldBounds = _bounds[batch];
-        Graphics.RenderMeshInstanced(_params, mesh, 0, _batches[batch], _counts[batch]);
-        _counts[batch] = 0;
-
-    }
-
-    // A unit boulder: an icosphere swollen and pitted by noise, then cut by a few planes into the flat faces of broken
-    // stone, squashed, and with its base (at -0.3) sunk into the ground.
-    private static Mesh Boulder(int shape, int subdivisions) {
-
-        List<Vector3> vertices = new List<Vector3>();
+        List<Vector3> sphere = new List<Vector3>();
         List<int> triangles = new List<int>();
 
-        Icosphere(vertices, triangles, subdivisions);
+        Icosphere(sphere, triangles, subdivisions);
 
-        System.Random random = new System.Random(shape * 7_919 + 17);
-        Vector3[] cuts = new Vector3[6];
-        float[] depths = new float[cuts.Length];
+        Vector3[] vertices = new Vector3[2 * Shapes * sphere.Count];
+        Mesh mesh = new Mesh();
 
-        for (int c = 0; c < cuts.Length; c++) {
+        for (int shape = 0; shape < Shapes; shape++) {
 
-            cuts[c] = new Vector3((float)random.NextDouble() - 0.5f, (float)random.NextDouble() - 0.5f, (float)random.NextDouble() - 0.5f).normalized;
-            depths[c] = 0.6f + 0.25f * (float)random.NextDouble();
+            mesh.Clear();
+            mesh.SetVertices(Stone(shape, sphere));
+            mesh.SetTriangles(triangles, 0);
+            mesh.RecalculateNormals();
+
+            Vector3[] positions = mesh.vertices;
+            Vector3[] normals = mesh.normals;
+
+            for (int v = 0; v < sphere.Count; v++) {
+
+                vertices[2 * (shape * sphere.Count + v)] = positions[v];
+                vertices[2 * (shape * sphere.Count + v) + 1] = normals[v];
+
+            }
 
         }
 
-        Vector3 squash = new Vector3(1.0f, 0.55f + 0.25f * (float)random.NextDouble(), 0.75f + 0.25f * (float)random.NextDouble());
+        UnityEngine.Object.Destroy(mesh);
 
-        for (int v = 0; v < vertices.Count; v++) {
+        Detail detail = new Detail {
 
-            Vector3 d = vertices[v];
+            Vertices = new GraphicsBuffer(GraphicsBuffer.Target.Structured, Shapes * sphere.Count, 24),
+            Indices = new GraphicsBuffer(GraphicsBuffer.Target.Index, triangles.Count, sizeof(int)),
+            ShapeVertices = sphere.Count,
+
+        };
+
+        detail.Vertices.SetData(vertices);
+        detail.Indices.SetData(triangles);
+
+        return detail;
+
+    }
+
+    // A unit rock: an icosphere swollen and pitted by noise, then cut by planes into the flat faces of broken stone,
+    // squashed, and with its base (at -0.3) sunk into the ground. Rounded stones take a few shallow cuts, angular ones many
+    // deep ones, and slabs are cut flat above and below.
+    private static List<Vector3> Stone(int shape, List<Vector3> sphere) {
+
+        System.Random random = new System.Random(shape * 7_919 + 17);
+        int family = shape % 3;
+        int count = family == 0 ? 3 : family == 1 ? 8 : 6;
+        Vector3[] cuts = new Vector3[count];
+        float[] depths = new float[count];
+
+        for (int c = 0; c < count; c++) {
+
+            cuts[c] = new Vector3((float)random.NextDouble() - 0.5f, (float)random.NextDouble() - 0.5f, (float)random.NextDouble() - 0.5f).normalized;
+            depths[c] = family == 0 ? 0.75f + 0.2f * (float)random.NextDouble() : 0.55f + 0.2f * (float)random.NextDouble();
+
+            if (family == 2 && c < 2) {
+
+                cuts[c] = new Vector3(0.15f * ((float)random.NextDouble() - 0.5f), c == 0 ? 1.0f : -1.0f, 0.15f * ((float)random.NextDouble() - 0.5f)).normalized;
+                depths[c] = 0.4f + 0.1f * (float)random.NextDouble();
+
+            }
+
+        }
+
+        Vector3 squash = family == 2
+            ? new Vector3(1.2f, 0.8f + 0.2f * (float)random.NextDouble(), 0.9f + 0.3f * (float)random.NextDouble())
+            : new Vector3(1.0f, 0.55f + 0.25f * (float)random.NextDouble(), 0.75f + 0.25f * (float)random.NextDouble());
+        float swelling = family == 0 ? 0.18f : 0.12f;
+        List<Vector3> stone = new List<Vector3>(sphere.Count);
+
+        foreach (Vector3 d in sphere) {
+
             double swell = Relief.Noise(d.x * 1.3 + shape * 5.1, d.y * 1.3, d.z * 1.3, (uint)shape);
             double pits = Relief.Noise(d.x * 4.7, d.y * 4.7 + shape * 3.3, d.z * 4.7, (uint)(shape + 11));
-            float r = 1.0f + 0.22f * (float)swell + 0.05f * (float)pits;
+            float r = 1.0f + swelling * (float)swell + 0.05f * (float)pits;
 
-            for (int c = 0; c < cuts.Length; c++) {
+            for (int c = 0; c < count; c++) {
 
                 float facing = Vector3.Dot(d, cuts[c]);
 
@@ -163,18 +282,11 @@ public sealed class Rocks {
             Vector3 p = Vector3.Scale(d * r, squash) * 0.5f;
 
             p.y = Mathf.Max(p.y, -0.3f);
-            vertices[v] = p;
+            stone.Add(p);
 
         }
 
-        Mesh mesh = new Mesh { name = $"Boulder {shape}" };
-        mesh.SetVertices(vertices);
-        mesh.SetTriangles(triangles, 0);
-        mesh.RecalculateNormals();
-        mesh.RecalculateBounds();
-        mesh.UploadMeshData(true);
-
-        return mesh;
+        return stone;
 
     }
 

@@ -9,8 +9,9 @@
 #define ATMOSPHERE_HEIGHT 100.0
 #define RAYLEIGH_SCATTERING float3(5.802e-3, 13.558e-3, 33.1e-3)
 #define RAYLEIGH_SCALE_HEIGHT 8.0
-#define MIE_SCATTERING 3.996e-3
-#define MIE_EXTINCTION 4.440e-3
+// Continental aerosol: about 50 km of visibility at sea level, thinning with height.
+#define MIE_SCATTERING 0.058
+#define MIE_EXTINCTION 0.065
 #define MIE_SCALE_HEIGHT 1.2
 #define MIE_G 0.8
 #define OZONE_ABSORPTION float3(0.650e-3, 1.881e-3, 0.085e-3)
@@ -25,6 +26,11 @@ float3 _PlanetCentre;
 float _PlanetRadius;
 float3 _SunDirection;
 float3 _SunIlluminance;
+
+// Low haze that pools in the valleys around the camera, below a flat top _FogTop (km above the reference radius), with
+// extinction _FogDensity per kilometre; its droplets scatter like the aerosol and absorb nothing.
+float _FogTop;
+float _FogDensity;
 
 TEXTURE2D(_TransmittanceLut);
 TEXTURE2D(_MultiScatterLut);
@@ -162,6 +168,21 @@ float3 SunTransmittance(float3 position, float3 sun) {
 
 }
 
+// How much of the sun gets down through the low haze to a point (relative to the centre).
+float FogSunTransmittance(float3 position, float3 sun) {
+
+    float r = _PlanetRadius + _FogTop;
+
+    if (_FogDensity <= 0.0 || dot(position, position) >= r * r) {
+
+        return 1.0;
+
+    }
+
+    return exp(-_FogDensity * RaySphere(position, sun, r).y);
+
+}
+
 // Sun visibility past the ground's cascaded shadows; one wherever the cascades do not reach.
 float SunShadow(float3 positionWS) {
 
@@ -202,9 +223,12 @@ struct Scattering {
 };
 
 // Light scattered toward the origin along a ray, per unit of sun illuminance, and the ray's transmittance. Steps
-// crowd toward the origin when it is inside the air, where the air is densest. Each step samples at jitter (0 to 1) of
-// its length; with shadows, the ground's cascaded shadows carve the sunlight, so mountains cast shafts into the haze.
-Scattering Integrate(float3 origin, float3 direction, float tMax, float3 sun, int steps, bool multiScatter, float jitter = 0.3, bool shadows = false) {
+// crowd toward the origin when it is inside the air, where the air is densest, and sample the air at their middles. With
+// shadows, the ground's cascaded shadows carve the sunlight, so mountains cast shafts into the haze; those are looked up
+// at jitter (0 to 1) of each step, which neighbouring rays vary so shafts blend instead of banding.
+// With fog, each step also takes the stretch of it that lies inside the low haze, which is uniform, so a thin layer
+// counts in full however long the step.
+Scattering Integrate(float3 origin, float3 direction, float tMax, float3 sun, int steps, bool multiScatter, float jitter = 0.3, bool shadows = false, bool fog = false) {
 
     Scattering result;
     result.radiance = 0.0;
@@ -239,36 +263,50 @@ Scattering Integrate(float3 origin, float3 direction, float tMax, float3 sun, in
     float miePhase = MiePhase(cosTheta);
     bool inside = top.x <= 0.0;
     float previous = start;
+    float2 haze = fog && _FogDensity > 0.0 ? RaySphere(origin, direction, _PlanetRadius + _FogTop) : -1.0;
 
     for (int i = 0; i < steps; i++) {
 
         float f = (i + 1.0) / steps;
         float t = start + (end - start) * (inside ? f * f : f);
         float dt = t - previous;
-        float3 p = origin + direction * (previous + jitter * dt);
+        float3 p = origin + direction * (previous + 0.5 * dt);
         float r = length(p);
         float muSun = dot(p, sun) / r;
 
         Medium medium = SampleMedium(r - _PlanetRadius);
-        float3 sunlight = SunTransmittance(p, sun);
+        float3 sunlight = SunTransmittance(p, sun) * FogSunTransmittance(p, sun);
 
         if (shadows) {
 
-            sunlight *= SunShadow(p + _PlanetCentre);
+            sunlight *= SunShadow(origin + direction * (previous + jitter * dt) + _PlanetCentre);
 
         }
 
-        float3 source = (medium.rayleigh * rayleighPhase + medium.mie * miePhase) * sunlight;
+        float3 ambient = multiScatter ? MultiScatter(r, muSun) : 0.0;
+        float3 scattered = ((medium.rayleigh * rayleighPhase + medium.mie * miePhase) * sunlight + medium.scattering * ambient) * dt;
+        float3 depth = medium.extinction * dt;
+        float inHaze = max(min(t, haze.y) - max(previous, haze.x), 0.0);
 
-        if (multiScatter) {
+        if (inHaze > 0.0) {
 
-            source += medium.scattering * MultiScatter(r, muSun);
+            float3 q = origin + direction * (max(previous, haze.x) + 0.5 * inHaze);
+            float3 hazeLight = SunTransmittance(q, sun) * FogSunTransmittance(q, sun);
+
+            if (shadows) {
+
+                hazeLight *= SunShadow(q + _PlanetCentre);
+
+            }
+
+            scattered += _FogDensity * inHaze * (miePhase * hazeLight + ambient);
+            depth += _FogDensity * inHaze;
 
         }
 
-        float3 stepTransmittance = exp(-medium.extinction * dt);
+        float3 stepTransmittance = exp(-depth);
 
-        result.radiance += result.transmittance * (source - source * stepTransmittance) / max(medium.extinction, 1e-9);
+        result.radiance += result.transmittance * scattered * (1.0 - stepTransmittance) / max(depth, 1e-9);
         result.transmittance *= stepTransmittance;
         previous = t;
 

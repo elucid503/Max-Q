@@ -43,9 +43,16 @@ public sealed class BodyView {
 
     }
 
-    public void Draw(double time) {
+    /// <summary>Places the body for <paramref name="camera"/>; past half its far plane, a proportionally smaller body stands
+    /// in at that distance, which looks the same.</summary>
+    public void Draw(double time, Camera camera) {
 
-        _transform.position = MapSpace.ToScene(Body.PositionAt(time));
+        Vector3 eye = camera.transform.position;
+        Vector3 offset = MapSpace.ToScene(Body.PositionAt(time)) - eye;
+        float scale = Mathf.Min(1.0f, 0.5f * camera.farClipPlane / offset.magnitude);
+
+        _transform.position = eye + offset * scale;
+        _transform.localScale = Vector3.one * scale;
         _transform.rotation = Quaternion.AngleAxis(-(float)(Body.RotationAt(time) * 180.0 / Math.PI), Vector3.up);
 
     }

@@ -79,7 +79,7 @@ Shader "Hidden/MaxQ/AtmosphereSky" {
 
                 // Interleaved gradient noise staggers neighbouring rays' samples, so shafts in the haze blend instead of banding.
                 float jitter = frac(52.9829189 * frac(dot(input.positionCS.xy, float2(0.06711056, 0.00583715))));
-                Scattering scattering = Integrate(_WorldSpaceCameraPos - _PlanetCentre, ray.direction, ray.sky ? 1e9 : ray.distance, _SunDirection, 32, true, jitter, true);
+                Scattering scattering = Integrate(_WorldSpaceCameraPos - _PlanetCentre, ray.direction, ray.sky ? 1e9 : ray.distance, _SunDirection, 24, true, jitter, true, true);
 
                 Output output;
                 output.inscatter = float4(scattering.radiance * _SunIlluminance, ray.distance);
@@ -146,8 +146,16 @@ Shader "Hidden/MaxQ/AtmosphereSky" {
                 float3 scene = SAMPLE_TEXTURE2D_X_LOD(_BlitTexture, sampler_PointClamp, uv, 0).rgb;
                 ViewRay ray = ViewRayAt(uv);
 
+                // How fast distance changes across the pixels of this surface: the gentler side along each axis, as
+                // the steep side of a silhouette belongs to whatever lies behind it.
+                float2 pixel = 1.0 / _ScreenParams.xy;
+                float slopeX = min(abs(ViewRayAt(uv + float2(pixel.x, 0.0)).distance - ray.distance), abs(ViewRayAt(uv - float2(pixel.x, 0.0)).distance - ray.distance));
+                float slopeY = min(abs(ViewRayAt(uv + float2(0.0, pixel.y)).distance - ray.distance), abs(ViewRayAt(uv - float2(0.0, pixel.y)).distance - ray.distance));
+                float tolerance = 1e-3 * ray.distance + 3.0 * max(slopeX, slopeY);
+
                 // Bilinear over the four nearest half-resolution samples, each weighed down by how far its distance
-                // strays from this pixel's, so air from behind a ridge never bleeds onto it.
+                // strays from this pixel's beyond what the surface's own slope explains, so air from behind a ridge
+                // never bleeds onto it.
                 float2 texel = uv * _AtmosphereSize.xy - 0.5;
                 int2 base = int2(floor(texel));
                 float2 f = texel - base;
@@ -161,7 +169,7 @@ Shader "Hidden/MaxQ/AtmosphereSky" {
                     int2 at = clamp(base + offset, 0, int2(_AtmosphereSize.xy) - 1);
                     float4 marched = LOAD_TEXTURE2D_X(_AtmosphereInscatter, at);
                     float bilinear = (offset.x ? f.x : 1.0 - f.x) * (offset.y ? f.y : 1.0 - f.y);
-                    float weight = (bilinear + 1e-4) / (1e-3 + abs(marched.a - ray.distance) / max(ray.distance, 1e-3));
+                    float weight = (bilinear + 1e-4) / (1.0 + abs(marched.a - ray.distance) / max(tolerance, 1e-6));
 
                     inscatter += marched.rgb * weight;
                     transmittance += LOAD_TEXTURE2D_X(_AtmosphereTransmittance, at).rgb * weight;

@@ -46,14 +46,20 @@ public sealed class GroundView : IDisposable {
     private static readonly int LevelId = Shader.PropertyToID("_Level");
     private static readonly int TileOriginNearId = Shader.PropertyToID("_TileOriginNear");
     private static readonly int TileOriginFarId = Shader.PropertyToID("_TileOriginFar");
+    private static readonly int TileOriginMacroId = Shader.PropertyToID("_TileOriginMacro");
+    private static readonly int TileOriginBroadId = Shader.PropertyToID("_TileOriginBroad");
     private static readonly int WaveOriginId = Shader.PropertyToID("_WaveOrigin");
+    private static readonly int WaveOriginLongId = Shader.PropertyToID("_WaveOriginLong");
 
     // Repeats of the ground materials in metres; must match GroundMaterials.hlsl.
     private const double NearTile = 3.0;
     private const double FarTile = 17.0;
+    private const double MacroTile = 153.0;
+    private const double BroadTile = 1_377.0;
 
-    // Metres over which every wave train repeats; must match WAVE_PERIOD in Ground.hlsl.
+    // Metres over which each family of wave trains repeats; must match WAVE_PERIOD and WAVE_PERIOD_LONG in Ground.hlsl.
     private const double WavePeriod = 128.0;
+    private const double WavePeriodLong = 181.0;
     private static readonly int MorphId = Shader.PropertyToID("_GroundMorph");
     private static readonly int GroundCameraId = Shader.PropertyToID("_GroundCamera");
 
@@ -119,9 +125,11 @@ public sealed class GroundView : IDisposable {
         public Material[] GroundOnly;
         public Material[] Both;
         public Texture2D Colour;
+        public Vector4 ColourRect;
         public Vector3d Centre;
         public NativeArray<byte> Horizons;
         public float4[] Rocks;
+        public Vegetation.Plot Plot;
 
     }
 
@@ -134,6 +142,7 @@ public sealed class GroundView : IDisposable {
         public NativeArray<double> Info;
         public NativeArray<byte> Horizons;
         public NativeArray<float4> Rocks;
+        public NativeArray<float4> Plants;
 
     }
 
@@ -156,6 +165,7 @@ public sealed class GroundView : IDisposable {
     private readonly List<Node> _strewn = new List<Node>();
     private readonly Plane[] _planes = new Plane[6];
     private readonly Rocks _rocks;
+    private readonly Vegetation _vegetation;
 
     private Vector3d _camera;
     private Vector3 _sunward;
@@ -195,10 +205,11 @@ public sealed class GroundView : IDisposable {
 
     }
 
-    public GroundView(CelestialBody body, ColourTiles tiles, Material ground, Material water, Material rock) {
+    public GroundView(CelestialBody body, ColourTiles tiles, Material ground, Material water, Material rock, Vegetation vegetation) {
 
         _body = body;
         _rocks = new Rocks(rock);
+        _vegetation = vegetation;
         _terrain = body.Terrain ?? throw new ArgumentException($"{body.Name} has no terrain", nameof(body));
         _tiles = tiles;
         _groundTemplate = ground;
@@ -213,6 +224,7 @@ public sealed class GroundView : IDisposable {
                 Info = new NativeArray<double>(PatchJob.InfoLength, Allocator.Persistent),
                 Horizons = new NativeArray<byte>(PatchJob.HorizonLength, Allocator.Persistent),
                 Rocks = new NativeArray<float4>(PatchJob.RockLength, Allocator.Persistent),
+                Plants = new NativeArray<float4>(PatchJob.PlantLength, Allocator.Persistent),
 
             };
 
@@ -298,7 +310,7 @@ public sealed class GroundView : IDisposable {
 
         }
 
-        if (node.Depth == PatchJob.RockDepth && node.Patch?.Rocks != null) {
+        if (node.Patch != null && (node.Patch.Rocks != null || node.Patch.Plot?.Count > 0)) {
 
             _strewn.Add(node);
 
@@ -415,30 +427,7 @@ public sealed class GroundView : IDisposable {
             patch.Renderer.enabled = !Hidden;
             patch.Transform.SetPositionAndRotation(MapSpace.ToScene(bodyPosition + _body.FromBodyFixed(patch.Centre, time)), rotation);
 
-            Texture2D colour = _tiles.Resolve(node.Face, node.Depth, node.X, node.Y, out int level);
-
-            if (colour != null && colour != patch.Colour) {
-
-                int shift = node.Depth - level;
-                double scale = 1.0 / (1L << shift);
-                double u = (node.X & ((1 << shift) - 1)) * scale;
-                double v = (node.Y & ((1 << shift) - 1)) * scale;
-                Vector4 rect = new Vector4(
-
-                    (float)(ColourTiles.Core * scale / ColourTiles.Texels),
-                    (float)(ColourTiles.Core * scale / ColourTiles.Texels),
-                    (float)((ColourTiles.Border + ColourTiles.Core * u) / ColourTiles.Texels),
-                    (float)((ColourTiles.Border + ColourTiles.Core * v) / ColourTiles.Texels)
-
-                );
-
-                patch.Colour = colour;
-                patch.Ground.SetTexture(ColourId, colour);
-                patch.Ground.SetVector(ColourRectId, rect);
-                patch.Water.SetTexture(ColourId, colour);
-                patch.Water.SetVector(ColourRectId, rect);
-
-            }
+            Colour(node);
 
         }
 
@@ -447,7 +436,48 @@ public sealed class GroundView : IDisposable {
 
     }
 
-    // Boulders of the strewing level's visible patches, whether those patches are drawn or their finer children are.
+    // Gives a patch the best satellite tile streamed so far, and chooses its plants against it.
+    private void Colour(Node node) {
+
+        Patch patch = node.Patch;
+        Texture2D colour = _tiles.Resolve(node.Face, node.Depth, node.X, node.Y, out int level);
+
+        if (colour == null || colour == patch.Colour) {
+
+            return;
+
+        }
+
+        int shift = node.Depth - level;
+        double scale = 1.0 / (1L << shift);
+        double u = (node.X & ((1 << shift) - 1)) * scale;
+        double v = (node.Y & ((1 << shift) - 1)) * scale;
+        Vector4 rect = new Vector4(
+
+            (float)(ColourTiles.Core * scale / ColourTiles.Texels),
+            (float)(ColourTiles.Core * scale / ColourTiles.Texels),
+            (float)((ColourTiles.Border + ColourTiles.Core * u) / ColourTiles.Texels),
+            (float)((ColourTiles.Border + ColourTiles.Core * v) / ColourTiles.Texels)
+
+        );
+
+        patch.Colour = colour;
+        patch.ColourRect = rect;
+        patch.Ground.SetTexture(ColourId, colour);
+        patch.Ground.SetVector(ColourRectId, rect);
+        patch.Water.SetTexture(ColourId, colour);
+        patch.Water.SetVector(ColourRectId, rect);
+
+        if (patch.Plot?.Count > 0) {
+
+            _vegetation.Select(patch.Plot, colour, rect, patch.Detail, TileOrigin(patch.Centre, MacroTile), TileOrigin(patch.Centre, BroadTile),
+                MapSpace.Direction(patch.Centre / MapSpace.MetresPerUnit));
+
+        }
+
+    }
+
+    // Rocks and plants of the strewing levels' visible patches, whether those patches are drawn or their finer children are.
     private void Strew(double time, Vector3d bodyPosition, Vector3 camera) {
 
         if (Hidden) {
@@ -463,7 +493,21 @@ public sealed class GroundView : IDisposable {
             Patch patch = node.Patch;
             Vector3 position = MapSpace.ToScene(bodyPosition + _body.FromBodyFixed(patch.Centre, time));
 
-            _rocks.Add(patch.Rocks, patch.Rocks.Length / 2, position, rotation, camera);
+            Colour(node);
+
+            if (patch.Colour != null && patch.Rocks != null) {
+
+                _rocks.Add(patch.Rocks, patch.Colour, patch.ColourRect, position, rotation, camera);
+
+            }
+
+            if (patch.Plot?.Ready == true) {
+
+                Vector3 middle = MapSpace.ToScene(bodyPosition + _body.FromBodyFixed(node.Middle(_terrain.Radius), time));
+
+                _vegetation.Draw(patch.Plot, position, rotation, middle, (float)(node.Radius / MapSpace.MetresPerUnit), camera);
+
+            }
 
         }
 
@@ -522,6 +566,7 @@ public sealed class GroundView : IDisposable {
             Info = slot.Info,
             Horizons = slot.Horizons,
             Rocks = slot.Rocks,
+            Plants = slot.Plants,
             ParentHorizons = node.Parent?.Patch.Horizons ?? _noHorizons,
 
         }.Schedule();
@@ -549,7 +594,21 @@ public sealed class GroundView : IDisposable {
             patch.Horizons.CopyFrom(slot.Horizons);
 
             int rocks = (int)slot.Info[PatchJob.InfoRocks];
-            patch.Rocks = rocks > 0 ? slot.Rocks.GetSubArray(0, 2 * rocks).ToArray() : null;
+            patch.Rocks = rocks > 0 ? slot.Rocks.GetSubArray(0, 3 * rocks).ToArray() : null;
+
+            int tufts = (int)slot.Info[PatchJob.InfoTufts];
+            int trees = (int)slot.Info[PatchJob.InfoTrees];
+
+            if (tufts + trees > 0) {
+
+                patch.Plot ??= new Vegetation.Plot();
+                _vegetation.Load(patch.Plot, slot.Plants, tufts + trees, trees > 0);
+
+            } else if (patch.Plot != null) {
+
+                patch.Plot.Count = 0;
+
+            }
 
             patch.Detail.SetPixelData(slot.Detail, 0);
             patch.Detail.Apply(false, false);
@@ -570,13 +629,19 @@ public sealed class GroundView : IDisposable {
 
             Vector4 near = TileOrigin(patch.Centre, NearTile);
             Vector4 far = TileOrigin(patch.Centre, FarTile);
+            Vector4 macro = TileOrigin(patch.Centre, MacroTile);
+            Vector4 broad = TileOrigin(patch.Centre, BroadTile);
             Vector4 waves = TileOrigin(patch.Centre, WavePeriod);
+            Vector4 longWaves = TileOrigin(patch.Centre, WavePeriodLong);
 
             foreach (Material material in patch.Both) {
 
                 material.SetVector(TileOriginNearId, near);
                 material.SetVector(TileOriginFarId, far);
+                material.SetVector(TileOriginMacroId, macro);
+                material.SetVector(TileOriginBroadId, broad);
                 material.SetVector(WaveOriginId, waves);
+                material.SetVector(WaveOriginLongId, longWaves);
                 material.SetTexture(DetailId, patch.Detail);
                 material.SetTexture(ParentDetailId, parent.Detail);
                 material.SetVector(ParentRectId, parentRect);
@@ -742,16 +807,20 @@ public sealed class GroundView : IDisposable {
             slot.Info.Dispose();
             slot.Horizons.Dispose();
             slot.Rocks.Dispose();
+            slot.Plants.Dispose();
 
         }
 
         foreach (Patch patch in _patches) {
 
             patch.Horizons.Dispose();
+            patch.Plot?.Dispose();
 
         }
 
         _noHorizons.Dispose();
+        _rocks.Dispose();
+        _vegetation.Dispose();
 
         _tiles.Dispose();
 

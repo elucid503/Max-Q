@@ -41,6 +41,9 @@ public sealed class MapView : MonoBehaviour {
     [SerializeField] private Material _groundMaterial;
     [SerializeField] private Material _waterMaterial;
     [SerializeField] private Material _rockMaterial;
+    [SerializeField] private Material _grassMaterial;
+    [SerializeField] private Material _treeMaterial;
+    [SerializeField] private ComputeShader _vegetation;
     [SerializeField] private Shader _atmosphereTables;
     [SerializeField] private Shader _atmosphereSky;
     [SerializeField] private ComputeShader _exposure;
@@ -97,7 +100,8 @@ public sealed class MapView : MonoBehaviour {
         _freeCamera = new FreeCamera(_camera);
 
         _atmosphere = new Atmosphere(_terra, _atmosphereTables, _atmosphereSky, _exposure, MapSpace.Direction(Vector3d.UnitX), SunIlluminance);
-        _ground = new GroundView(_terra, new ColourTiles(Path.Combine(data, "colour.tiles")), _groundMaterial, _waterMaterial, _rockMaterial);
+        Vegetation vegetation = new Vegetation(_grassMaterial, _treeMaterial, _vegetation, _groundMaterial.GetTexture("_GroundAlbedo"), (float)(_terra.Radius / MapSpace.MetresPerUnit));
+        _ground = new GroundView(_terra, new ColourTiles(Path.Combine(data, "colour.tiles")), _groundMaterial, _waterMaterial, _rockMaterial, vegetation);
         _seleneView = new BodyView(_selene, _seleneFaces, _surfaceMaterial, 0.0f);
 
         _actualLines = new OrbitLines("Trajectory", _lineMaterial);
@@ -162,10 +166,10 @@ public sealed class MapView : MonoBehaviour {
 
         }
 
-        _atmosphere.Update(_time, _camera.transform.position);
+        _atmosphere.Update(_time, _camera.transform.position, Time.unscaledDeltaTime);
         _ground.Draw(_time, _camera, MapSpace.Direction(Vector3d.UnitX));
         _sun.Fit(_ground.CameraAltitude / MapSpace.MetresPerUnit, _terra.Radius / MapSpace.MetresPerUnit);
-        _seleneView.Draw(_time);
+        _seleneView.Draw(_time, _camera);
 
         _bodyOrbitLines.Draw(_bodyOrbits, _time, _ => BodyOrbit);
 

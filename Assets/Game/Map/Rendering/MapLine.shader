@@ -61,6 +61,13 @@ Shader "MaxQ/MapLine" {
 
                 }
 
+                // Past the far plane a line lies flat on it, so the ground still hides it and nothing clips it.
+                #if UNITY_REVERSED_Z
+                clip.z = max(clip.z, 0.0);
+                #else
+                clip.z = min(clip.z, clip.w);
+                #endif
+
                 float2 halfScreen = _ScreenParams.xy * 0.5;
                 float2 here = clip.xy / max(clip.w, nearW) * halfScreen;
                 float2 there = other.xy / max(other.w, nearW) * halfScreen;

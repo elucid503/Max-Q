@@ -16,6 +16,9 @@ public sealed class FreeCamera {
     private const double Clearance = 1.5;
     private const float FieldOfView = 60.0f;
 
+    // Unity fits the sun's shadow cascades to the camera frustum and loses them past this far-to-near ratio.
+    private const float DepthRange = 1_000_000.0f;
+
     private readonly Camera _camera;
 
     private CelestialBody _body;
@@ -126,6 +129,7 @@ public sealed class FreeCamera {
 
         _camera.fieldOfView = FieldOfView;
         _camera.nearClipPlane = (float)Math.Clamp(altitude * 0.25 / MapSpace.MetresPerUnit, 2e-4, 10.0);
+        _camera.farClipPlane = _camera.nearClipPlane * DepthRange;
 
     }
 

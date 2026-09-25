@@ -12,7 +12,10 @@ Shader "MaxQ/Water" {
         _Level ("Level", Float) = 0
         _TileOriginNear ("Near Tile Origin", Vector) = (0, 0, 0, 0)
         _TileOriginFar ("Far Tile Origin", Vector) = (0, 0, 0, 0)
+        _TileOriginMacro ("Macro Tile Origin", Vector) = (0, 0, 0, 0)
+        _TileOriginBroad ("Broad Tile Origin", Vector) = (0, 0, 0, 0)
         _WaveOrigin ("Wave Origin", Vector) = (0, 0, 0, 0)
+        _WaveOriginLong ("Long Wave Origin", Vector) = (0, 0, 0, 0)
 
     }
 

@@ -1,0 +1,237 @@
+// Chooses a patch's plants from the places it offers: each place keeps a plant as often as the ground's materials there
+// call for one (grass in meadows; trees in forest below the tree line, conifers toward the poles and up the mountains),
+// and the plant takes its colour from the satellite pixel it stands in. The plants kept are sorted by their random rank.
+// Runs once per patch and satellite tile.
+#pragma kernel SelectTufts
+#pragma kernel SelectTrees
+
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+
+// The ground's per-material values are plain uniforms here, set per dispatch.
+#undef CBUFFER_START
+#undef CBUFFER_END
+#define CBUFFER_START(name)
+#define CBUFFER_END
+
+#include "GroundMaterials.hlsl"
+
+// Places, as PatchJob writes them: position (km from the patch centre, scene axes) and a random number; place on the
+// patch. Plants, as the vegetation shaders read them.
+StructuredBuffer<float4> _Candidates;
+uint _CandidateCount;
+
+struct Plant {
+
+    float4 position;
+    float4 colour;
+    float4 shape;
+
+};
+
+RWStructuredBuffer<Plant> _Scratch;
+RWStructuredBuffer<Plant> _Plants;
+RWStructuredBuffer<uint> _Kept;
+
+// Places a patch can offer, a power of two, sorted by one group of THREADS.
+#define SLOTS 4096
+#define THREADS 1024
+
+// The patch centre in kilometres from the planet's, in the patch's axes.
+float3 _PatchCentre;
+
+struct Place {
+
+    float3 position;
+    float random;
+    float2 uv;
+    float3 up;
+    float altitude;
+    GroundSite site;
+    bool dry;
+
+};
+
+Place Survey(uint id) {
+
+    float4 a = _Candidates[2 * id];
+    float4 b = _Candidates[2 * id + 1];
+
+    Place place;
+    place.position = a.xyz;
+    place.random = a.w;
+    place.uv = b.xy;
+
+    float3 fromCentre = _PatchCentre + a.xyz;
+    GroundDetail detail = SampleDetail(b.xy, 0.0);
+    float3 satellite = SAMPLE_TEXTURE2D_LOD(_Colour, sampler_Colour, b.xy * _ColourRect.xy + _ColourRect.zw, 0.0).rgb;
+
+    place.up = normalize(fromCentre);
+    place.altitude = (length(fromCentre) - _PlanetRadius) * 1000.0;
+    place.site = Site(satellite, LinearToSRGB(SatelliteTone(b.xy)), a.xyz * 1000.0, place.up, dot(detail.normalOS, place.up), detail.occlusion, place.altitude, 0.0);
+    place.dry = detail.waterDepth < -0.1;
+
+    return place;
+
+}
+
+// Independent random numbers from one.
+float Another(float random, float salt) {
+
+    return frac(sin(random * 91.3458 + salt * 47.853) * 43758.5453);
+
+}
+
+// Grass: thick in meadows; bare soil and the forest floor carry a little. Shorter up high, where the season is short,
+// and where the grass is thin.
+bool Tuft(Place place, out Plant plant) {
+
+    float cover = saturate(1.2 * Share(place.site, GRASS) + 0.25 * Share(place.site, SOIL) + 0.15 * Share(place.site, FOREST));
+    float tall = (0.6 + 0.4 * cover) * lerp(1.0, 0.5, smoothstep(TREE_LINE, TREE_LINE + 200.0, place.altitude));
+
+    plant.position = float4(place.position, place.random);
+    // Living blades are brighter than the mat of thatch and soil the ground texture averages.
+    plant.colour = float4(1.3 * Average(GRASS) * place.site.transfer, tall);
+    plant.shape = float4(Another(place.random, 2.0), Another(place.random, 3.0), 0.0, 0.0);
+
+    return place.dry && Another(place.random, 1.0) < cover;
+
+}
+
+// Trees in forest; conifers take over toward the poles and up the mountains, with a mix where the two meet. Canopy seen
+// from above is the satellite's colour; each tree strays a little from it.
+bool Tree(Place place, out Plant plant) {
+
+    float forest = Share(place.site, FOREST);
+    float latitude = degrees(asin(abs(place.up.y)));
+    float conifer = saturate((latitude - 38.0) / 14.0) + saturate((place.altitude - 200.0) / 150.0);
+    bool needles = Another(place.random, 2.0) < conifer;
+    float3 satellite = SAMPLE_TEXTURE2D_LOD(_Colour, sampler_Colour, place.uv * _ColourRect.xy + _ColourRect.zw, 0.0).rgb;
+    // The satellite's canopy colour mixes in whatever shows between crowns; leaves keep its brightness and half its hue.
+    float luma = max(dot(satellite, float3(0.2126, 0.7152, 0.0722)), 1e-4);
+    float3 leaf = luma * lerp(satellite / luma, float3(0.7, 1.15, 0.45), 0.5);
+    float3 foliage = leaf * (0.8 + 0.4 * Another(place.random, 3.0)) * (needles ? float3(0.85, 0.95, 1.0) : float3(1.05, 1.0, 0.9));
+    float height = (needles ? lerp(14.0, 30.0, Another(place.random, 4.0)) : lerp(10.0, 24.0, Another(place.random, 4.0))) * (0.75 + 0.25 * forest);
+
+    plant.position = float4(place.position, place.random);
+    plant.colour = float4(foliage, needles ? 1.0 : 0.0);
+    plant.shape = float4(height, height * (needles ? 0.2 : 0.33) * (0.85 + 0.3 * Another(place.random, 5.0)), Another(place.random, 6.0), Another(place.random, 7.0));
+
+    return place.dry && Another(place.random, 1.0) < 1.15 * forest;
+
+}
+
+// One group chooses a whole patch's plants, then sorts the ones kept by their random rank, so the first n of them are
+// an even thinning that a draw can take by count alone.
+groupshared uint Keys[SLOTS];
+groupshared uint Kept;
+
+void Choose(uint thread, bool trees) {
+
+    if (thread == 0) {
+
+        Kept = 0;
+
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    for (uint load = 0; load < SLOTS / THREADS; load++) {
+
+        uint id = thread + load * THREADS;
+        uint key = 0xFFFFFFFFu;
+
+        if (id < _CandidateCount) {
+
+            Plant plant;
+            Place place = Survey(id);
+            bool grows;
+
+            // Not a conditional expression: HLSL evaluates both of its arms, and both write the plant.
+            if (trees) {
+
+                grows = Tree(place, plant);
+
+            } else {
+
+                grows = Tuft(place, plant);
+
+            }
+
+            if (grows) {
+
+                _Scratch[id] = plant;
+                key = ((uint)(saturate(plant.position.w) * 1048575.0) << 12) | id;
+                InterlockedAdd(Kept, 1u);
+
+            }
+
+        }
+
+        Keys[id] = key;
+
+    }
+
+    // Every thread reads plants others wrote, so the scratch buffer must be complete too, not just the keys.
+    AllMemoryBarrierWithGroupSync();
+
+    // Bitonic sort, ascending.
+    for (uint size = 2; size <= SLOTS; size <<= 1) {
+
+        for (uint stride = size >> 1; stride > 0; stride >>= 1) {
+
+            for (uint lane = 0; lane < SLOTS / 2 / THREADS; lane++) {
+
+                uint pair = thread + lane * THREADS;
+                uint i = 2 * pair - (pair & (stride - 1));
+                uint j = i + stride;
+                uint a = Keys[i];
+                uint b = Keys[j];
+
+                if ((a > b) == ((i & size) == 0)) {
+
+                    Keys[i] = b;
+                    Keys[j] = a;
+
+                }
+
+            }
+
+            GroupMemoryBarrierWithGroupSync();
+
+        }
+
+    }
+
+    for (uint store = 0; store < SLOTS / THREADS; store++) {
+
+        uint id = thread + store * THREADS;
+
+        if (id < Kept) {
+
+            _Plants[id] = _Scratch[Keys[id] & 0xFFFu];
+
+        }
+
+    }
+
+    if (thread == 0) {
+
+        _Kept[0] = Kept;
+
+    }
+
+}
+
+[numthreads(THREADS, 1, 1)]
+void SelectTufts(uint thread : SV_GroupThreadID) {
+
+    Choose(thread, false);
+
+}
+
+[numthreads(THREADS, 1, 1)]
+void SelectTrees(uint thread : SV_GroupThreadID) {
+
+    Choose(thread, true);
+
+}

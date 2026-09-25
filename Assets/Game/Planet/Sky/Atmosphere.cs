@@ -21,9 +21,23 @@ public sealed class Atmosphere : IDisposable {
     private static readonly int TransmittanceId = Shader.PropertyToID("_TransmittanceLut");
     private static readonly int MultiScatterId = Shader.PropertyToID("_MultiScatterLut");
     private static readonly int IrradianceId = Shader.PropertyToID("_IrradianceLut");
+    private static readonly int FogTopId = Shader.PropertyToID("_FogTop");
+    private static readonly int FogDensityId = Shader.PropertyToID("_FogDensity");
 
     // Height of the air's top above the ground, metres; matches ATMOSPHERE_HEIGHT in Atmosphere.hlsl.
     private const double AirThickness = 100_000.0;
+
+    // The low haze fills the ground around the camera, averaged over this many metres, to a little above its mean, so
+    // valleys fill and ridges stand clear. It is thickest while the sun is low and burns off as it climbs, and it fades
+    // from view as the camera climbs away from it, since one layer stands in for every region's.
+    private const double FogRegion = 20_000.0;
+    private const double FogAboveMean = 40.0;
+    private const float FogExtinction = 0.25f;
+    private const double FogSunLow = 0.07;
+    private const double FogSunHigh = 0.42;
+    private const double FogFadeStart = 5_000.0;
+    private const double FogFadeEnd = 20_000.0;
+    private const double FogSettleSeconds = 2.0;
 
     private readonly CelestialBody _body;
     private readonly RenderTexture _transmittance;
@@ -34,6 +48,8 @@ public sealed class Atmosphere : IDisposable {
     private readonly SkyViewPass _skyView;
     private readonly GraphicsBuffer _exposure;
     private readonly GraphicsBuffer _histogram;
+
+    private double _fogTop = double.NaN;
 
     /// <summary>Whether the composite pass draws; the capture turns it off to time the rest of the frame.</summary>
     public bool Enabled { get; set; } = true;
@@ -102,13 +118,48 @@ public sealed class Atmosphere : IDisposable {
 
     }
 
-    /// <summary>Keeps the planet's centre current, and lets the eye adapt while <paramref name="camera"/> is inside the air.</summary>
-    public void Update(double time, Vector3 camera) {
+    /// <summary>Keeps the planet's centre and the low haze current, and lets the eye adapt while <paramref name="camera"/>
+    /// is inside the air.</summary>
+    public void Update(double time, Vector3 camera, float deltaSeconds) {
 
         Vector3 centre = MapSpace.ToScene(_body.PositionAt(time));
 
         Shader.SetGlobalVector(PlanetCentreId, centre);
         _pass.Adapting = (camera - centre).magnitude * MapSpace.MetresPerUnit < _body.Radius + AirThickness;
+
+        UpdateFog(time, camera, deltaSeconds);
+
+    }
+
+    private void UpdateFog(double time, Vector3 camera, float deltaSeconds) {
+
+        if (_body.Terrain is not { } terrain) {
+
+            Shader.SetGlobalFloat(FogDensityId, 0.0f);
+
+            return;
+
+        }
+
+        Vector3d fromCentre = MapSpace.Origin + new Vector3d(camera.x, camera.z, camera.y) * MapSpace.MetresPerUnit - _body.PositionAt(time);
+        Vector3d up = fromCentre.Normalized;
+        double top = Math.Max(terrain.HeightAt(_body.ToBodyFixed(up, time), FogRegion), 0.0) + FogAboveMean;
+
+        _fogTop = double.IsNaN(_fogTop) ? top : top + (_fogTop - top) * Math.Exp(-deltaSeconds / FogSettleSeconds);
+
+        double sunLow = 1.0 - SmoothStep(FogSunLow, FogSunHigh, Vector3d.Dot(up, Vector3d.UnitX));
+        double near = 1.0 - SmoothStep(FogFadeStart, FogFadeEnd, fromCentre.Length - _body.Radius - _fogTop);
+
+        Shader.SetGlobalFloat(FogTopId, (float)(_fogTop / MapSpace.MetresPerUnit));
+        Shader.SetGlobalFloat(FogDensityId, FogExtinction * (float)(sunLow * near));
+
+    }
+
+    private static double SmoothStep(double from, double to, double x) {
+
+        double t = Math.Clamp((x - from) / (to - from), 0.0, 1.0);
+
+        return t * t * (3.0 - 2.0 * t);
 
     }
 

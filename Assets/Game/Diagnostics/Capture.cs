@@ -81,6 +81,10 @@ public sealed class Capture : MonoBehaviour {
         yield return Fly(map, "eiger-scree-2m", 46.565, 8.0, 2.0, 200.0, -12.0, 11.0);
         yield return Fly(map, "pad-ground-2m", 46.6, 7.93, 1.8, 120.0, -35.0, 15.0);
         yield return Fly(map, "coast-dusk-50m", 36.3, -121.9, 50.0, 250.0, 2.0, 18.35);
+        yield return Fly(map, "black-forest-2m", 48.3, 8.2, 2.0, 100.0, -2.0, 10.5);
+        yield return Fly(map, "meadow-2m", 46.93, 7.72, 2.0, 200.0, -5.0, 14.0);
+        yield return Fly(map, "boreal-300m", 62.5, 26.5, 300.0, 40.0, -12.0, 13.0);
+        yield return Fly(map, "amazon-1km", -3.0, -60.0, 1_000.0, 70.0, -15.0, 9.0);
 
         File.WriteAllLines(Path.Combine(_directory, "timings.txt"), _timings);
         Application.Quit();

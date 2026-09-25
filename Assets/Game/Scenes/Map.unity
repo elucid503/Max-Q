@@ -119,7 +119,7 @@ NavMeshSettings:
     debug:
       m_Flags: 0
   m_NavMeshData: {fileID: 0}
---- !u!115 &575734703
+--- !u!115 &347477956
 MonoScript:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -134,7 +134,7 @@ MonoScript:
   m_ClassName: MapView
   m_Namespace: MaxQ.Game.Map
   m_AssemblyName: MaxQ.Game
---- !u!1 &629861284
+--- !u!1 &526904147
 GameObject:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -142,9 +142,58 @@ GameObject:
   m_PrefabAsset: {fileID: 0}
   serializedVersion: 6
   m_Component:
-  - component: {fileID: 629861287}
-  - component: {fileID: 629861286}
-  - component: {fileID: 629861285}
+  - component: {fileID: 526904149}
+  - component: {fileID: 526904148}
+  m_Layer: 0
+  m_Name: Post Processing
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &526904148
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 526904147}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 172515602e62fb746b5d573b38a5fe58, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Unity.RenderPipelines.Core.Runtime::UnityEngine.Rendering.Volume
+  m_IsGlobal: 1
+  priority: 0
+  blendDistance: 0
+  weight: 1
+  sharedProfile: {fileID: 11400000, guid: 60e21052954cb8e4baff818d53806ea6, type: 2}
+--- !u!4 &526904149
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 526904147}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &1006026165
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1006026168}
+  - component: {fileID: 1006026167}
+  - component: {fileID: 1006026166}
   m_Layer: 0
   m_Name: Map Camera
   m_TagString: MainCamera
@@ -152,13 +201,13 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!114 &629861285
+--- !u!114 &1006026166
 MonoBehaviour:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 629861284}
+  m_GameObject: {fileID: 1006026165}
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: a79441f348de89743a2939f4d699eac1, type: 3}
@@ -196,13 +245,13 @@ MonoBehaviour:
     m_VarianceClampScale: 0.9
     m_ContrastAdaptiveSharpening: 0
   m_Version: 2
---- !u!20 &629861286
+--- !u!20 &1006026167
 Camera:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 629861284}
+  m_GameObject: {fileID: 1006026165}
   m_Enabled: 1
   serializedVersion: 2
   m_ClearFlags: 1
@@ -247,13 +296,13 @@ Camera:
   m_OcclusionCulling: 1
   m_StereoConvergence: 10
   m_StereoSeparation: 0.022
---- !u!4 &629861287
+--- !u!4 &1006026168
 Transform:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 629861284}
+  m_GameObject: {fileID: 1006026165}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
@@ -262,7 +311,7 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!1 &871818466
+--- !u!1 &1261816350
 GameObject:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -270,58 +319,9 @@ GameObject:
   m_PrefabAsset: {fileID: 0}
   serializedVersion: 6
   m_Component:
-  - component: {fileID: 871818468}
-  - component: {fileID: 871818467}
-  m_Layer: 0
-  m_Name: Post Processing
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 1
---- !u!114 &871818467
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 871818466}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 172515602e62fb746b5d573b38a5fe58, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Unity.RenderPipelines.Core.Runtime::UnityEngine.Rendering.Volume
-  m_IsGlobal: 1
-  priority: 0
-  blendDistance: 0
-  weight: 1
-  sharedProfile: {fileID: 11400000, guid: 60e21052954cb8e4baff818d53806ea6, type: 2}
---- !u!4 &871818468
-Transform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 871818466}
-  serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
-  m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!1 &1444829562
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 1444829565}
-  - component: {fileID: 1444829564}
-  - component: {fileID: 1444829563}
+  - component: {fileID: 1261816353}
+  - component: {fileID: 1261816352}
+  - component: {fileID: 1261816351}
   m_Layer: 0
   m_Name: Map
   m_TagString: Untagged
@@ -329,16 +329,16 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!114 &1444829563
+--- !u!114 &1261816351
 MonoBehaviour:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1444829562}
+  m_GameObject: {fileID: 1261816350}
   m_Enabled: 1
   m_EditorHideFlags: 0
-  m_Script: {fileID: 575734703}
+  m_Script: {fileID: 347477956}
   m_Name: 
   m_EditorClassIdentifier: MaxQ.Game::MaxQ.Game.Map.MapView
   _seleneFaces:
@@ -352,19 +352,22 @@ MonoBehaviour:
   _groundMaterial: {fileID: 2100000, guid: 3010b505ab668b24d89ee274709cef9e, type: 2}
   _waterMaterial: {fileID: 2100000, guid: 4d02c8f007d12634b870e1b83b8c88a8, type: 2}
   _rockMaterial: {fileID: 2100000, guid: e182681c0583a2249a197b53007addcc, type: 2}
+  _grassMaterial: {fileID: 2100000, guid: 8d8c23da903d3ee4d8099c9a191b9b98, type: 2}
+  _treeMaterial: {fileID: 2100000, guid: 112f171c5835e484ead1808bf27a9195, type: 2}
+  _vegetation: {fileID: 7200000, guid: 1bec69f8d1b097148a37aead5f0fd5fe, type: 3}
   _atmosphereTables: {fileID: 4800000, guid: 4fd6378cf92d1ba43ac818d36e09c111, type: 3}
   _atmosphereSky: {fileID: 4800000, guid: a4d638ff3e4b02b4f81bae2f88ea5363, type: 3}
   _exposure: {fileID: 7200000, guid: dea943aae46aa8a4292a82239d750d5c, type: 3}
   _lineMaterial: {fileID: 2100000, guid: 6001fb56ba6709346ae69d12d03b70b2, type: 2}
   _skyMaterial: {fileID: 2100000, guid: 2df2d35379943174282f635e572bf182, type: 2}
   _hudStyle: {fileID: 7433441132597879392, guid: b9a1f927791e31e4ea796ce64edad3a8, type: 3}
---- !u!114 &1444829564
+--- !u!114 &1261816352
 MonoBehaviour:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1444829562}
+  m_GameObject: {fileID: 1261816350}
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 19102, guid: 0000000000000000e000000000000000, type: 0}
@@ -381,13 +384,13 @@ MonoBehaviour:
   m_PivotReferenceSize: 0
   m_Pivot: 0
   m_WorldSpaceCollider: {fileID: 0}
---- !u!4 &1444829565
+--- !u!4 &1261816353
 Transform:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1444829562}
+  m_GameObject: {fileID: 1261816350}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
@@ -400,6 +403,6 @@ Transform:
 SceneRoots:
   m_ObjectHideFlags: 0
   m_Roots:
-  - {fileID: 629861287}
-  - {fileID: 871818468}
-  - {fileID: 1444829565}
+  - {fileID: 1006026168}
+  - {fileID: 526904149}
+  - {fileID: 1261816353}

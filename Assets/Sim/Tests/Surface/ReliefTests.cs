@@ -105,6 +105,51 @@ public sealed class ReliefTests {
     }
 
     [Test]
+    public void StrataCutCliffsIntoSteepGroundOnly() {
+
+        Vector3d p = new Vector3d(612_345.6, -998_765.4, 402_020.2);
+        Vector3d along = Vector3d.Cross(p.Normalized, Vector3d.UnitZ).Normalized;
+        double steepest = 0.0;
+        double previous = Relief.Strata(p, 0.0, 0.7, 0.0);
+
+        // Up a uniform 0.7 slope, one metre at a time: the bands steepen it into cliffs between gentler benches.
+        for (int i = 1; i < 2_000; i++) {
+
+            double height = Relief.Strata(p + along * i, 0.7 * i, 0.7, 0.0);
+
+            steepest = Math.Max(steepest, height - previous);
+            previous = height;
+
+        }
+
+        Assert.That(steepest, Is.GreaterThan(0.7 * 2.0));
+        Assert.That(Relief.Strata(p, 123.4, 0.1, 0.0), Is.EqualTo(123.4));
+        Assert.That(Relief.Strata(p, 123.4, 0.7, 500.0), Is.EqualTo(123.4));
+
+    }
+
+    [Test]
+    public void StrataAreContinuous() {
+
+        Random random = new Random(5);
+        Vector3d p = new Vector3d(612_345.6, -998_765.4, 402_020.2);
+
+        for (int i = 0; i < 5_000; i++) {
+
+            Vector3d q = p + new Vector3d(random.NextDouble(), random.NextDouble(), random.NextDouble()) * 5_000.0;
+            double height = random.NextDouble() * 2_000.0;
+            double slope = random.NextDouble() * 1.2;
+            double here = Relief.Strata(q, height, slope, 0.0);
+
+            Assert.That(Relief.Strata(q, height + 1e-6, slope, 0.0), Is.EqualTo(here).Within(1e-3));
+            Assert.That(Relief.Strata(q + new Vector3d(1e-6, 0.0, 0.0), height, slope, 0.0), Is.EqualTo(here).Within(1e-3));
+            Assert.That(Relief.Strata(q, height, slope + 1e-6, 0.0), Is.EqualTo(here).Within(1e-3));
+
+        }
+
+    }
+
+    [Test]
     public void CubeFacesAreOrthonormalAndCoverTheirQuadrant() {
 
         for (int face = 0; face < 6; face++) {

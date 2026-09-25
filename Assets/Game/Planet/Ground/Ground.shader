@@ -13,7 +13,10 @@ Shader "MaxQ/Ground" {
         _Level ("Level", Float) = 0
         _TileOriginNear ("Near Tile Origin", Vector) = (0, 0, 0, 0)
         _TileOriginFar ("Far Tile Origin", Vector) = (0, 0, 0, 0)
+        _TileOriginMacro ("Macro Tile Origin", Vector) = (0, 0, 0, 0)
+        _TileOriginBroad ("Broad Tile Origin", Vector) = (0, 0, 0, 0)
         _WaveOrigin ("Wave Origin", Vector) = (0, 0, 0, 0)
+        _WaveOriginLong ("Long Wave Origin", Vector) = (0, 0, 0, 0)
         _GroundAlbedo ("Ground Albedo", 2DArray) = "" {}
         _GroundNormal ("Ground Normals", 2DArray) = "" {}
 
@@ -46,6 +49,16 @@ Shader "MaxQ/Ground" {
                 GroundSurface surface = GroundMaterial(input, detail, light.up, footprint);
 
                 float3 ground = GroundRadiance(surface.albedo, surface.normalWS, light, Surroundings(input.uv), detail.occlusion);
+
+                UNITY_BRANCH
+                if (surface.snow > 0.01) {
+
+                    float3 toCamera = normalize(_WorldSpaceCameraPos - input.positionWS);
+                    float glitter = Glitter(input.positionOS * 1000.0, surface.normalWS, toCamera, footprint);
+
+                    ground = lerp(ground, SnowRadiance(surface.albedo, surface.normalWS, toCamera, light, Surroundings(input.uv), detail.occlusion, glitter), surface.snow);
+
+                }
                 float wet = Wetness(detail);
 
                 if (wet <= 0.0) {
