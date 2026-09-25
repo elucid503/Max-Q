@@ -1,0 +1,6 @@
+{
+    "name": "MaxQ.Sim",
+    "rootNamespace": "MaxQ.Sim",
+    "noEngineReferences": true,
+    "autoReferenced": true
+}

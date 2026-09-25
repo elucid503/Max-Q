@@ -1,0 +1,6 @@
+{
+    "name": "MaxQ.Game.Editor",
+    "rootNamespace": "MaxQ.Game.Editor",
+    "references": ["MaxQ.Game", "Unity.RenderPipelines.Universal.Runtime", "Unity.RenderPipelines.Core.Runtime"],
+    "includePlatforms": ["Editor"]
+}

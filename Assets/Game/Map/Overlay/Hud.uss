@@ -1,0 +1,130 @@
+/* Minimal map overlay. Sizes are at the 1920x1080 reference resolution. */
+
+.hud {
+    flex-grow: 1;
+    color: rgb(232, 238, 244);
+    -unity-font-definition: url("../../Art/Fonts/Inter-Regular.ttf");
+    text-shadow: 0 1px 6px rgba(0, 0, 0, 0.85);
+}
+
+/* Clock */
+
+.clock {
+    position: absolute;
+    left: 48px;
+    top: 40px;
+}
+
+.day {
+    font-size: 14px;
+    letter-spacing: 5px;
+    color: rgba(232, 238, 244, 0.5);
+    padding: 0;
+    margin: 0 0 2px 2px;
+}
+
+.time {
+    font-size: 46px;
+    padding: 0;
+    margin: 0;
+    -unity-font-definition: url("../../Art/Fonts/Inter-Display-Light.ttf");
+}
+
+.warp {
+    flex-direction: row;
+    align-items: center;
+    margin: 10px 0 0 3px;
+}
+
+.tick {
+    width: 3px;
+    height: 14px;
+    margin-right: 5px;
+    border-radius: 1px;
+    background-color: rgba(232, 238, 244, 0.18);
+}
+
+.tick.on {
+    background-color: rgb(255, 184, 76);
+}
+
+.rate {
+    margin-left: 8px;
+    padding: 0;
+    font-size: 15px;
+    color: rgba(232, 238, 244, 0.45);
+}
+
+.rate.active {
+    color: rgb(255, 184, 76);
+}
+
+/* Scene markers */
+
+.markers {
+    position: absolute;
+    left: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+}
+
+.marker {
+    position: absolute;
+    width: 0;
+    height: 0;
+    overflow: visible;
+}
+
+.glyph {
+    position: absolute;
+    left: -6px;
+    top: -6px;
+    width: 12px;
+    height: 12px;
+    border-width: 2px;
+    border-color: rgb(232, 238, 244);
+}
+
+.text {
+    position: absolute;
+    left: 16px;
+    top: -12px;
+}
+
+.title {
+    font-size: 17px;
+    -unity-font-definition: url("../../Art/Fonts/Inter-Medium.ttf");
+    padding: 0;
+    margin: 0;
+    white-space: nowrap;
+}
+
+.detail {
+    font-size: 13px;
+    padding: 0;
+    margin: 1px 0 0 0;
+    white-space: nowrap;
+    color: rgba(232, 238, 244, 0.55);
+}
+
+.vessel .glyph { rotate: 45deg; border-color: rgb(96, 204, 252); background-color: rgba(96, 204, 252, 0.3); }
+.vessel .title { color: rgb(96, 204, 252); }
+
+.node .glyph { rotate: 45deg; border-color: rgb(255, 140, 64); background-color: rgb(255, 140, 64); }
+.node .title { color: rgb(255, 140, 64); }
+
+.soi .glyph { border-radius: 6px; border-color: rgb(255, 184, 76); }
+.soi .title { color: rgb(255, 184, 76); }
+
+.impact .glyph { border-radius: 6px; border-color: rgb(255, 96, 84); }
+.impact .title { color: rgb(255, 96, 84); }
+
+.apsis .glyph { left: -3px; top: -3px; width: 6px; height: 6px; border-width: 0; border-radius: 3px; background-color: rgb(232, 238, 244); }
+.apsis .text { left: 10px; top: -9px; flex-direction: row; align-items: flex-end; }
+.apsis .title { font-size: 14px; color: rgba(232, 238, 244, 0.55); margin-right: 6px; }
+.apsis .detail { font-size: 14px; color: rgb(232, 238, 244); margin: 0; }
+
+.body .glyph { display: none; }
+.body .text { left: 0; top: -30px; translate: -50% 0; }
+.body .title { font-size: 14px; letter-spacing: 6px; color: rgba(232, 238, 244, 0.6); }
