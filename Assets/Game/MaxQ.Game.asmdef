@@ -1,6 +1,7 @@
 {
     "name": "MaxQ.Game",
     "rootNamespace": "MaxQ.Game",
-    "references": ["MaxQ.Sim", "Unity.InputSystem", "Unity.RenderPipelines.Universal.Runtime", "Unity.RenderPipelines.Core.Runtime"],
+    "references": ["MaxQ.Sim", "Unity.Burst", "Unity.Collections", "Unity.Mathematics", "Unity.InputSystem", "Unity.RenderPipelines.Universal.Runtime", "Unity.RenderPipelines.Core.Runtime"],
+    "allowUnsafeCode": true,
     "autoReferenced": true
 }

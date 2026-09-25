@@ -1,11 +1,16 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 
 using MaxQ.Game.Map.Overlay;
 using MaxQ.Game.Map.Rendering;
+using MaxQ.Game.Planet;
+using MaxQ.Game.Planet.Ground;
+using MaxQ.Game.Planet.Sky;
 using MaxQ.Sim.Bodies;
 using MaxQ.Sim.Numerics;
 using MaxQ.Sim.Orbits;
+using MaxQ.Sim.Surface;
 using MaxQ.Sim.Vessels;
 
 using UnityEngine;
@@ -16,7 +21,8 @@ using UnityEngine.UIElements;
 
 namespace MaxQ.Game.Map;
 
-/// <summary>The map scene: owns the clock and the vessel, drives prediction, camera, drawing and HUD in order.</summary>
+/// <summary>The map scene: owns the clock and the vessel, drives prediction, camera, drawing and HUD in order.
+/// F toggles a free-flying camera over Terra.</summary>
 [RequireComponent(typeof(UIDocument))]
 public sealed class MapView : MonoBehaviour {
 
@@ -30,9 +36,12 @@ public sealed class MapView : MonoBehaviour {
     private const double ParkingAltitude = 150_000.0;
     private const int PatchesAhead = 4;
 
-    [SerializeField] private Texture2D[] _terraFaces;
     [SerializeField] private Texture2D[] _seleneFaces;
     [SerializeField] private Material _surfaceMaterial;
+    [SerializeField] private Material _groundMaterial;
+    [SerializeField] private Material _waterMaterial;
+    [SerializeField] private Shader _atmosphereTables;
+    [SerializeField] private Shader _atmosphereSky;
     [SerializeField] private Material _lineMaterial;
     [SerializeField] private Material _skyMaterial;
     [SerializeField] private StyleSheet _hudStyle;
@@ -50,7 +59,12 @@ public sealed class MapView : MonoBehaviour {
     private Patch _predictedFrom;
     private bool _nodeChanged;
 
-    private readonly List<BodyView> _bodyViews = new List<BodyView>();
+    private Survey _survey;
+    private GroundView _ground;
+    private Atmosphere _atmosphere;
+    private BodyView _seleneView;
+    private FreeCamera _freeCamera;
+    private bool _flying;
     private readonly List<Hud.Marker> _markers = new List<Hud.Marker>();
 
     private OrbitLines _actualLines;
@@ -64,13 +78,24 @@ public sealed class MapView : MonoBehaviour {
 
     private void Awake() {
 
-        (_terra, _selene) = SolarSystem.Create();
+        string data = TerraData.Directory;
+        _survey = data == null ? null : Survey.Open(data, SolarSystem.TerraRadius);
+
+        if (_survey == null) {
+
+            throw new InvalidOperationException("Terra's survey is not baked; run tools/terra.sh");
+
+        }
+
+        (_terra, _selene) = SolarSystem.Create(_survey.Terrain);
 
         _camera = Camera.main;
         _mapCamera = new MapCamera(_camera);
+        _freeCamera = new FreeCamera(_camera);
 
-        _bodyViews.Add(new BodyView(_terra, _terraFaces, _surfaceMaterial, 0.18f));
-        _bodyViews.Add(new BodyView(_selene, _seleneFaces, _surfaceMaterial, 0.0f));
+        _atmosphere = new Atmosphere(_terra, _atmosphereTables, _atmosphereSky, MapSpace.Direction(Vector3d.UnitX), SunIlluminance);
+        _ground = new GroundView(_terra, new ColourTiles(Path.Combine(data, "colour.tiles")), _groundMaterial, _waterMaterial);
+        _seleneView = new BodyView(_selene, _seleneFaces, _surfaceMaterial, 0.0f);
 
         _actualLines = new OrbitLines("Trajectory", _lineMaterial);
         _plannedLines = new OrbitLines("Planned Trajectory", _lineMaterial);
@@ -91,6 +116,18 @@ public sealed class MapView : MonoBehaviour {
         sun.transform.rotation = Quaternion.LookRotation(MapSpace.Direction(-Vector3d.UnitX));
 
         StartScenario();
+
+    }
+
+    // Sunlight above the air, in the renderer's units: sunlit ground of albedo a shows as a * 2.4 before the air dims
+    // it. The air gives the sun its colour, so above it the light is white.
+    private static readonly Color SunIlluminance = Color.white * (2.4f * Mathf.PI);
+
+    private void OnDestroy() {
+
+        _ground?.Dispose();
+        _atmosphere?.Dispose();
+        _survey?.Dispose();
 
     }
 
@@ -116,13 +153,19 @@ public sealed class MapView : MonoBehaviour {
         AdvanceClock(Time.unscaledDeltaTime * WarpRates[_warp]);
         Predict();
 
-        _mapCamera.Update(_time, Time.unscaledDeltaTime, pointerFree: true);
+        if (_flying) {
 
-        foreach (BodyView view in _bodyViews) {
+            _freeCamera.Update(_time, Time.unscaledDeltaTime);
 
-            view.Draw(_time);
+        } else {
+
+            _mapCamera.Update(_time, Time.unscaledDeltaTime, pointerFree: true);
 
         }
+
+        _atmosphere.Update(_time);
+        _ground.Draw(_time, _camera);
+        _seleneView.Draw(_time);
 
         _bodyOrbitLines.Draw(_bodyOrbits, _time, _ => BodyOrbit);
 
@@ -149,10 +192,39 @@ public sealed class MapView : MonoBehaviour {
 
     internal void Frame(int focus, float yaw, float pitch, float distance) {
 
+        _flying = false;
         FocusOn(focus, glide: false);
         _mapCamera.SetView(yaw, pitch, distance);
 
     }
+
+    /// <summary>Capture hook: flies the free camera to a place at a local solar time (hours). The scenario restarts without
+    /// its planned burn, so the vessel stays in its parking orbit while the clock runs forward to that time.</summary>
+    internal void Look(double latitude, double longitude, double altitude, double heading, double pitch, double solarHour) {
+
+        StartScenario();
+        _node = null;
+
+        double day = _terra.RotationPeriodSeconds;
+        double target = ((solarHour - 12.0) * 15.0 - longitude) / 360.0 * day;
+
+        target = _time + ((target - _time) % day + day) % day;
+
+        for (int i = 0; i < 100 && _time < target; i++) {
+
+            AdvanceClock(target - _time);
+
+        }
+
+        _warp = 0;
+        _flying = true;
+        _freeCamera.Place(_terra, latitude, longitude, altitude, heading, pitch);
+
+    }
+
+    internal GroundView Ground => _ground;
+
+    internal Atmosphere Atmosphere => _atmosphere;
 
     private static Color Dim(Color color) => new Color(color.r, color.g, color.b, 0.3f);
 
@@ -166,8 +238,25 @@ public sealed class MapView : MonoBehaviour {
 
         }
 
+        if (keys.fKey.wasPressedThisFrame) {
+
+            _flying = !_flying;
+
+            if (_flying) {
+
+                _freeCamera.Enter(_terra, _time);
+
+            } else {
+
+                FocusOn(_focusIndex, glide: false);
+
+            }
+
+        }
+
         if (keys.tabKey.wasPressedThisFrame) {
 
+            _flying = false;
             FocusOn((_focusIndex + 1) % 3, glide: true);
 
         }
@@ -445,9 +534,15 @@ public sealed class MapView : MonoBehaviour {
 
         }
 
-        foreach (BodyView view in _bodyViews) {
+        foreach (CelestialBody body in new[] { _terra, _selene }) {
 
-            CelestialBody body = view.Body;
+            // Flying over Terra, its label would sit on the horizon.
+            if (_flying && body == _terra) {
+
+                continue;
+
+            }
+
             Vector3 top = MapSpace.ToScene(body.PositionAt(_time)) + _camera.transform.up * (float)(body.Radius / MapSpace.MetresPerUnit);
 
             _markers.Add(new Hud.Marker(top, body.Name.ToUpperInvariant(), "body"));

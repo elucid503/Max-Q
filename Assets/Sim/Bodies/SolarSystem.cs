@@ -1,18 +1,21 @@
 using System;
 
 using MaxQ.Sim.Orbits;
+using MaxQ.Sim.Surface;
 
 namespace MaxQ.Sim.Bodies;
 
 /// <summary>The 1/5-scale Earth-Moon system: radii and distances divided by five, surface gravity kept real.</summary>
 public static class SolarSystem {
 
-    public static (CelestialBody Terra, CelestialBody Selene) Create() {
+    public const double TerraRadius = 1_274_200.0;
 
-        const double terraRadius = 1_274_200.0;
+    public static (CelestialBody Terra, CelestialBody Selene) Create(Terrain? terraTerrain = null) {
+
+        const double terraRadius = TerraRadius;
         const double seleneRadius = 347_420.0;
 
-        CelestialBody terra = new CelestialBody("Terra", 9.81 * terraRadius * terraRadius, terraRadius, 86_400.0);
+        CelestialBody terra = new CelestialBody("Terra", 9.81 * terraRadius * terraRadius, terraRadius, 86_400.0, terrain: terraTerrain);
 
         Orbit seleneOrbit = Orbit.FromElements(
 

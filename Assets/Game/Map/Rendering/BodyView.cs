@@ -2,27 +2,15 @@ using System;
 using System.Collections.Generic;
 
 using MaxQ.Sim.Bodies;
-using MaxQ.Sim.Numerics;
+using MaxQ.Sim.Surface;
 
 using UnityEngine;
 using UnityEngine.Rendering;
 
 namespace MaxQ.Game.Map.Rendering;
 
-/// <summary>A body drawn as a cube-sphere, one textured face per cube side, placed and spun each frame.</summary>
+/// <summary>A body without a survey, drawn as a cube-sphere with one texture per cube face, placed and spun each frame.</summary>
 public sealed class BodyView {
-
-    // Normal, right and up of each cube face, in the sim frame; the face textures must be baked the same way.
-    private static readonly (Vector3d Normal, Vector3d Right, Vector3d Up)[] Faces = {
-
-        (new Vector3d(1.0, 0.0, 0.0), new Vector3d(0.0, 1.0, 0.0), new Vector3d(0.0, 0.0, 1.0)),
-        (new Vector3d(-1.0, 0.0, 0.0), new Vector3d(0.0, 0.0, 1.0), new Vector3d(0.0, 1.0, 0.0)),
-        (new Vector3d(0.0, 1.0, 0.0), new Vector3d(0.0, 0.0, 1.0), new Vector3d(1.0, 0.0, 0.0)),
-        (new Vector3d(0.0, -1.0, 0.0), new Vector3d(1.0, 0.0, 0.0), new Vector3d(0.0, 0.0, 1.0)),
-        (new Vector3d(0.0, 0.0, 1.0), new Vector3d(1.0, 0.0, 0.0), new Vector3d(0.0, 1.0, 0.0)),
-        (new Vector3d(0.0, 0.0, -1.0), new Vector3d(0.0, 1.0, 0.0), new Vector3d(1.0, 0.0, 0.0)),
-
-    };
 
     private const int FaceResolution = 96;
 
@@ -58,23 +46,7 @@ public sealed class BodyView {
     public void Draw(double time) {
 
         _transform.position = MapSpace.ToScene(Body.PositionAt(time));
-        _transform.rotation = Quaternion.AngleAxis(-(float)(RotationAngle(time) * 180.0 / Math.PI), Vector3.up);
-
-    }
-
-    /// <summary>Eastward rotation of the body-fixed frame from the sim frame, in radians.</summary>
-    private double RotationAngle(double time) {
-
-        if (Body.Orbit != null && Math.Abs(Body.RotationPeriodSeconds - Body.Orbit.Period) < 1.0) {
-
-            // Tidally locked: the prime meridian always faces the parent.
-            Vector3d toParent = -Body.Orbit.StateAt(time).Position;
-
-            return Math.Atan2(toParent.Y, toParent.X);
-
-        }
-
-        return 2.0 * Math.PI * (time / Body.RotationPeriodSeconds % 1.0);
+        _transform.rotation = Quaternion.AngleAxis(-(float)(Body.RotationAt(time) * 180.0 / Math.PI), Vector3.up);
 
     }
 
@@ -92,7 +64,6 @@ public sealed class BodyView {
         for (int face = 0; face < 6; face++) {
 
             int start = vertices.Count;
-            (Vector3d normal, Vector3d right, Vector3d up) = Faces[face];
 
             for (int row = 0; row < n; row++) {
 
@@ -101,7 +72,7 @@ public sealed class BodyView {
                     double s = col * 2.0 / FaceResolution - 1.0;
                     double t = 1.0 - row * 2.0 / FaceResolution;
 
-                    Vector3 direction = MapSpace.Direction((normal + right * s + up * t).Normalized);
+                    Vector3 direction = MapSpace.Direction(CubeFace.Direction(face, s, t));
 
                     vertices.Add(direction * radius);
                     normals.Add(direction);

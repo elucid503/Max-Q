@@ -1,0 +1,3 @@
+Ground materials from ambientCG (https://ambientcg.com), CC0 1.0 Universal:
+Grass004 (grass), Ground037 (forest), Ground109 (soil), Ground093C (sand), Rock030 (rock), Snow010A (snow).
+Packed for Max-Q: colour darkened by its ambient occlusion with displacement in alpha; normals as published (OpenGL).

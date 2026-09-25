@@ -9,15 +9,22 @@ patched conics, 1/5 Earth scale. Personal project, never distributed. Successor 
 - `Assets/Sim/` - assembly `MaxQ.Sim`, `noEngineReferences: true`. All physics and orbital
   mechanics. **No `UnityEngine` reference** - the compiler enforces it.
   - `Numerics/` vectors and maths types, `Orbits/` conics, patches, maneuvers and prediction,
-    `Bodies/` celestial bodies and the system catalogue, `Vessels/` vessels, `Compatibility/` polyfills.
+    `Bodies/` celestial bodies and the system catalogue, `Surface/` the terrain function (memory-mapped
+    survey plus procedural relief; Burst-compatible, so the renderer and physics share it), `Vessels/`
+    vessels, `Compatibility/` polyfills.
   - `Tests/` - assembly `MaxQ.Sim.Tests`, EditMode tests mirroring the sim folders.
 - `Assets/Game/` - assembly `MaxQ.Game`. Rendering, input, UI. No physics.
-  - `Map/` the map view (`Rendering/` bodies and lines, `Overlay/` HUD), `Diagnostics/` capture
-    tooling, `Editor/` setup and build, `Scenes/`, `Settings/` (pipeline, materials, UI panel), `Art/`.
+  - `Map/` the map view and free camera (`Rendering/` bodies and lines, `Overlay/` HUD), `Planet/`
+    surveyed bodies (`Ground/` CDLOD quadtree, Burst patch jobs, streamed colour tiles, ground and water
+    shaders; `Sky/` atmosphere tables and RenderGraph passes), `Diagnostics/` capture tooling, `Editor/`
+    setup, build and tile baking, `Scenes/`, `Settings/` (pipeline, materials, UI panel), `Art/`.
 - `Assets/csc.rsp` raises C# to 10 (file-scoped namespaces); it must stay at the Assets root.
 - `tools/` - `run.sh` runs the game without the editor, rebuilding the player first when sources
   changed (extra args go to the player); `build.sh` builds the player, or runs the sim tests with
-  `--tests [results.xml]`. The engine path lives in `build.sh` (override with `UNITY=`).
+  `--tests [results.xml]`. The engine path lives in `build.sh` (override with `UNITY=`). `terra.sh`
+  downloads Terra's sources and bakes them (`terra_bake.py`, then BC7 tiles in Unity).
+- `Data/` - gitignored. `Sources/` downloads and bake intermediates; `Terra/` the baked survey
+  (`elevation.i16`, `water.i16`) and colour tiles (`colour.tiles`) the game streams at runtime.
 
 Group by feature, not by file type: a feature's code, shader and stylesheet live together. When a
 folder collects more than a handful of files, split it into subfolders. Namespaces mirror folders

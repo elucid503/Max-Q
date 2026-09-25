@@ -11,3 +11,4 @@
 *.slnx
 *.user
 __pycache__/
+/[Dd]ata/

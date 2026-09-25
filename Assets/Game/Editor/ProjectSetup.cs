@@ -20,6 +20,10 @@ public static class ProjectSetup {
     private const string Interface = "Assets/Game/Settings/UI";
     private const string Art = "Assets/Game/Art";
     private const string ScenePath = "Assets/Game/Scenes/Map.unity";
+    private const string Sky = "Assets/Game/Planet/Sky";
+
+    // Slice order of the ground material arrays; GroundMaterials.hlsl names the same slices.
+    private static readonly string[] GroundMaterials = { "grass", "forest", "soil", "sand", "rock", "snow" };
 
     [MenuItem("Max-Q/Rebuild Project Setup")]
     public static void Run() {
@@ -32,9 +36,15 @@ public static class ProjectSetup {
 
         ConfigurePipeline();
         ConfigureTextures();
+        PlayerSettings.enableFrameTimingStats = true;
 
         Material surface = SaveMaterial(new Material(Shader.Find("Universal Render Pipeline/Lit")), "Surface");
         Material line = SaveMaterial(new Material(Shader.Find("MaxQ/MapLine")), "MapLine");
+        Material groundTemplate = new Material(Shader.Find("MaxQ/Ground"));
+        groundTemplate.SetTexture("_GroundAlbedo", GroundArray("albedo_height", false, "Ground Albedo"));
+        groundTemplate.SetTexture("_GroundNormal", GroundArray("normal", true, "Ground Normals"));
+        Material ground = SaveMaterial(groundTemplate, "Ground");
+        Material water = SaveMaterial(new Material(Shader.Find("MaxQ/Water")), "Water");
 
         Material sky = new Material(Shader.Find("Skybox/Panoramic"));
         sky.SetTexture("_MainTex", AssetDatabase.LoadAssetAtPath<Texture2D>($"{Art}/Sky/stars.png"));
@@ -42,7 +52,7 @@ public static class ProjectSetup {
         sky.SetFloat("_Exposure", 1.0f);
         sky = SaveMaterial(sky, "Sky");
 
-        BuildScene(surface, line, sky);
+        BuildScene(surface, line, sky, ground, water);
 
         AssetDatabase.SaveAssets();
         Debug.Log("Max-Q setup complete");
@@ -54,7 +64,8 @@ public static class ProjectSetup {
         UniversalRendererData renderer = LoadOrCreate($"{Rendering}/Renderer.asset", () => ScriptableObject.CreateInstance<UniversalRendererData>());
         UniversalRenderPipelineAsset pipeline = LoadOrCreate($"{Rendering}/Pipeline.asset", () => UniversalRenderPipelineAsset.Create(renderer));
 
-        pipeline.msaaSampleCount = 4;
+        // Anti-aliasing is SMAA on the camera: the atmosphere composites over a resolved, single-sample target.
+        pipeline.msaaSampleCount = 1;
         pipeline.supportsHDR = true;
         pipeline.shadowDistance = 0.0f;
         EditorUtility.SetDirty(pipeline);
@@ -72,19 +83,6 @@ public static class ProjectSetup {
 
     private static void ConfigureTextures() {
 
-        foreach (string guid in AssetDatabase.FindAssets("t:Texture2D", new[] { $"{Art}/Terra", $"{Art}/Selene" })) {
-
-            string path = AssetDatabase.GUIDToAssetPath(guid);
-            TextureImporter importer = (TextureImporter)AssetImporter.GetAtPath(path);
-
-            importer.maxTextureSize = 4096;
-            importer.wrapMode = TextureWrapMode.Clamp;
-            importer.anisoLevel = 8;
-            importer.textureCompression = TextureImporterCompression.CompressedHQ;
-            importer.SaveAndReimport();
-
-        }
-
         TextureImporter stars = (TextureImporter)AssetImporter.GetAtPath($"{Art}/Sky/stars.png");
         stars.maxTextureSize = 8192;
         stars.mipmapEnabled = false;
@@ -95,7 +93,69 @@ public static class ProjectSetup {
 
     }
 
-    private static void BuildScene(Material surface, Material line, Material sky) {
+    // Packs one map of every ground material into a mipmapped array, copying the compressed imports block for block.
+    private static Texture2DArray GroundArray(string map, bool normal, string name) {
+
+        Texture2D[] sources = new Texture2D[GroundMaterials.Length];
+
+        for (int i = 0; i < sources.Length; i++) {
+
+            string path = $"{Art}/Ground/{GroundMaterials[i]}_{map}.png";
+            TextureImporter importer = (TextureImporter)AssetImporter.GetAtPath(path);
+
+            importer.textureType = normal ? TextureImporterType.NormalMap : TextureImporterType.Default;
+            importer.sRGBTexture = !normal;
+            importer.isReadable = true;
+            importer.mipmapEnabled = true;
+            importer.maxTextureSize = 1024;
+            importer.textureCompression = TextureImporterCompression.CompressedHQ;
+            importer.SaveAndReimport();
+
+            sources[i] = AssetDatabase.LoadAssetAtPath<Texture2D>(path);
+
+        }
+
+        Texture2D first = sources[0];
+        Texture2DArray array = new Texture2DArray(first.width, first.height, sources.Length, first.format, true, normal) {
+
+            name = name,
+            wrapMode = TextureWrapMode.Repeat,
+            filterMode = FilterMode.Trilinear,
+            anisoLevel = 8,
+
+        };
+
+        for (int slice = 0; slice < sources.Length; slice++) {
+
+            for (int mip = 0; mip < first.mipmapCount; mip++) {
+
+                array.SetPixelData(sources[slice].GetPixelData<byte>(mip), mip, slice);
+
+            }
+
+        }
+
+        array.Apply(false, false);
+
+        string target = $"{Materials}/{name}.asset";
+        Texture2DArray existing = AssetDatabase.LoadAssetAtPath<Texture2DArray>(target);
+
+        if (existing == null) {
+
+            AssetDatabase.CreateAsset(array, target);
+
+            return array;
+
+        }
+
+        EditorUtility.CopySerialized(array, existing);
+        EditorUtility.SetDirty(existing);
+
+        return existing;
+
+    }
+
+    private static void BuildScene(Material surface, Material line, Material sky, Material ground, Material water) {
 
         EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
@@ -103,7 +163,28 @@ public static class ProjectSetup {
         Camera camera = cameraObject.AddComponent<Camera>();
         camera.clearFlags = CameraClearFlags.Skybox;
         camera.fieldOfView = 50.0f;
-        cameraObject.AddComponent<UniversalAdditionalCameraData>();
+
+        UniversalAdditionalCameraData cameraData = cameraObject.AddComponent<UniversalAdditionalCameraData>();
+        cameraData.renderPostProcessing = true;
+        cameraData.antialiasing = AntialiasingMode.SubpixelMorphologicalAntiAliasing;
+        cameraData.antialiasingQuality = AntialiasingQuality.High;
+
+        // Sunlit ground, a daylit sky and the sun's disk span a wide range; neutral tonemapping keeps hues.
+        VolumeProfile profile = LoadOrCreate($"{Rendering}/Map Volume.asset", () => ScriptableObject.CreateInstance<VolumeProfile>());
+
+        if (!profile.TryGet(out Tonemapping tonemapping)) {
+
+            tonemapping = profile.Add<Tonemapping>();
+            AssetDatabase.AddObjectToAsset(tonemapping, profile);
+
+        }
+
+        tonemapping.mode.Override(TonemappingMode.Neutral);
+        EditorUtility.SetDirty(profile);
+
+        Volume volume = new GameObject("Post Processing").AddComponent<Volume>();
+        volume.isGlobal = true;
+        volume.sharedProfile = profile;
 
         PanelSettings panel = LoadOrCreate($"{Interface}/Hud Panel.asset", () => ScriptableObject.CreateInstance<PanelSettings>());
         panel.scaleMode = PanelScaleMode.ScaleWithScreenSize;
@@ -116,9 +197,12 @@ public static class ProjectSetup {
         map.AddComponent<UIDocument>().panelSettings = panel;
 
         SerializedObject view = new SerializedObject(map.AddComponent<MapView>());
-        SetArray(view.FindProperty("_terraFaces"), Faces("Terra"));
         SetArray(view.FindProperty("_seleneFaces"), Faces("Selene"));
         view.FindProperty("_surfaceMaterial").objectReferenceValue = surface;
+        view.FindProperty("_groundMaterial").objectReferenceValue = ground;
+        view.FindProperty("_waterMaterial").objectReferenceValue = water;
+        view.FindProperty("_atmosphereTables").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>($"{Sky}/AtmosphereLuts.shader");
+        view.FindProperty("_atmosphereSky").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>($"{Sky}/AtmosphereSky.shader");
         view.FindProperty("_lineMaterial").objectReferenceValue = line;
         view.FindProperty("_skyMaterial").objectReferenceValue = sky;
         view.FindProperty("_hudStyle").objectReferenceValue = AssetDatabase.LoadAssetAtPath<StyleSheet>("Assets/Game/Map/Overlay/Hud.uss");
