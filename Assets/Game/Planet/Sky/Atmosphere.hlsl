@@ -4,6 +4,7 @@
 #define MAXQ_ATMOSPHERE_INCLUDED
 
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Shadows.hlsl"
 
 #define ATMOSPHERE_HEIGHT 100.0
 #define RAYLEIGH_SCATTERING float3(5.802e-3, 13.558e-3, 33.1e-3)
@@ -161,6 +162,19 @@ float3 SunTransmittance(float3 position, float3 sun) {
 
 }
 
+// Sun visibility past the ground's cascaded shadows; one wherever the cascades do not reach.
+float SunShadow(float3 positionWS) {
+
+    #if defined(_MAIN_LIGHT_SHADOWS_CASCADE)
+    float4 coord = TransformWorldToShadowCoord(positionWS);
+
+    return lerp(MainLightRealtimeShadow(coord), 1.0, GetMainLightShadowFade(positionWS));
+    #else
+    return 1.0;
+    #endif
+
+}
+
 float2 AltitudeSunUv(float r, float muSun, float2 size) {
 
     return float2(UnitToTexel(muSun * 0.5 + 0.5, size.x), UnitToTexel(saturate((r - _PlanetRadius) / ATMOSPHERE_HEIGHT), size.y));
@@ -188,8 +202,9 @@ struct Scattering {
 };
 
 // Light scattered toward the origin along a ray, per unit of sun illuminance, and the ray's transmittance. Steps
-// crowd toward the origin when it is inside the air, where the air is densest.
-Scattering Integrate(float3 origin, float3 direction, float tMax, float3 sun, int steps, bool multiScatter) {
+// crowd toward the origin when it is inside the air, where the air is densest. Each step samples at jitter (0 to 1) of
+// its length; with shadows, the ground's cascaded shadows carve the sunlight, so mountains cast shafts into the haze.
+Scattering Integrate(float3 origin, float3 direction, float tMax, float3 sun, int steps, bool multiScatter, float jitter = 0.3, bool shadows = false) {
 
     Scattering result;
     result.radiance = 0.0;
@@ -230,12 +245,20 @@ Scattering Integrate(float3 origin, float3 direction, float tMax, float3 sun, in
         float f = (i + 1.0) / steps;
         float t = start + (end - start) * (inside ? f * f : f);
         float dt = t - previous;
-        float3 p = origin + direction * (previous + 0.3 * dt);
+        float3 p = origin + direction * (previous + jitter * dt);
         float r = length(p);
         float muSun = dot(p, sun) / r;
 
         Medium medium = SampleMedium(r - _PlanetRadius);
-        float3 source = (medium.rayleigh * rayleighPhase + medium.mie * miePhase) * SunTransmittance(p, sun);
+        float3 sunlight = SunTransmittance(p, sun);
+
+        if (shadows) {
+
+            sunlight *= SunShadow(p + _PlanetCentre);
+
+        }
+
+        float3 source = (medium.rayleigh * rayleighPhase + medium.mie * miePhase) * sunlight;
 
         if (multiScatter) {
 

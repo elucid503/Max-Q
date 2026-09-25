@@ -40,8 +40,10 @@ public sealed class MapView : MonoBehaviour {
     [SerializeField] private Material _surfaceMaterial;
     [SerializeField] private Material _groundMaterial;
     [SerializeField] private Material _waterMaterial;
+    [SerializeField] private Material _rockMaterial;
     [SerializeField] private Shader _atmosphereTables;
     [SerializeField] private Shader _atmosphereSky;
+    [SerializeField] private ComputeShader _exposure;
     [SerializeField] private Material _lineMaterial;
     [SerializeField] private Material _skyMaterial;
     [SerializeField] private StyleSheet _hudStyle;
@@ -62,6 +64,7 @@ public sealed class MapView : MonoBehaviour {
     private Survey _survey;
     private GroundView _ground;
     private Atmosphere _atmosphere;
+    private Sun _sun;
     private BodyView _seleneView;
     private FreeCamera _freeCamera;
     private bool _flying;
@@ -93,8 +96,8 @@ public sealed class MapView : MonoBehaviour {
         _mapCamera = new MapCamera(_camera);
         _freeCamera = new FreeCamera(_camera);
 
-        _atmosphere = new Atmosphere(_terra, _atmosphereTables, _atmosphereSky, MapSpace.Direction(Vector3d.UnitX), SunIlluminance);
-        _ground = new GroundView(_terra, new ColourTiles(Path.Combine(data, "colour.tiles")), _groundMaterial, _waterMaterial);
+        _atmosphere = new Atmosphere(_terra, _atmosphereTables, _atmosphereSky, _exposure, MapSpace.Direction(Vector3d.UnitX), SunIlluminance);
+        _ground = new GroundView(_terra, new ColourTiles(Path.Combine(data, "colour.tiles")), _groundMaterial, _waterMaterial, _rockMaterial);
         _seleneView = new BodyView(_selene, _seleneFaces, _surfaceMaterial, 0.0f);
 
         _actualLines = new OrbitLines("Trajectory", _lineMaterial);
@@ -109,11 +112,7 @@ public sealed class MapView : MonoBehaviour {
         RenderSettings.ambientLight = new Color(0.025f, 0.028f, 0.035f);
 
         // Sunlight travels along -X in the sim frame.
-        Light sun = new GameObject("Sun").AddComponent<Light>();
-        sun.type = LightType.Directional;
-        sun.intensity = 1.6f;
-        sun.color = new Color(1.0f, 0.97f, 0.92f);
-        sun.transform.rotation = Quaternion.LookRotation(MapSpace.Direction(-Vector3d.UnitX));
+        _sun = new Sun(MapSpace.Direction(Vector3d.UnitX));
 
         StartScenario();
 
@@ -163,8 +162,9 @@ public sealed class MapView : MonoBehaviour {
 
         }
 
-        _atmosphere.Update(_time);
-        _ground.Draw(_time, _camera);
+        _atmosphere.Update(_time, _camera.transform.position);
+        _ground.Draw(_time, _camera, MapSpace.Direction(Vector3d.UnitX));
+        _sun.Fit(_ground.CameraAltitude / MapSpace.MetresPerUnit, _terra.Radius / MapSpace.MetresPerUnit);
         _seleneView.Draw(_time);
 
         _bodyOrbitLines.Draw(_bodyOrbits, _time, _ => BodyOrbit);
@@ -225,6 +225,8 @@ public sealed class MapView : MonoBehaviour {
     internal GroundView Ground => _ground;
 
     internal Atmosphere Atmosphere => _atmosphere;
+
+    internal Sun Sun => _sun;
 
     private static Color Dim(Color color) => new Color(color.r, color.g, color.b, 0.3f);
 

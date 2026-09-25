@@ -22,8 +22,11 @@ public readonly unsafe struct Terrain {
     // Land a water sheet can reach always stands this far clear of it, so the sheet never shows through the shore.
     private const double ShoreClearance = 0.05;
 
-    // Mip whose posts the slope that scales the relief is measured across (~370 m on Terra).
+    // Mip whose posts the slope that shapes the relief is measured across (~370 m on Terra).
     private const int SlopeMip = 2;
+
+    // Distance from the axis, as a share of the radius, inside which the slope stops shaping the relief (~2.5 km on Terra).
+    private const double PoleFade = 0.002;
 
     private readonly IntPtr _elevation;
     private readonly IntPtr _water;
@@ -51,7 +54,7 @@ public readonly unsafe struct Terrain {
         GridPosition(direction, out double row, out double column, out double latitude);
 
         double survey = Survey(row, column, latitude, footprint);
-        double height = survey * VerticalScale + Relief.Detail(direction * Radius, footprint, Slope(row, column, latitude));
+        double height = survey * VerticalScale + Relief.Detail(direction * Radius, footprint, Gradient(direction, row, column, latitude));
         double level = WaterLevel(row, column);
 
         if (!double.IsNaN(level) && survey >= level) {
@@ -102,8 +105,9 @@ public readonly unsafe struct Terrain {
 
     }
 
-    // Rise over run at SlopeMip; horizontal and vertical are both at body scale, so this is the real-world slope.
-    private double Slope(double row, double column, double latitude) {
+    // Uphill rise over run at SlopeMip, along the ground; horizontal and vertical are both at body scale, so its length
+    // is the real-world slope.
+    private Vector3d Gradient(Vector3d direction, double row, double column, double latitude) {
 
         double scale = 1 << SlopeMip;
         double r = (row + 0.5) / scale - 0.5;
@@ -116,7 +120,14 @@ public readonly unsafe struct Terrain {
         east /= run * Math.Max(Math.Cos(latitude), 0.01);
         north /= run;
 
-        return VerticalScale * Math.Sqrt(east * east + north * north);
+        double across = Math.Max(Math.Sqrt(direction.X * direction.X + direction.Y * direction.Y), 1e-9);
+        Vector3d eastward = new Vector3d(-direction.Y / across, direction.X / across, 0.0);
+        Vector3d northward = Vector3d.Cross(direction, eastward);
+
+        // A latitude-longitude gradient has no one direction at a pole, so it fades out just short of each.
+        double pole = Math.Min(across / PoleFade, 1.0);
+
+        return (eastward * east + northward * north) * (VerticalScale * pole);
 
     }
 

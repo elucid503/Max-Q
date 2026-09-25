@@ -12,6 +12,7 @@ Shader "MaxQ/Water" {
         _Level ("Level", Float) = 0
         _TileOriginNear ("Near Tile Origin", Vector) = (0, 0, 0, 0)
         _TileOriginFar ("Far Tile Origin", Vector) = (0, 0, 0, 0)
+        _WaveOrigin ("Wave Origin", Vector) = (0, 0, 0, 0)
 
     }
 
@@ -29,14 +30,17 @@ Shader "MaxQ/Water" {
             #pragma target 4.5
             #pragma vertex GroundVertex
             #pragma fragment Frag
+            #pragma multi_compile _ _MAIN_LIGHT_SHADOWS_CASCADE
+            #pragma multi_compile_fragment _ _SHADOWS_SOFT
 
             #include "Ground.hlsl"
 
             float4 Frag(GroundVaryings input) : SV_Target {
 
+                float footprint = PixelFootprint(input.positionWS);
                 GroundDetail detail = SampleDetail(input.uv, input.morph);
                 Sunlight light = SunlightAt(input.positionWS);
-                float3 water = WaterRadiance(input.positionWS, detail.waterDepth, SatelliteColour(input.uv), light);
+                float3 water = WaterRadiance(input.positionOS, input.positionWS, footprint, detail.waterDepth, SatelliteColour(input.uv), light);
                 float wet = Wetness(detail);
 
                 // On a coarse patch the sheet can lie over ground the detail says is dry; shade that as land.
@@ -46,7 +50,7 @@ Shader "MaxQ/Water" {
 
                 }
 
-                return float4(lerp(GroundRadiance(SatelliteColour(input.uv), detail.normalWS, light), water, wet), 1.0);
+                return float4(lerp(GroundRadiance(SatelliteColour(input.uv), detail.normalWS, light, Surroundings(input.uv), detail.occlusion), water, wet), 1.0);
 
             }
 

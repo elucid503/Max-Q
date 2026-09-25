@@ -1,0 +1,117 @@
+// The eye's adaptation: a histogram of the frame's luminance, trimmed of its darkest and brightest pixels, sets the
+// exposure the next frame's composite applies, but never so high that the frame's highlights (a planet's sunlit side
+// against space, a sunlit peak above a shaded valley) burn out. The sun's disk falls outside the trimmed range. Above
+// the air the eye keeps to daylight exposure, as photographs from orbit do: a dark ocean is dark, not grey.
+#pragma kernel Histogram
+#pragma kernel Adapt
+
+#define BINS 64
+#define MIN_EV -14.0
+#define MAX_EV 6.0
+#define STRIDE 4
+
+// Share of the counted pixels ignored at each end.
+#define DARKEST 0.4
+#define BRIGHTEST 0.05
+
+// Luminance the trimmed average shows as, and the most the highlights may show as.
+#define KEY 0.18
+#define HIGHLIGHT_KEY 0.9
+#define HIGHLIGHT 0.9
+
+// Exposure never strays more than this many stops from daylight's, so dusk still reads as dusk.
+#define MIN_STOPS -1.5
+#define MAX_STOPS 2.0
+
+// Seconds for the eye to close most of the gap, brightening and darkening.
+#define BRIGHTEN_TIME 1.2
+#define DARKEN_TIME 0.5
+
+Texture2D<float4> _Source;
+RWStructuredBuffer<uint> _Histogram;
+RWStructuredBuffer<float> _Exposure;
+float4 _SourceSize;
+
+// Whether the camera is inside the air, where the eye adapts; above it, exposure returns to daylight's.
+float _Adapting;
+float _DeltaTime;
+
+groupshared uint bins[BINS];
+
+[numthreads(16, 16, 1)]
+void Histogram(uint3 id : SV_DispatchThreadID, uint index : SV_GroupIndex) {
+
+    if (index < BINS) {
+
+        bins[index] = 0;
+
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    uint2 pixel = id.xy * STRIDE + STRIDE / 2;
+
+    if (all(pixel < (uint2)_SourceSize.xy)) {
+
+        float luminance = dot(_Source[pixel].rgb / _Exposure[0], float3(0.2126, 0.7152, 0.0722));
+        float ev = log2(max(luminance, 1e-12));
+
+        if (ev > MIN_EV) {
+
+            InterlockedAdd(bins[min((uint)((ev - MIN_EV) / (MAX_EV - MIN_EV) * BINS), BINS - 1)], 1);
+
+        }
+
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    if (index < BINS) {
+
+        InterlockedAdd(_Histogram[index], bins[index]);
+
+    }
+
+}
+
+[numthreads(1, 1, 1)]
+void Adapt() {
+
+    uint total = 0;
+
+    for (uint i = 0; i < BINS; i++) {
+
+        total += _Histogram[i];
+
+    }
+
+    float low = total * DARKEST;
+    float high = total * (1.0 - BRIGHTEST);
+    float highlight = total * HIGHLIGHT;
+    float highlightEv = MAX_EV;
+    float below = 0.0;
+    float sum = 0.0;
+    float count = 0.0;
+
+    for (uint b = 0; b < BINS; b++) {
+
+        float n = _Histogram[b];
+        float kept = clamp(below + n, low, high) - clamp(below, low, high);
+
+        float ev = MIN_EV + (b + 0.5) * (MAX_EV - MIN_EV) / BINS;
+
+        sum += kept * ev;
+        count += kept;
+        highlightEv = below < highlight && below + n >= highlight ? ev : highlightEv;
+        below += n;
+        _Histogram[b] = 0;
+
+    }
+
+    float target = total == 0 || _Adapting == 0.0 ? 0.0 : clamp(min(log2(KEY) - sum / max(count, 1.0), log2(HIGHLIGHT_KEY) - highlightEv), MIN_STOPS, MAX_STOPS);
+    float current = log2(_Exposure[0]);
+    float time = target > current ? BRIGHTEN_TIME : DARKEN_TIME;
+
+    _Exposure[0] = exp2(lerp(current, target, 1.0 - exp(-_DeltaTime / time)));
+
+}

@@ -9,15 +9,19 @@ using UnityEngine;
 
 namespace MaxQ.Game.Diagnostics;
 
-/// <summary>Scripted screenshots for headless review: run the player with <c>-capture &lt;dir&gt;</c>. Each shot waits for the
+/// <summary>Scripted screenshots for headless review: run the player with <c>-capture &lt;dir&gt;</c>, optionally
+/// <c>-only &lt;text&gt;</c> to keep just the shots whose names contain it. Each shot waits for the
 /// ground to finish streaming, then logs GPU time to timings.txt beside the images: the whole frame, and what the frame
-/// saves without the ground and without the atmosphere.</summary>
+/// saves without the ground, without the atmosphere and without the sun's shadows.</summary>
 public sealed class Capture : MonoBehaviour {
 
     private const int SettleFrameLimit = 900;
     private const int TimedFrames = 60;
+    private const int AdaptFrames = 240;
 
     private string _directory;
+    private string _only;
+    private float _settleSeconds;
     private readonly List<string> _timings = new List<string>();
     private readonly FrameTiming[] _frameTimings = new FrameTiming[1];
 
@@ -35,6 +39,9 @@ public sealed class Capture : MonoBehaviour {
 
         Capture capture = new GameObject("Capture").AddComponent<Capture>();
         capture._directory = args[index + 1];
+
+        int only = Array.IndexOf(args, "-only");
+        capture._only = only >= 0 && only + 1 < args.Length ? args[only + 1] : null;
 
     }
 
@@ -67,6 +74,13 @@ public sealed class Capture : MonoBehaviour {
         yield return Fly(map, "big-sur-100m", 36.1, -121.62, 100.0, 140.0, -4.0, 16.0);
         yield return Fly(map, "alps-2m", 46.58, 7.91, 2.0, 170.0, 6.0, 10.0);
         yield return Fly(map, "grand-canyon-sunset-2m", 36.06, -112.11, 2.0, 280.0, 2.0, 17.7);
+        yield return Fly(map, "himalaya-dusk-30km", 28.0, 86.5, 30_000.0, 60.0, -12.0, 17.3);
+        yield return Fly(map, "alps-evening-2m", 46.58, 7.91, 2.0, 60.0, 4.0, 17.2);
+        yield return Fly(map, "sea-glitter-300m", 36.0, -122.2, 300.0, 255.0, -10.0, 16.3);
+        yield return Fly(map, "himalaya-shafts-3km", 27.9, 86.9, 3_000.0, 265.0, 1.0, 17.8);
+        yield return Fly(map, "eiger-scree-2m", 46.565, 8.0, 2.0, 200.0, -12.0, 11.0);
+        yield return Fly(map, "pad-ground-2m", 46.6, 7.93, 1.8, 120.0, -35.0, 15.0);
+        yield return Fly(map, "coast-dusk-50m", 36.3, -121.9, 50.0, 250.0, 2.0, 18.35);
 
         File.WriteAllLines(Path.Combine(_directory, "timings.txt"), _timings);
         Application.Quit();
@@ -74,6 +88,12 @@ public sealed class Capture : MonoBehaviour {
     }
 
     private IEnumerator Fly(MapView map, string name, double latitude, double longitude, double altitude, double heading, double pitch, double solarHour) {
+
+        if (_only != null && !name.Contains(_only)) {
+
+            yield break;
+
+        }
 
         map.Look(latitude, longitude, altitude, heading, pitch, solarHour);
 
@@ -83,6 +103,12 @@ public sealed class Capture : MonoBehaviour {
     }
 
     private IEnumerator Shoot(MapView map, string name, int focus, float yaw, float pitch, float distance) {
+
+        if (_only != null && !name.Contains(_only)) {
+
+            yield break;
+
+        }
 
         map.Frame(focus, yaw, pitch, distance);
 
@@ -119,7 +145,9 @@ public sealed class Capture : MonoBehaviour {
 
     }
 
-    private static IEnumerator Settle(MapView map) {
+    private IEnumerator Settle(MapView map) {
+
+        float start = Time.realtimeSinceStartup;
 
         for (int i = 0; i < 4; i++) {
 
@@ -132,6 +160,8 @@ public sealed class Capture : MonoBehaviour {
             yield return null;
 
         }
+
+        _settleSeconds = Time.realtimeSinceStartup - start;
 
     }
 
@@ -152,10 +182,22 @@ public sealed class Capture : MonoBehaviour {
         double withoutAir = gpu[0];
         map.Atmosphere.Enabled = true;
 
+        map.Sun.Shadows = false;
+        yield return MeasureGpu(gpu);
+        double withoutShadows = gpu[0];
+        map.Sun.Shadows = true;
+
         yield return MeasureGpu(gpu);
 
-        _timings.Add($"{name}: frame {frame:F2} ms GPU, ground {frame - withoutGround:F2} ms, atmosphere {frame - withoutAir:F2} ms; " +
-            $"{map.Ground.ShownCount} patches drawn, {map.Ground.PatchCount} built, {map.Ground.Pending} pending");
+        // The eye readapts to the whole view after the timings hid parts of it.
+        for (int i = 0; i < AdaptFrames; i++) {
+
+            yield return null;
+
+        }
+
+        _timings.Add($"{name}: frame {frame:F2} ms GPU, ground {frame - withoutGround:F2} ms, atmosphere {frame - withoutAir:F2} ms, shadows {frame - withoutShadows:F2} ms; " +
+            $"{map.Ground.ShownCount} patches drawn, {map.Ground.PatchCount} built, {map.Ground.Pending} pending, settled in {_settleSeconds:F1} s; exposure {Math.Log(map.Atmosphere.Exposure, 2.0):+0.0;-0.0} EV");
 
         ScreenCapture.CaptureScreenshot(Path.Combine(_directory, name + ".png"));
 

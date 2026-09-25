@@ -15,9 +15,12 @@ patched conics, 1/5 Earth scale. Personal project, never distributed. Successor 
   - `Tests/` - assembly `MaxQ.Sim.Tests`, EditMode tests mirroring the sim folders.
 - `Assets/Game/` - assembly `MaxQ.Game`. Rendering, input, UI. No physics.
   - `Map/` the map view and free camera (`Rendering/` bodies and lines, `Overlay/` HUD), `Planet/`
-    surveyed bodies (`Ground/` CDLOD quadtree, Burst patch jobs, streamed colour tiles, ground and water
-    shaders; `Sky/` atmosphere tables and RenderGraph passes), `Diagnostics/` capture tooling, `Editor/`
-    setup, build and tile baking, `Scenes/`, `Settings/` (pipeline, materials, UI panel), `Art/`.
+    surveyed bodies (`Sun.cs` the shadow-casting light and its per-frame cascade fit; `Ground/` CDLOD
+    quadtree, Burst patch jobs with horizon occlusion and boulder scatter, streamed colour tiles, ground,
+    water and rock shaders; `Sky/` atmosphere tables, RenderGraph passes and eye adaptation),
+    `Diagnostics/` capture tooling (`-only <text>` filters shots), `Editor/` setup, build and tile baking,
+    `Scenes/`, `Settings/` (pipeline, materials, UI panel), `Art/`.
+- Colour space is Linear; lighting is in physical units with auto-exposure, so never tune colours by eye in gamma.
 - `Assets/csc.rsp` raises C# to 10 (file-scoped namespaces); it must stay at the Assets root.
 - `tools/` - `run.sh` runs the game without the editor, rebuilding the player first when sources
   changed (extra args go to the player); `build.sh` builds the player, or runs the sim tests with

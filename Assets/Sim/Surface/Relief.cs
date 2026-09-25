@@ -4,30 +4,46 @@ using MaxQ.Sim.Numerics;
 
 namespace MaxQ.Sim.Surface;
 
-/// <summary>Procedural ground detail below the survey's resolution, scaled by how rough the survey says the land is.</summary>
+/// <summary>Procedural ground detail below the survey's resolution: gullies that run down the survey's slopes and branch
+/// off one another, over gently rolling ground whose roughness follows how steep the survey says the land is.</summary>
 public static class Relief {
 
     // The survey carries everything above ~185 m; detail starts just below that and halves down to a metre.
     private const double LongestWavelength = 256.0;
     private const int Octaves = 9;
 
+    // Gullies are cut at the longer octaves only; below a few metres rolling noise alone roughens the ground.
+    private const int GullyOctaves = 7;
+
     // Amplitude per octave; 0.58 is a Hurst exponent near 0.78, which is what measured relief shows.
     private const double Gain = 0.58;
 
-    // Amplitude over wavelength at the longest octave: a floor for plains plus a share of the survey slope.
+    // Amplitude over wavelength at the longest octave: a floor for plains plus a share of the survey slope, split
+    // between rolling ground and gullies.
     private const double FlatRatio = 0.0006;
     private const double SlopeRatio = 0.18;
+    private const double RollingShare = 0.35;
 
-    // Slopes over which ground goes from rolling to ridged.
-    private const double RidgeStartSlope = 0.04;
-    private const double RidgeFullSlope = 0.25;
+    // Slope below which gullies widen out and fade, so their direction never jumps where the ground levels off.
+    private const double GullySlope = 0.08;
+
+    // How strongly each octave's gullies turn the next octave's, so small gullies branch off the walls of large ones.
+    private const double Branching = 1.5;
+
+    // Gully cells: points jittered this far from each cell's centre, blended within this radius (in cells). With these
+    // values the 27 cells around a point always include every one within reach, and at least one.
+    private const double Jitter = 0.15;
+    private const double Reach = 1.25;
 
     /// <summary>Detail height in metres at body-fixed <paramref name="position"/>, keeping only wavelengths the
-    /// <paramref name="footprint"/> (sample spacing, metres) can carry; a zero footprint keeps them all.</summary>
-    public static double Detail(Vector3d position, double footprint, double slope) {
+    /// <paramref name="footprint"/> (sample spacing, metres) can carry; a zero footprint keeps them all.
+    /// <paramref name="gradient"/> is the survey's uphill slope there, rise over run along the ground.</summary>
+    public static double Detail(Vector3d position, double footprint, Vector3d gradient) {
 
-        double amplitude = LongestWavelength * (FlatRatio + SlopeRatio * slope);
-        double ridged = Saturate((slope - RidgeStartSlope) / (RidgeFullSlope - RidgeStartSlope));
+        Vector3d up = position.Normalized;
+        double slope = gradient.Length;
+        double rolling = LongestWavelength * (FlatRatio + RollingShare * SlopeRatio * slope);
+        double eroded = LongestWavelength * (1.0 - RollingShare) * SlopeRatio * slope;
 
         double wavelength = LongestWavelength;
         double sum = 0.0;
@@ -42,13 +58,23 @@ public static class Relief {
 
             }
 
+            Vector3d p = position / wavelength;
             double offset = octave * 31.7;
-            double n = Noise(position.X / wavelength + offset, position.Y / wavelength - offset, position.Z / wavelength + offset * 0.5, (uint)octave);
-            double ridge = 1.0 - Math.Abs(n);
 
-            sum += weight * amplitude * (n + ridged * (2.0 * ridge * ridge - 0.9 - n));
+            sum += weight * rolling * Noise(p.X + offset, p.Y - offset, p.Z + offset * 0.5, (uint)octave);
 
-            amplitude *= Gain;
+            if (octave < GullyOctaves && eroded > 0.0) {
+
+                Vector3d across = Vector3d.Cross(up, gradient) / Math.Max(gradient.Length, GullySlope);
+                double gully = Gullies(p, across, (uint)octave, out Vector3d change);
+
+                sum += weight * eroded * gully;
+                gradient += change * (weight * eroded * Branching / wavelength);
+
+            }
+
+            rolling *= Gain;
+            eroded *= Gain;
             wavelength *= 0.5;
 
         }
@@ -85,7 +111,61 @@ public static class Relief {
 
     }
 
+    /// <summary>Gullies in [-1, 1] at <paramref name="p"/> (in cells): each jittered cell point carries ridges and furrows
+    /// across <paramref name="across"/>, one per cell at full length, and neighbouring cells blend, breaking the furrows
+    /// into gullies of a cell or two. <paramref name="change"/> is the height's rate of change per cell.</summary>
+    public static double Gullies(Vector3d p, Vector3d across, uint seed, out Vector3d change) {
+
+        int ix = (int)Math.Floor(p.X);
+        int iy = (int)Math.Floor(p.Y);
+        int iz = (int)Math.Floor(p.Z);
+
+        double reach2 = Reach * Reach;
+        double total = 0.0;
+        double sum = 0.0;
+        double slope = 0.0;
+
+        for (int k = -1; k <= 1; k++) {
+
+            for (int j = -1; j <= 1; j++) {
+
+                for (int i = -1; i <= 1; i++) {
+
+                    uint hash = Hash(ix + i, iy + j, iz + k, seed ^ 0x5BD1E995u);
+                    double ox = p.X - (ix + i + 0.5 + Offset(hash));
+                    double oy = p.Y - (iy + j + 0.5 + Offset(hash >> 10));
+                    double oz = p.Z - (iz + k + 0.5 + Offset(hash >> 20));
+                    double d2 = ox * ox + oy * oy + oz * oz;
+
+                    if (d2 >= reach2) {
+
+                        continue;
+
+                    }
+
+                    double w = 1.0 - d2 / reach2;
+                    double phase = 2.0 * Math.PI * (ox * across.X + oy * across.Y + oz * across.Z);
+
+                    w *= w * w;
+                    total += w;
+                    sum += w * Math.Cos(phase);
+                    slope -= w * Math.Sin(phase);
+
+                }
+
+            }
+
+        }
+
+        change = across * (2.0 * Math.PI * slope / total);
+
+        return sum / total;
+
+    }
+
     internal static double Saturate(double x) => Math.Min(Math.Max(x, 0.0), 1.0);
+
+    private static double Offset(uint bits) => ((bits & 1023u) / 1023.0 * 2.0 - 1.0) * Jitter;
 
     private static double Fade(double t) => t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
 

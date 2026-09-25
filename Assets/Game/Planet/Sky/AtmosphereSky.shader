@@ -18,6 +18,7 @@ Shader "Hidden/MaxQ/AtmosphereSky" {
         TEXTURE2D_X(_AtmosphereInscatter);
         TEXTURE2D_X(_AtmosphereTransmittance);
         float4 _AtmosphereSize;
+        StructuredBuffer<float> _Exposure;
 
         // Stand-in distance for sky pixels, and the cap on every other: large, but safe in half precision.
         #define SKY_DISTANCE 60000.0
@@ -63,6 +64,7 @@ Shader "Hidden/MaxQ/AtmosphereSky" {
 
             #pragma vertex Vert
             #pragma fragment Frag
+            #pragma multi_compile _ _MAIN_LIGHT_SHADOWS_CASCADE
 
             struct Output {
 
@@ -74,7 +76,10 @@ Shader "Hidden/MaxQ/AtmosphereSky" {
             Output Frag(Varyings input) {
 
                 ViewRay ray = ViewRayAt(input.texcoord);
-                Scattering scattering = Integrate(_WorldSpaceCameraPos - _PlanetCentre, ray.direction, ray.sky ? 1e9 : ray.distance, _SunDirection, 32, true);
+
+                // Interleaved gradient noise staggers neighbouring rays' samples, so shafts in the haze blend instead of banding.
+                float jitter = frac(52.9829189 * frac(dot(input.positionCS.xy, float2(0.06711056, 0.00583715))));
+                Scattering scattering = Integrate(_WorldSpaceCameraPos - _PlanetCentre, ray.direction, ray.sky ? 1e9 : ray.distance, _SunDirection, 32, true, jitter, true);
 
                 Output output;
                 output.inscatter = float4(scattering.radiance * _SunIlluminance, ray.distance);
@@ -167,9 +172,11 @@ Shader "Hidden/MaxQ/AtmosphereSky" {
                 inscatter /= total;
                 transmittance /= total;
 
+                float exposure = _Exposure[0];
+
                 if (!ray.sky) {
 
-                    return float4(scene * transmittance + inscatter, 1.0);
+                    return float4((scene * transmittance + inscatter) * exposure, 1.0);
 
                 }
 
@@ -189,7 +196,7 @@ Shader "Hidden/MaxQ/AtmosphereSky" {
 
                 }
 
-                return float4(background * transmittance + inscatter, 1.0);
+                return float4((background * transmittance + inscatter) * exposure, 1.0);
 
             }
 

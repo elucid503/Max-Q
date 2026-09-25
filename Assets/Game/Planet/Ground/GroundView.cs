@@ -10,6 +10,7 @@ using Terrain = MaxQ.Sim.Surface.Terrain;
 
 using Unity.Collections;
 using Unity.Jobs;
+using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering;
@@ -25,6 +26,9 @@ public sealed class GroundView : IDisposable {
     // A node splits once the camera is within Range of its children's size; 5.5 keeps each finer level
     // inside the coarser level's unmorphed band, so neighbouring levels always meet on shared edges.
     private const double Range = 5.5;
+
+    // Farthest a shadow reaches onto the view: the tallest ground under a sun two degrees up.
+    private const double ShadowReach = 60_000.0;
     private const double MorphStart = 0.85;
 
     private const int BuildSlots = 48;
@@ -42,11 +46,16 @@ public sealed class GroundView : IDisposable {
     private static readonly int LevelId = Shader.PropertyToID("_Level");
     private static readonly int TileOriginNearId = Shader.PropertyToID("_TileOriginNear");
     private static readonly int TileOriginFarId = Shader.PropertyToID("_TileOriginFar");
+    private static readonly int WaveOriginId = Shader.PropertyToID("_WaveOrigin");
 
     // Repeats of the ground materials in metres; must match GroundMaterials.hlsl.
     private const double NearTile = 3.0;
     private const double FarTile = 17.0;
+
+    // Metres over which every wave train repeats; must match WAVE_PERIOD in Ground.hlsl.
+    private const double WavePeriod = 128.0;
     private static readonly int MorphId = Shader.PropertyToID("_GroundMorph");
+    private static readonly int GroundCameraId = Shader.PropertyToID("_GroundCamera");
 
     private sealed class Node {
 
@@ -111,6 +120,8 @@ public sealed class GroundView : IDisposable {
         public Material[] Both;
         public Texture2D Colour;
         public Vector3d Centre;
+        public NativeArray<byte> Horizons;
+        public float4[] Rocks;
 
     }
 
@@ -121,6 +132,8 @@ public sealed class GroundView : IDisposable {
         public Mesh.MeshDataArray Data;
         public NativeArray<ushort> Detail;
         public NativeArray<double> Info;
+        public NativeArray<byte> Horizons;
+        public NativeArray<float4> Rocks;
 
     }
 
@@ -134,13 +147,18 @@ public sealed class GroundView : IDisposable {
     private readonly Node[] _roots = new Node[6];
     private readonly Build[] _builds = new Build[BuildSlots];
     private readonly Stack<Patch> _sparePatches = new Stack<Patch>();
+    private readonly List<Patch> _patches = new List<Patch>();
+    private readonly NativeArray<byte> _noHorizons = new NativeArray<byte>(0, Allocator.Persistent);
     private readonly List<Node> _shown = new List<Node>();
     private readonly List<Node> _selected = new List<Node>();
     private readonly List<Node> _requests = new List<Node>();
     private readonly List<Node> _built = new List<Node>();
+    private readonly List<Node> _strewn = new List<Node>();
     private readonly Plane[] _planes = new Plane[6];
+    private readonly Rocks _rocks;
 
     private Vector3d _camera;
+    private Vector3 _sunward;
     private int _frame;
     private int _patchCount;
 
@@ -155,6 +173,9 @@ public sealed class GroundView : IDisposable {
     public int PatchCount => _patchCount;
 
     public int ShownCount => _shown.Count;
+
+    /// <summary>Metres from the camera down to the ground beneath it, as of the last draw.</summary>
+    public double CameraAltitude { get; private set; }
 
     private int InFlight {
 
@@ -174,9 +195,10 @@ public sealed class GroundView : IDisposable {
 
     }
 
-    public GroundView(CelestialBody body, ColourTiles tiles, Material ground, Material water) {
+    public GroundView(CelestialBody body, ColourTiles tiles, Material ground, Material water, Material rock) {
 
         _body = body;
+        _rocks = new Rocks(rock);
         _terrain = body.Terrain ?? throw new ArgumentException($"{body.Name} has no terrain", nameof(body));
         _tiles = tiles;
         _groundTemplate = ground;
@@ -189,6 +211,8 @@ public sealed class GroundView : IDisposable {
 
                 Detail = new NativeArray<ushort>(PatchJob.Texels * PatchJob.Texels * 4, Allocator.Persistent),
                 Info = new NativeArray<double>(PatchJob.InfoLength, Allocator.Persistent),
+                Horizons = new NativeArray<byte>(PatchJob.HorizonLength, Allocator.Persistent),
+                Rocks = new NativeArray<float4>(PatchJob.RockLength, Allocator.Persistent),
 
             };
 
@@ -222,7 +246,8 @@ public sealed class GroundView : IDisposable {
 
     private double RangeOf(int depth) => Range * _terrain.Radius * 0.5 * Math.PI / (1L << depth);
 
-    public void Draw(double time, Camera camera) {
+    /// <summary><paramref name="sunward"/> is the scene direction toward the sun, used to keep shadow casters that are off screen.</summary>
+    public void Draw(double time, Camera camera, Vector3 sunward) {
 
         _frame++;
 
@@ -231,12 +256,18 @@ public sealed class GroundView : IDisposable {
         Vector3d cameraSim = MapSpace.Origin + new Vector3d(cameraScene.x, cameraScene.z, cameraScene.y) * MapSpace.MetresPerUnit;
 
         _camera = _body.ToBodyFixed(cameraSim - bodyPosition, time);
+        _sunward = sunward * (float)(ShadowReach / MapSpace.MetresPerUnit);
         GeometryUtility.CalculateFrustumPlanes(camera, _planes);
+        Shader.SetGlobalVector(GroundCameraId, cameraScene);
+
+        double cameraDistance = _camera.Length;
+        CameraAltitude = cameraDistance - _terrain.Radius - _terrain.HeightAt(_camera / cameraDistance, Math.Max(cameraDistance - _terrain.Radius, 1.0));
 
         Collect(wait: false);
 
         _selected.Clear();
         _requests.Clear();
+        _strewn.Clear();
 
         foreach (Node root in _roots) {
 
@@ -245,6 +276,7 @@ public sealed class GroundView : IDisposable {
         }
 
         Show(time, bodyPosition);
+        Strew(time, bodyPosition, cameraScene);
         ScheduleRequests();
         _tiles.Update();
 
@@ -266,6 +298,13 @@ public sealed class GroundView : IDisposable {
 
         }
 
+        if (node.Depth == PatchJob.RockDepth && node.Patch?.Rocks != null) {
+
+            _strewn.Add(node);
+
+        }
+
+        // Shadow casters off screen split like the rest: a coarse caster stands clear of the fine ground and shadows it.
         if (node.Depth < MaxDepth && Distance(node) < RangeOf(node.Depth + 1)) {
 
             node.Children ??= new[] {
@@ -317,7 +356,7 @@ public sealed class GroundView : IDisposable {
 
     private double Distance(Node node) => (_camera - node.Middle(_terrain.Radius)).Length - node.Radius;
 
-    // Behind the horizon of the lowest possible ground, or outside the view frustum.
+    // Behind the horizon of the lowest possible ground, or outside the view frustum even with its shadow swept along.
     private bool Visible(Node node, double time, Vector3d bodyPosition) {
 
         double occluder = _terrain.Radius + LowestGround;
@@ -343,7 +382,7 @@ public sealed class GroundView : IDisposable {
 
         foreach (Plane plane in _planes) {
 
-            if (plane.GetDistanceToPoint(centre) < -radius) {
+            if (plane.GetDistanceToPoint(centre) < -radius && plane.GetDistanceToPoint(centre - _sunward) < -radius) {
 
                 return false;
 
@@ -408,6 +447,30 @@ public sealed class GroundView : IDisposable {
 
     }
 
+    // Boulders of the strewing level's visible patches, whether those patches are drawn or their finer children are.
+    private void Strew(double time, Vector3d bodyPosition, Vector3 camera) {
+
+        if (Hidden) {
+
+            return;
+
+        }
+
+        Quaternion rotation = Quaternion.AngleAxis(-(float)(_body.RotationAt(time) * 180.0 / Math.PI), Vector3.up);
+
+        foreach (Node node in _strewn) {
+
+            Patch patch = node.Patch;
+            Vector3 position = MapSpace.ToScene(bodyPosition + _body.FromBodyFixed(patch.Centre, time));
+
+            _rocks.Add(patch.Rocks, patch.Rocks.Length / 2, position, rotation, camera);
+
+        }
+
+        _rocks.Draw();
+
+    }
+
     // Coarse levels first, then nearest: the view fills in top-down and never waits on a far patch.
     private void ScheduleRequests() {
 
@@ -457,6 +520,9 @@ public sealed class GroundView : IDisposable {
             Mesh = slot.Data[0],
             Detail = slot.Detail,
             Info = slot.Info,
+            Horizons = slot.Horizons,
+            Rocks = slot.Rocks,
+            ParentHorizons = node.Parent?.Patch.Horizons ?? _noHorizons,
 
         }.Schedule();
 
@@ -480,6 +546,11 @@ public sealed class GroundView : IDisposable {
             Mesh.ApplyAndDisposeWritableMeshData(slot.Data, patch.Mesh, MeshUpdateFlags.DontRecalculateBounds | MeshUpdateFlags.DontValidateIndices);
             patch.Mesh.bounds = patch.Mesh.GetSubMesh(0).bounds;
 
+            patch.Horizons.CopyFrom(slot.Horizons);
+
+            int rocks = (int)slot.Info[PatchJob.InfoRocks];
+            patch.Rocks = rocks > 0 ? slot.Rocks.GetSubArray(0, 2 * rocks).ToArray() : null;
+
             patch.Detail.SetPixelData(slot.Detail, 0);
             patch.Detail.Apply(false, false);
 
@@ -499,11 +570,13 @@ public sealed class GroundView : IDisposable {
 
             Vector4 near = TileOrigin(patch.Centre, NearTile);
             Vector4 far = TileOrigin(patch.Centre, FarTile);
+            Vector4 waves = TileOrigin(patch.Centre, WavePeriod);
 
             foreach (Material material in patch.Both) {
 
                 material.SetVector(TileOriginNearId, near);
                 material.SetVector(TileOriginFarId, far);
+                material.SetVector(WaveOriginId, waves);
                 material.SetTexture(DetailId, patch.Detail);
                 material.SetTexture(ParentDetailId, parent.Detail);
                 material.SetVector(ParentRectId, parentRect);
@@ -547,15 +620,18 @@ public sealed class GroundView : IDisposable {
             },
             Ground = new Material(_groundTemplate),
             Water = new Material(_waterTemplate),
+            Horizons = new NativeArray<byte>(PatchJob.HorizonLength, Allocator.Persistent),
 
         };
+
+        _patches.Add(patch);
 
         patch.GroundOnly = new[] { patch.Ground };
         patch.Both = new[] { patch.Ground, patch.Water };
 
         go.AddComponent<MeshFilter>().sharedMesh = patch.Mesh;
         patch.Renderer = go.AddComponent<MeshRenderer>();
-        patch.Renderer.shadowCastingMode = ShadowCastingMode.Off;
+        patch.Renderer.shadowCastingMode = ShadowCastingMode.On;
         patch.Renderer.receiveShadows = false;
         patch.Renderer.lightProbeUsage = LightProbeUsage.Off;
         patch.Renderer.reflectionProbeUsage = ReflectionProbeUsage.Off;
@@ -664,8 +740,18 @@ public sealed class GroundView : IDisposable {
 
             slot.Detail.Dispose();
             slot.Info.Dispose();
+            slot.Horizons.Dispose();
+            slot.Rocks.Dispose();
 
         }
+
+        foreach (Patch patch in _patches) {
+
+            patch.Horizons.Dispose();
+
+        }
+
+        _noHorizons.Dispose();
 
         _tiles.Dispose();
 

@@ -22,6 +22,9 @@ public sealed class Atmosphere : IDisposable {
     private static readonly int MultiScatterId = Shader.PropertyToID("_MultiScatterLut");
     private static readonly int IrradianceId = Shader.PropertyToID("_IrradianceLut");
 
+    // Height of the air's top above the ground, metres; matches ATMOSPHERE_HEIGHT in Atmosphere.hlsl.
+    private const double AirThickness = 100_000.0;
+
     private readonly CelestialBody _body;
     private readonly RenderTexture _transmittance;
     private readonly RenderTexture _multiScatter;
@@ -29,11 +32,13 @@ public sealed class Atmosphere : IDisposable {
     private readonly Material _composite;
     private readonly AtmospherePass _pass;
     private readonly SkyViewPass _skyView;
+    private readonly GraphicsBuffer _exposure;
+    private readonly GraphicsBuffer _histogram;
 
     /// <summary>Whether the composite pass draws; the capture turns it off to time the rest of the frame.</summary>
     public bool Enabled { get; set; } = true;
 
-    public Atmosphere(CelestialBody body, Shader luts, Shader sky, Vector3 sunDirection, Color sunIlluminance) {
+    public Atmosphere(CelestialBody body, Shader luts, Shader sky, ComputeShader exposure, Vector3 sunDirection, Color sunIlluminance) {
 
         _body = body;
 
@@ -56,8 +61,13 @@ public sealed class Atmosphere : IDisposable {
         commands.Release();
         UnityEngine.Object.Destroy(material);
 
+        _exposure = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 1, sizeof(float));
+        _exposure.SetData(new[] { 1.0f });
+        _histogram = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 64, sizeof(uint));
+        _histogram.SetData(new uint[64]);
+
         _composite = new Material(sky);
-        _pass = new AtmospherePass(_composite);
+        _pass = new AtmospherePass(_composite, exposure, _exposure, _histogram);
         _skyView = new SkyViewPass(_composite);
         RenderPipelineManager.beginCameraRendering += Enqueue;
 
@@ -78,7 +88,29 @@ public sealed class Atmosphere : IDisposable {
 
     }
 
-    public void Update(double time) => Shader.SetGlobalVector(PlanetCentreId, MapSpace.ToScene(_body.PositionAt(time)));
+    /// <summary>The exposure the eye has adapted to, read back from the GPU; for diagnostics only, as it stalls.</summary>
+    public float Exposure {
+
+        get {
+
+            float[] value = new float[1];
+            _exposure.GetData(value);
+
+            return value[0];
+
+        }
+
+    }
+
+    /// <summary>Keeps the planet's centre current, and lets the eye adapt while <paramref name="camera"/> is inside the air.</summary>
+    public void Update(double time, Vector3 camera) {
+
+        Vector3 centre = MapSpace.ToScene(_body.PositionAt(time));
+
+        Shader.SetGlobalVector(PlanetCentreId, centre);
+        _pass.Adapting = (camera - centre).magnitude * MapSpace.MetresPerUnit < _body.Radius + AirThickness;
+
+    }
 
     private static RenderTexture Table(string name, int width, int height) {
 
@@ -113,6 +145,8 @@ public sealed class Atmosphere : IDisposable {
         _transmittance.Release();
         _multiScatter.Release();
         _irradiance.Release();
+        _exposure.Release();
+        _histogram.Release();
 
     }
 

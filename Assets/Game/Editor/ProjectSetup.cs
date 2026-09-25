@@ -38,12 +38,19 @@ public static class ProjectSetup {
         ConfigureTextures();
         PlayerSettings.enableFrameTimingStats = true;
 
+        // The sky, the ground and the exposure are lit in physical units, which only display right when encoded to sRGB.
+        PlayerSettings.colorSpace = ColorSpace.Linear;
+
         Material surface = SaveMaterial(new Material(Shader.Find("Universal Render Pipeline/Lit")), "Surface");
         Material line = SaveMaterial(new Material(Shader.Find("MaxQ/MapLine")), "MapLine");
         Material groundTemplate = new Material(Shader.Find("MaxQ/Ground"));
         groundTemplate.SetTexture("_GroundAlbedo", GroundArray("albedo_height", false, "Ground Albedo"));
         groundTemplate.SetTexture("_GroundNormal", GroundArray("normal", true, "Ground Normals"));
         Material ground = SaveMaterial(groundTemplate, "Ground");
+        Material rockTemplate = new Material(Shader.Find("MaxQ/Rock")) { enableInstancing = true };
+        rockTemplate.SetTexture("_GroundAlbedo", groundTemplate.GetTexture("_GroundAlbedo"));
+        rockTemplate.SetTexture("_GroundNormal", groundTemplate.GetTexture("_GroundNormal"));
+        Material rock = SaveMaterial(rockTemplate, "Rock");
         Material water = SaveMaterial(new Material(Shader.Find("MaxQ/Water")), "Water");
 
         Material sky = new Material(Shader.Find("Skybox/Panoramic"));
@@ -52,7 +59,7 @@ public static class ProjectSetup {
         sky.SetFloat("_Exposure", 1.0f);
         sky = SaveMaterial(sky, "Sky");
 
-        BuildScene(surface, line, sky, ground, water);
+        BuildScene(surface, line, sky, ground, water, rock);
 
         AssetDatabase.SaveAssets();
         Debug.Log("Max-Q setup complete");
@@ -67,7 +74,19 @@ public static class ProjectSetup {
         // Anti-aliasing is SMAA on the camera: the atmosphere composites over a resolved, single-sample target.
         pipeline.msaaSampleCount = 1;
         pipeline.supportsHDR = true;
-        pipeline.shadowDistance = 0.0f;
+        // The sun's cascades; Sun refits their distances to the camera's altitude every frame.
+        pipeline.shadowDistance = 100.0f;
+        pipeline.shadowCascadeCount = 4;
+        pipeline.mainLightShadowmapResolution = 4096;
+        pipeline.shadowDepthBias = 1.0f;
+        pipeline.shadowNormalBias = 1.0f;
+
+        SerializedObject settings = new SerializedObject(pipeline);
+        settings.FindProperty("m_MainLightShadowsSupported").boolValue = true;
+        settings.FindProperty("m_SoftShadowsSupported").boolValue = true;
+        settings.FindProperty("m_SoftShadowQuality").intValue = (int)SoftShadowQuality.Medium;
+        settings.ApplyModifiedPropertiesWithoutUndo();
+
         EditorUtility.SetDirty(pipeline);
 
         GraphicsSettings.defaultRenderPipeline = pipeline;
@@ -155,7 +174,7 @@ public static class ProjectSetup {
 
     }
 
-    private static void BuildScene(Material surface, Material line, Material sky, Material ground, Material water) {
+    private static void BuildScene(Material surface, Material line, Material sky, Material ground, Material water, Material rock) {
 
         EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
@@ -201,8 +220,10 @@ public static class ProjectSetup {
         view.FindProperty("_surfaceMaterial").objectReferenceValue = surface;
         view.FindProperty("_groundMaterial").objectReferenceValue = ground;
         view.FindProperty("_waterMaterial").objectReferenceValue = water;
+        view.FindProperty("_rockMaterial").objectReferenceValue = rock;
         view.FindProperty("_atmosphereTables").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>($"{Sky}/AtmosphereLuts.shader");
         view.FindProperty("_atmosphereSky").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>($"{Sky}/AtmosphereSky.shader");
+        view.FindProperty("_exposure").objectReferenceValue = AssetDatabase.LoadAssetAtPath<ComputeShader>($"{Sky}/Exposure.compute");
         view.FindProperty("_lineMaterial").objectReferenceValue = line;
         view.FindProperty("_skyMaterial").objectReferenceValue = sky;
         view.FindProperty("_hudStyle").objectReferenceValue = AssetDatabase.LoadAssetAtPath<StyleSheet>("Assets/Game/Map/Overlay/Hud.uss");
@@ -242,6 +263,7 @@ public static class ProjectSetup {
 
         existing.shader = material.shader;
         existing.CopyPropertiesFromMaterial(material);
+        existing.enableInstancing = material.enableInstancing;
         EditorUtility.SetDirty(existing);
 
         return existing;

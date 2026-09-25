@@ -13,6 +13,7 @@ Shader "MaxQ/Ground" {
         _Level ("Level", Float) = 0
         _TileOriginNear ("Near Tile Origin", Vector) = (0, 0, 0, 0)
         _TileOriginFar ("Far Tile Origin", Vector) = (0, 0, 0, 0)
+        _WaveOrigin ("Wave Origin", Vector) = (0, 0, 0, 0)
         _GroundAlbedo ("Ground Albedo", 2DArray) = "" {}
         _GroundNormal ("Ground Normals", 2DArray) = "" {}
 
@@ -32,16 +33,19 @@ Shader "MaxQ/Ground" {
             #pragma target 4.5
             #pragma vertex GroundVertex
             #pragma fragment Frag
+            #pragma multi_compile _ _MAIN_LIGHT_SHADOWS_CASCADE
+            #pragma multi_compile_fragment _ _SHADOWS_SOFT
 
             #include "GroundMaterials.hlsl"
 
             float4 Frag(GroundVaryings input) : SV_Target {
 
+                float footprint = PixelFootprint(input.positionWS);
                 GroundDetail detail = SampleDetail(input.uv, input.morph);
                 Sunlight light = SunlightAt(input.positionWS);
-                GroundSurface surface = GroundMaterial(input, detail, light.up);
+                GroundSurface surface = GroundMaterial(input, detail, light.up, footprint);
 
-                float3 ground = GroundRadiance(surface.albedo, surface.normalWS, light);
+                float3 ground = GroundRadiance(surface.albedo, surface.normalWS, light, Surroundings(input.uv), detail.occlusion);
                 float wet = Wetness(detail);
 
                 if (wet <= 0.0) {
@@ -50,7 +54,30 @@ Shader "MaxQ/Ground" {
 
                 }
 
-                return float4(lerp(ground, WaterRadiance(input.positionWS, detail.waterDepth, SatelliteColour(input.uv), light), wet), 1.0);
+                return float4(lerp(ground, WaterRadiance(input.positionOS, input.positionWS, footprint, detail.waterDepth, SatelliteColour(input.uv), light), wet), 1.0);
+
+            }
+
+            ENDHLSL
+
+        }
+
+        Pass {
+
+            Name "ShadowCaster"
+            Tags { "LightMode" = "ShadowCaster" }
+
+            ColorMask 0
+
+            HLSLPROGRAM
+
+            #pragma target 4.5
+            #pragma vertex GroundShadowVertex
+            #pragma fragment Frag
+
+            #include "Ground.hlsl"
+
+            void Frag() {
 
             }
 

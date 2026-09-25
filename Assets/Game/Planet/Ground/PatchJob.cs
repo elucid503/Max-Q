@@ -16,7 +16,8 @@ using UnityEngine.Rendering;
 
 namespace MaxQ.Game.Planet.Ground;
 
-/// <summary>Builds one quadtree node's ground and water mesh plus its detail texture from the sim's terrain function.</summary>
+/// <summary>Builds one quadtree node's ground and water mesh plus its detail texture from the sim's terrain function, and
+/// the horizon around each vertex, which gives the ground its ambient occlusion.</summary>
 [BurstCompile]
 internal struct PatchJob : IJob {
 
@@ -37,7 +38,30 @@ internal struct PatchJob : IJob {
     public const int InfoRadius = 2;
     public const int InfoGroundIndices = 3;
     public const int InfoWaterIndices = 4;
-    public const int InfoLength = 5;
+    public const int InfoRocks = 5;
+
+    // Added to a skirt vertex's first texture coordinate; must match SKIRT_FLAG in Ground.hlsl.
+    private const float SkirtFlag = 2.0f;
+    public const int InfoLength = 6;
+
+    // Boulders are strewn by the patches of one level, a few hundred metres across: two chances per quad, each taken
+    // more often the steeper the ground, as two float4s per boulder (position in kilometres from the patch centre and
+    // size in metres; orientation as a quaternion), all in the patch's scene axes.
+    public const int RockDepth = 13;
+    public const int MaxRocks = 512;
+    public const int RockLength = 2 * MaxRocks;
+    private const int RockChances = 2;
+    private const double FlatRockChance = 0.01;
+    private const double SteepRockChance = 0.35;
+    private const double SmallestRock = 0.3;
+    private const double LargestRock = 3.0;
+
+    // Each vertex's horizon in eight directions, as the sine of its elevation in bytes. A patch searches out to
+    // HorizonReach of its own vertices and takes its parent's horizon where that is higher, so every level adds the
+    // occlusion at its own scale and the finest patch sees the valley walls as well as the stones.
+    public const int HorizonDirections = 8;
+    public const int HorizonLength = Vertices * Vertices * HorizonDirections;
+    private const int HorizonReach = 15;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct Vertex {
@@ -68,6 +92,12 @@ internal struct PatchJob : IJob {
     public Mesh.MeshData Mesh;
     public NativeArray<ushort> Detail;
     public NativeArray<double> Info;
+    public NativeArray<byte> Horizons;
+    public NativeArray<float4> Rocks;
+
+    // Empty for a root.
+    [ReadOnly]
+    public NativeArray<byte> ParentHorizons;
 
     /// <summary>Sizes the mesh buffers on the main thread; the job fills them.</summary>
     public static void Prepare(Mesh.MeshData mesh) {
@@ -149,7 +179,7 @@ internal struct PatchJob : IJob {
         NativeArray<double> reach2 = Spread(reach1);
 
         WriteMesh(ground, coarse, directions, heights, reach1, reach2, centre, footprint);
-        WriteDetail(a0, b0, span, footprint);
+        WriteDetail(a0, b0, span, footprint, Occlusion(ground, a0, b0, span, footprint));
 
         double reach = 0.0;
         Vector3d middle = centre / radius * (radius + 0.5 * (minHeight + maxHeight));
@@ -163,6 +193,77 @@ internal struct PatchJob : IJob {
         Info[InfoMinHeight] = minHeight;
         Info[InfoMaxHeight] = maxHeight;
         Info[InfoRadius] = reach + 0.5 * (maxHeight - minHeight);
+        Info[InfoRocks] = Depth == RockDepth ? ScatterRocks(ground, a0, b0, span, centre) : 0;
+
+    }
+
+    // Where boulders lie: the same everywhere a patch of this level is built, as each chance hashes its place on the planet.
+    private int ScatterRocks(NativeArray<Vector3d> ground, double a0, double b0, double span, Vector3d centre) {
+
+        double finest = Footprint(Terrain.Radius, GroundView.MaxDepth);
+        int count = 0;
+
+        for (int j = 0; j < Quads; j++) {
+
+            for (int i = 0; i < Quads; i++) {
+
+                int v = j * Vertices + i;
+                Vector3d up = ground[v].Normalized;
+                Vector3d normal = Vector3d.Cross(ground[v + 1] - ground[v], ground[v + Vertices] - ground[v]).Normalized;
+                double cosine = Math.Abs(Vector3d.Dot(normal, up));
+                double slope = Math.Sqrt(Math.Max(1.0 - cosine * cosine, 0.0)) / Math.Max(cosine, 0.05);
+                double chance = FlatRockChance + (SteepRockChance - FlatRockChance) * Math.Clamp((slope - 0.3) / 0.6, 0.0, 1.0);
+
+                for (int c = 0; c < RockChances; c++) {
+
+                    uint4 hash = new uint4(math.hash(new int4(Face, X * Quads + i, Y * Quads + j, c)), 0u, 0u, 0u);
+
+                    hash.y = math.hash(hash.xx + 0x68E31DA4u);
+                    hash.z = math.hash(hash.yy + 0xB5297A4Du);
+                    hash.w = math.hash(hash.zz + 0x1B56C4E9u);
+
+                    float4 unit = (float4)(hash >> 8) / 16_777_216.0f;
+
+                    if (unit.x >= chance) {
+
+                        continue;
+
+                    }
+
+                    Vector3d direction = CubeFace.Direction(Face, a0 + (i + unit.y) * span / Quads, b0 + (j + unit.z) * span / Quads);
+                    double height = Terrain.HeightAt(direction, finest);
+                    double level = Terrain.WaterLevelAt(direction);
+
+                    if (!double.IsNaN(level) && height < level + 0.5) {
+
+                        continue;
+
+                    }
+
+                    // Mostly stones, now and then a boulder.
+                    double size = SmallestRock * Math.Pow(LargestRock / SmallestRock, unit.w * unit.w * unit.w);
+                    float3 upScene = math.normalize(Scene(direction));
+                    float3 side = math.normalize(math.cross(upScene, math.abs(upScene.y) < 0.9f ? new float3(0.0f, 1.0f, 0.0f) : new float3(1.0f, 0.0f, 0.0f)));
+                    float yaw = unit.y * 1_000.0f;
+                    float3 forward = math.cross(side, upScene) * math.cos(yaw) + side * math.sin(yaw);
+                    quaternion tilt = quaternion.Euler((unit.z - 0.5f) * 0.5f, 0.0f, (unit.w - 0.5f) * 0.5f);
+
+                    Rocks[2 * count] = new float4(Scene(direction * (Terrain.Radius + height) - centre), (float)size);
+                    Rocks[2 * count + 1] = math.mul(quaternion.LookRotation(forward, upScene), tilt).value;
+
+                    if (++count == MaxRocks) {
+
+                        return count;
+
+                    }
+
+                }
+
+            }
+
+        }
+
+        return count;
 
     }
 
@@ -271,7 +372,11 @@ internal struct PatchJob : IJob {
                 int v = EdgeVertex(edge, k);
                 Vector3d drop = directions[v] * skirt;
 
-                vertices[Vertices * Vertices + edge * Vertices + k] = MakeVertex(ground[v] - drop, coarse[v] - drop, centre, v % Vertices, v / Vertices, ref low, ref high);
+                Vertex hanging = MakeVertex(ground[v] - drop, coarse[v] - drop, centre, v % Vertices, v / Vertices, ref low, ref high);
+
+                // Skirts carry their texture coordinates shifted by SkirtFlag, so the sun's shadow pass can leave them out.
+                hanging.Uv.x += SkirtFlag;
+                vertices[Vertices * Vertices + edge * Vertices + k] = hanging;
 
             }
 
@@ -459,8 +564,104 @@ internal struct PatchJob : IJob {
 
     }
 
-    // Normals from the terrain sampled at twice the vertex density, and the signed water depth under each texel.
-    private void WriteDetail(double a0, double b0, double span, double footprint) {
+    // The share of skylight each vertex receives, cosine-weighted, under its horizon.
+    private NativeArray<float> Occlusion(NativeArray<Vector3d> ground, double a0, double b0, double span, double footprint) {
+
+        const int size = Vertices + 2 * HorizonReach;
+
+        NativeArray<Vector3d> points = new NativeArray<Vector3d>(size * size, Allocator.Temp);
+        NativeArray<float> occlusion = new NativeArray<float>(Vertices * Vertices, Allocator.Temp);
+
+        for (int l = 0; l < size; l++) {
+
+            for (int k = 0; k < size; k++) {
+
+                int i = k - HorizonReach;
+                int j = l - HorizonReach;
+
+                if (i >= 0 && j >= 0 && i < Vertices && j < Vertices) {
+
+                    points[l * size + k] = ground[j * Vertices + i];
+
+                    continue;
+
+                }
+
+                Vector3d direction = CubeFace.Direction(Face, a0 + i * span / Quads, b0 + j * span / Quads);
+
+                points[l * size + k] = direction * (Terrain.Radius + Terrain.HeightAt(direction, footprint));
+
+            }
+
+        }
+
+        for (int j = 0; j < Vertices; j++) {
+
+            for (int i = 0; i < Vertices; i++) {
+
+                int v = j * Vertices + i;
+                int centre = (j + HorizonReach) * size + i + HorizonReach;
+                Vector3d p = points[centre];
+                Vector3d up = p.Normalized;
+                float open = 0.0f;
+
+                for (int d = 0; d < HorizonDirections; d++) {
+
+                    int dx = d == 0 || d == 1 || d == 7 ? 1 : d == 3 || d == 4 || d == 5 ? -1 : 0;
+                    int dy = d == 1 || d == 2 || d == 3 ? 1 : d == 5 || d == 6 || d == 7 ? -1 : 0;
+                    double highest = 0.0;
+
+                    for (int step = 1; step <= HorizonReach; step += (step + 2) / 3) {
+
+                        Vector3d toward = points[centre + (dy * size + dx) * step] - p;
+
+                        highest = Math.Max(highest, Vector3d.Dot(toward, up) / toward.Length);
+
+                    }
+
+                    byte horizon = (byte)Math.Round(highest * 255.0);
+
+                    if (Depth > 0) {
+
+                        horizon = Math.Max(horizon, ParentHorizon(i, j, d));
+
+                    }
+
+                    float sine = horizon / 255.0f;
+
+                    Horizons[v * HorizonDirections + d] = horizon;
+                    open += 1.0f - sine * sine;
+
+                }
+
+                occlusion[v] = open / HorizonDirections;
+
+            }
+
+        }
+
+        return occlusion;
+
+    }
+
+    // The parent's horizon at one of this patch's vertices: the parent's vertices fall on this patch's even ones.
+    private byte ParentHorizon(int i, int j, int direction) {
+
+        int x = (X & 1) * Quads / 2 + i / 2;
+        int y = (Y & 1) * Quads / 2 + j / 2;
+        int x1 = Math.Min(x + (i & 1), Quads);
+        int y1 = Math.Min(y + (j & 1), Quads);
+
+        int sum = ParentHorizons[(y * Vertices + x) * HorizonDirections + direction] + ParentHorizons[(y * Vertices + x1) * HorizonDirections + direction] +
+            ParentHorizons[(y1 * Vertices + x) * HorizonDirections + direction] + ParentHorizons[(y1 * Vertices + x1) * HorizonDirections + direction];
+
+        return (byte)((sum + 2) / 4);
+
+    }
+
+    // Normals from the terrain sampled at twice the vertex density, the signed water depth under each texel, and the
+    // vertices' occlusion spread across the texels between them.
+    private void WriteDetail(double a0, double b0, double span, double footprint, NativeArray<float> occlusion) {
 
         const int samples = Texels + 2;
 
@@ -513,7 +714,12 @@ internal struct PatchJob : IJob {
                 double depth = depths[l * Texels + k];
 
                 Detail[t + 2] = Unorm((float)(0.5 + 0.5 * Math.Sign(depth) * Math.Sqrt(Math.Min(Math.Abs(depth), WaterDepthRange) / WaterDepthRange)));
-                Detail[t + 3] = ushort.MaxValue;
+                int i0 = k / 2;
+                int j0 = l / 2;
+                int i1 = Math.Min(i0 + (k & 1), Quads);
+                int j1 = Math.Min(j0 + (l & 1), Quads);
+
+                Detail[t + 3] = Unorm(0.25f * (occlusion[j0 * Vertices + i0] + occlusion[j0 * Vertices + i1] + occlusion[j1 * Vertices + i0] + occlusion[j1 * Vertices + i1]));
 
             }
 

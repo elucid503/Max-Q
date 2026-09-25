@@ -33,6 +33,7 @@ public sealed class ReliefTests {
     public void DetailGrowsWithSlopeAndFadesWithFootprint() {
 
         Vector3d p = new Vector3d(612_345.6, -998_765.4, 402_020.2);
+        Vector3d uphill = Vector3d.Cross(p.Normalized, Vector3d.UnitZ).Normalized;
 
         double flat = 0.0;
         double steep = 0.0;
@@ -41,13 +42,65 @@ public sealed class ReliefTests {
 
             Vector3d q = p + new Vector3d(i * 37.0, i * 11.0, 0.0);
 
-            flat += Math.Abs(Relief.Detail(q, 0.0, 0.0));
-            steep += Math.Abs(Relief.Detail(q, 0.0, 0.4));
+            flat += Math.Abs(Relief.Detail(q, 0.0, Vector3d.Zero));
+            steep += Math.Abs(Relief.Detail(q, 0.0, uphill * 0.4));
 
         }
 
         Assert.That(steep, Is.GreaterThan(flat * 20.0));
-        Assert.That(Relief.Detail(p, 600.0, 0.4), Is.EqualTo(0.0));
+        Assert.That(Relief.Detail(p, 600.0, uphill * 0.4), Is.EqualTo(0.0));
+
+    }
+
+    [Test]
+    public void DetailIsContinuousWhereverTheSlopeTurns() {
+
+        Random random = new Random(11);
+        Vector3d p = new Vector3d(612_345.6, -998_765.4, 402_020.2);
+        Vector3d up = p.Normalized;
+        Vector3d east = Vector3d.Cross(Vector3d.UnitZ, up).Normalized;
+        Vector3d north = Vector3d.Cross(up, east);
+
+        for (int i = 0; i < 2_000; i++) {
+
+            // Slopes from level through steep, pointing every way, including through zero where gullies change direction.
+            double angle = random.NextDouble() * 2.0 * Math.PI;
+            double slope = random.NextDouble() * random.NextDouble() * 0.6;
+            Vector3d gradient = (east * Math.Cos(angle) + north * Math.Sin(angle)) * slope;
+            Vector3d q = p + east * (random.NextDouble() * 5_000.0) + north * (random.NextDouble() * 5_000.0);
+            Vector3d nudge = east * 1e-4;
+
+            double here = Relief.Detail(q, 0.0, gradient);
+
+            Assert.That(Relief.Detail(q + nudge, 0.0, gradient), Is.EqualTo(here).Within(0.02));
+            Assert.That(Relief.Detail(q, 0.0, gradient + east * 1e-5), Is.EqualTo(here).Within(0.02));
+
+        }
+
+    }
+
+    [Test]
+    public void GulliesRunDownhill() {
+
+        Vector3d p = new Vector3d(612_345.6, -998_765.4, 402_020.2) / 64.0;
+        Vector3d up = p.Normalized;
+        Vector3d downhill = Vector3d.Cross(Vector3d.UnitZ, up).Normalized;
+        Vector3d across = Vector3d.Cross(up, downhill);
+
+        double along = 0.0;
+        double sideways = 0.0;
+
+        for (int i = 0; i < 500; i++) {
+
+            Vector3d q = p + across * (i * 0.37);
+            double here = Relief.Gullies(q, across, 1u, out _);
+
+            along += Math.Abs(Relief.Gullies(q + downhill * 0.1, across, 1u, out _) - here);
+            sideways += Math.Abs(Relief.Gullies(q + across * 0.1, across, 1u, out _) - here);
+
+        }
+
+        Assert.That(sideways, Is.GreaterThan(along * 3.0));
 
     }
 

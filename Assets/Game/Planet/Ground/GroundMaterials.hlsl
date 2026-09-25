@@ -6,6 +6,7 @@
 
 #include "Ground.hlsl"
 #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Packing.hlsl"
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Color.hlsl"
 
 TEXTURE2D_ARRAY(_GroundAlbedo);
 TEXTURE2D_ARRAY(_GroundNormal);
@@ -23,6 +24,15 @@ SAMPLER(sampler_GroundAlbedo);
 #define NEAR_TILE 3.0
 #define FAR_TILE 17.0
 
+// Parallax: metres of relief each material's full height stands for (by slice; grass and forest floor are blades and
+// litter, which parallax would smear), how far from the camera it shows, and its steps.
+static const float ParallaxDepth[MATERIALS] = { 0.0, 0.0, 0.05, 0.04, 0.08, 0.05 };
+#define PARALLAX_REACH 25.0
+#define PARALLAX_STEPS 10
+
+// Texels per metre of the near sample: 1024-texel materials over NEAR_TILE metres.
+#define NEAR_TEXELS_PER_METRE (1024.0 / NEAR_TILE)
+
 // Metres from the camera over which the materials fade out, leaving the satellite colour alone.
 #define DETAIL_START 1500.0
 #define DETAIL_END 4000.0
@@ -35,8 +45,8 @@ struct Layer {
 
 };
 
-// Triplanar in the body-fixed frame, skipping planes the surface barely faces; normals by whiteout blending.
-Layer Triplanar(int slice, float3 position, float3 normal, float3 weights) {
+// Triplanar in the body-fixed frame, skipping planes the surface barely faces; normals, when wanted, by whiteout blending.
+Layer Triplanar(int slice, float3 position, float3 normal, float3 weights, bool normals) {
 
     Layer layer;
     layer.albedo = 0.0;
@@ -47,7 +57,7 @@ Layer Triplanar(int slice, float3 position, float3 normal, float3 weights) {
     if (weights.x > 0.02) {
 
         float4 albedo = SAMPLE_TEXTURE2D_ARRAY(_GroundAlbedo, sampler_GroundAlbedo, position.zy, slice);
-        float3 t = UnpackNormal(SAMPLE_TEXTURE2D_ARRAY(_GroundNormal, sampler_GroundAlbedo, position.zy, slice));
+        float3 t = normals ? UnpackNormal(SAMPLE_TEXTURE2D_ARRAY(_GroundNormal, sampler_GroundAlbedo, position.zy, slice)) : float3(0.0, 0.0, 1.0);
 
         t = float3(t.xy + normal.zy, abs(t.z) * normal.x);
         layer.albedo += albedo.rgb * weights.x;
@@ -60,7 +70,7 @@ Layer Triplanar(int slice, float3 position, float3 normal, float3 weights) {
     if (weights.y > 0.02) {
 
         float4 albedo = SAMPLE_TEXTURE2D_ARRAY(_GroundAlbedo, sampler_GroundAlbedo, position.xz, slice);
-        float3 t = UnpackNormal(SAMPLE_TEXTURE2D_ARRAY(_GroundNormal, sampler_GroundAlbedo, position.xz, slice));
+        float3 t = normals ? UnpackNormal(SAMPLE_TEXTURE2D_ARRAY(_GroundNormal, sampler_GroundAlbedo, position.xz, slice)) : float3(0.0, 0.0, 1.0);
 
         t = float3(t.xy + normal.xz, abs(t.z) * normal.y);
         layer.albedo += albedo.rgb * weights.y;
@@ -73,7 +83,7 @@ Layer Triplanar(int slice, float3 position, float3 normal, float3 weights) {
     if (weights.z > 0.02) {
 
         float4 albedo = SAMPLE_TEXTURE2D_ARRAY(_GroundAlbedo, sampler_GroundAlbedo, position.xy, slice);
-        float3 t = UnpackNormal(SAMPLE_TEXTURE2D_ARRAY(_GroundNormal, sampler_GroundAlbedo, position.xy, slice));
+        float3 t = normals ? UnpackNormal(SAMPLE_TEXTURE2D_ARRAY(_GroundNormal, sampler_GroundAlbedo, position.xy, slice)) : float3(0.0, 0.0, 1.0);
 
         t = float3(t.xy + normal.xy, abs(t.z) * normal.z);
         layer.albedo += albedo.rgb * weights.z;
@@ -92,24 +102,24 @@ Layer Triplanar(int slice, float3 position, float3 normal, float3 weights) {
 
 }
 
-// One material at both scales: the near sample carries the grain, the far one modulates it.
-Layer SampleMaterial(int slice, float3 positionOS, float3 normalOS, float3 weights) {
+// One material at both scales: the near sample carries the grain and the relief, the far one modulates its colour.
+Layer SampleMaterial(int slice, float3 metres, float3 normalOS, float3 weights) {
 
-    float3 metres = positionOS * 1000.0;
-    Layer near = Triplanar(slice, metres / NEAR_TILE + _TileOriginNear.xyz, normalOS, weights);
-    Layer far = Triplanar(slice, metres / FAR_TILE + _TileOriginFar.xyz, normalOS, weights);
+    Layer near = Triplanar(slice, metres / NEAR_TILE + _TileOriginNear.xyz, normalOS, weights, true);
+    Layer far = Triplanar(slice, metres / FAR_TILE + _TileOriginFar.xyz, normalOS, weights, false);
     float3 average = SAMPLE_TEXTURE2D_ARRAY_LOD(_GroundAlbedo, sampler_GroundAlbedo, float2(0.5, 0.5), slice, 12.0).rgb;
 
     Layer layer;
     layer.albedo = near.albedo * lerp(1.0, far.albedo / max(average, 1e-3), 0.5);
     layer.height = saturate(near.height * 0.7 + far.height * 0.3);
-    layer.normalOS = normalize(near.normalOS + (far.normalOS - normalOS) * 0.5);
+    layer.normalOS = near.normalOS;
 
     return layer;
 
 }
 
-// How much each material suits a spot, from the satellite's tone (linear) and how steep the ground is.
+// How much each material suits a spot, from the satellite's tone (sRGB-encoded, as the thresholds were read off the
+// imagery) and how steep the ground is.
 void MaterialWeights(float3 tone, float upness, out float weights[MATERIALS]) {
 
     float sum = max(tone.r + tone.g + tone.b, 1e-4);
@@ -151,13 +161,57 @@ struct GroundSurface {
 
 };
 
-GroundSurface GroundMaterial(GroundVaryings input, GroundDetail detail, float3 up) {
+// How far to shift the material samples so the dominant material's height map stands proud of the surface: the view ray
+// is marched down through the relief on the plane the surface most faces until it passes under the height map.
+float3 Parallax(int slice, float3 metres, float3 normalOS, float3 planes, float3 toCameraOS, float distance, float footprint) {
+
+    float reach = saturate(1.0 - distance / PARALLAX_REACH);
+
+    UNITY_BRANCH
+    if (reach <= 0.0 || ParallaxDepth[slice] <= 0.0) {
+
+        return 0.0;
+
+    }
+
+    int plane = planes.x > planes.y && planes.x > planes.z ? 0 : planes.y > planes.z ? 1 : 2;
+    float lod = max(log2(footprint * NEAR_TEXELS_PER_METRE), 0.0);
+    float depth = ParallaxDepth[slice] * reach;
+    float3 step = -toCameraOS / max(dot(toCameraOS, normalOS), 0.15) * (depth / PARALLAX_STEPS);
+    float3 offset = 0.0;
+    float previousGap = -1.0;
+
+    for (int i = 0; i < PARALLAX_STEPS; i++) {
+
+        float3 p = (metres + offset) / NEAR_TILE + _TileOriginNear.xyz;
+        float2 uv = plane == 0 ? p.zy : plane == 1 ? p.xz : p.xy;
+        float surface = (1.0 - SAMPLE_TEXTURE2D_ARRAY_LOD(_GroundAlbedo, sampler_GroundAlbedo, uv, slice, lod).a) * depth;
+        float gap = surface - i * depth / PARALLAX_STEPS;
+
+        if (gap <= 0.0) {
+
+            // Between the last step above the relief and this one below it, where the ray crossed.
+            return offset - step * saturate(-gap / max(previousGap - gap, 1e-5));
+
+        }
+
+        previousGap = gap;
+        offset += step;
+
+    }
+
+    return offset;
+
+}
+
+GroundSurface GroundMaterial(GroundVaryings input, GroundDetail detail, float3 up, float footprint) {
 
     GroundSurface surface;
     surface.albedo = SatelliteColour(input.uv);
     surface.normalWS = detail.normalWS;
 
-    float fade = 1.0 - smoothstep(DETAIL_START, DETAIL_END, distance(input.positionWS, _WorldSpaceCameraPos) * 1000.0);
+    float distance = length(input.positionWS - _WorldSpaceCameraPos) * 1000.0;
+    float fade = 1.0 - smoothstep(DETAIL_START, DETAIL_END, distance);
 
     UNITY_BRANCH
     if (fade <= 0.0) {
@@ -167,7 +221,7 @@ GroundSurface GroundMaterial(GroundVaryings input, GroundDetail detail, float3 u
     }
 
     float weights[MATERIALS];
-    MaterialWeights(SatelliteTone(input.uv), dot(detail.normalWS, up), weights);
+    MaterialWeights(LinearToSRGB(SatelliteTone(input.uv)), dot(detail.normalWS, up), weights);
 
     // The two best suited materials, blended by their height maps so they interlock instead of cross-fading.
     int first = 0;
@@ -191,10 +245,23 @@ GroundSurface GroundMaterial(GroundVaryings input, GroundDetail detail, float3 u
     float3 planes = pow(abs(detail.normalOS), 4.0);
     planes /= planes.x + planes.y + planes.z;
 
-    Layer a = SampleMaterial(first, input.positionOS, detail.normalOS, planes);
-    Layer b = SampleMaterial(second, input.positionOS, detail.normalOS, planes);
+    float3 toCameraOS = TransformWorldToObjectDir(normalize(_WorldSpaceCameraPos - input.positionWS));
+    float3 metres = input.positionOS * 1000.0;
+
+    metres += Parallax(first, metres, detail.normalOS, planes, toCameraOS, distance, footprint);
 
     float wa = weights[first] / max(weights[first] + weights[second], 1e-4);
+    Layer a = SampleMaterial(first, metres, detail.normalOS, planes);
+    Layer b = a;
+
+    // Where one material all but owns the ground, the other is not worth sampling.
+    UNITY_BRANCH
+    if (wa < 0.92) {
+
+        b = SampleMaterial(second, metres, detail.normalOS, planes);
+
+    }
+
     float ha = a.height + wa;
     float hb = b.height + 1.0 - wa;
     float top = max(ha, hb) - 0.2;
