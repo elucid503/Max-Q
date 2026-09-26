@@ -17,6 +17,7 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
     private static readonly int InscatterId = Shader.PropertyToID("_AtmosphereInscatter");
     private static readonly int TransmittanceId = Shader.PropertyToID("_AtmosphereTransmittance");
     private static readonly int SizeId = Shader.PropertyToID("_AtmosphereSize");
+    private static readonly int SceneSizeId = Shader.PropertyToID("_SceneSize");
     private static readonly int ExposureId = Shader.PropertyToID("_Exposure");
     private static readonly int HistogramId = Shader.PropertyToID("_Histogram");
     private static readonly int SourceId = Shader.PropertyToID("_Source");
@@ -46,6 +47,7 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
         public Material Material;
         public TextureHandle Source;
         public TextureHandle Depth;
+        public Vector4 SceneSize;
 
     }
 
@@ -58,6 +60,7 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
         public TextureHandle Transmittance;
         public BufferHandle Exposure;
         public Vector4 Size;
+        public Vector4 SceneSize;
 
     }
 
@@ -105,6 +108,7 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
         full.msaaSamples = MSAASamples.None;
 
         TextureHandle source = renderGraph.CreateTexture(full);
+        Vector4 sceneSize = new Vector4(full.width, full.height, 1.0f / full.width, 1.0f / full.height);
         renderGraph.AddBlitPass(target, source, Vector2.one, Vector2.zero, filterMode: RenderGraphUtils.BlitFilterMode.ClampNearest, passName: "Atmosphere Copy");
 
         TextureDesc half = full;
@@ -124,6 +128,7 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
             data.Material = _material;
             data.Source = source;
             data.Depth = depth;
+            data.SceneSize = sceneSize;
 
             builder.UseTexture(source);
             builder.UseTexture(depth);
@@ -140,6 +145,7 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
             builder.SetRenderFunc((MarchData pass, RasterGraphContext context) => {
 
                 pass.Material.SetTexture(SceneDepthId, pass.Depth);
+                pass.Material.SetVector(SceneSizeId, pass.SceneSize);
                 Blitter.BlitTexture(context.cmd, pass.Source, new Vector4(1.0f, 1.0f, 0.0f, 0.0f), pass.Material, MarchPass);
 
             });
@@ -155,6 +161,7 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
             data.Transmittance = transmittance;
             data.Exposure = exposure;
             data.Size = new Vector4(half.width, half.height, 1.0f / half.width, 1.0f / half.height);
+            data.SceneSize = sceneSize;
 
             builder.UseTexture(source);
             builder.UseTexture(depth);
@@ -169,6 +176,7 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
                 pass.Material.SetTexture(TransmittanceId, pass.Transmittance);
                 pass.Material.SetBuffer(ExposureId, pass.Exposure);
                 pass.Material.SetVector(SizeId, pass.Size);
+                pass.Material.SetVector(SceneSizeId, pass.SceneSize);
                 Blitter.BlitTexture(context.cmd, pass.Source, new Vector4(1.0f, 1.0f, 0.0f, 0.0f), pass.Material, CompositePass);
 
             });

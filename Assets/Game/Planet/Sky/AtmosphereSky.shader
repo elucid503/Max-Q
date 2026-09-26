@@ -18,6 +18,7 @@ Shader "Hidden/MaxQ/AtmosphereSky" {
         TEXTURE2D_X(_AtmosphereInscatter);
         TEXTURE2D_X(_AtmosphereTransmittance);
         float4 _AtmosphereSize;
+        float4 _SceneSize;
         StructuredBuffer<float> _Exposure;
 
         // Stand-in distance for sky pixels, and the cap on every other: large, but safe in half precision.
@@ -33,9 +34,7 @@ Shader "Hidden/MaxQ/AtmosphereSky" {
 
         // Directions come from the near plane and distances from linear depth: with a near plane of centimetres and a
         // far plane past Selene, unprojecting the far depth loses all precision.
-        ViewRay ViewRayAt(float2 uv) {
-
-            float depth = SAMPLE_TEXTURE2D_X_LOD(_SceneDepth, sampler_PointClamp, uv, 0).r;
+        ViewRay ViewRayThrough(float2 uv, float depth) {
 
             #if UNITY_REVERSED_Z
             bool sky = depth <= 0.0;
@@ -51,6 +50,12 @@ Shader "Hidden/MaxQ/AtmosphereSky" {
             ray.sky = sky;
 
             return ray;
+
+        }
+
+        ViewRay ViewRayAt(float2 uv) {
+
+            return ViewRayThrough(uv, SAMPLE_TEXTURE2D_X_LOD(_SceneDepth, sampler_PointClamp, uv, 0).r);
 
         }
 
@@ -75,7 +80,11 @@ Shader "Hidden/MaxQ/AtmosphereSky" {
 
             Output Frag(Varyings input) {
 
-                ViewRay ray = ViewRayAt(input.texcoord);
+                // Each ray is exactly the top-left pixel of its block. A half-resolution texel's centre falls between
+                // full-resolution pixels, and rounding picks which one's depth it gets, differently row to row and
+                // column to column, which draws a lattice across the ground.
+                int2 pixel = int2(input.positionCS.xy) * 2;
+                ViewRay ray = ViewRayThrough((pixel + 0.5) * _SceneSize.zw, LOAD_TEXTURE2D_X(_SceneDepth, pixel).r);
 
                 // Interleaved gradient noise staggers neighbouring rays' samples, so shafts in the haze blend instead of banding.
                 float jitter = frac(52.9829189 * frac(dot(input.positionCS.xy, float2(0.06711056, 0.00583715))));
@@ -148,15 +157,15 @@ Shader "Hidden/MaxQ/AtmosphereSky" {
 
                 // How fast distance changes across the pixels of this surface: the gentler side along each axis, as
                 // the steep side of a silhouette belongs to whatever lies behind it.
-                float2 pixel = 1.0 / _ScreenParams.xy;
+                float2 pixel = _SceneSize.zw;
                 float slopeX = min(abs(ViewRayAt(uv + float2(pixel.x, 0.0)).distance - ray.distance), abs(ViewRayAt(uv - float2(pixel.x, 0.0)).distance - ray.distance));
                 float slopeY = min(abs(ViewRayAt(uv + float2(0.0, pixel.y)).distance - ray.distance), abs(ViewRayAt(uv - float2(0.0, pixel.y)).distance - ray.distance));
                 float tolerance = 1e-3 * ray.distance + 3.0 * max(slopeX, slopeY);
 
                 // Bilinear over the four nearest half-resolution samples, each weighed down by how far its distance
                 // strays from this pixel's beyond what the surface's own slope explains, so air from behind a ridge
-                // never bleeds onto it.
-                float2 texel = uv * _AtmosphereSize.xy - 0.5;
+                // never bleeds onto it. Sample i was marched through pixel 2i.
+                float2 texel = (uv * _SceneSize.xy - 0.5) * 0.5;
                 int2 base = int2(floor(texel));
                 float2 f = texel - base;
                 float3 inscatter = 0.0;
