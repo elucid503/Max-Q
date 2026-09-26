@@ -8,7 +8,6 @@ using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
-using UnityEngine.UIElements;
 
 namespace MaxQ.Game.Editor;
 
@@ -17,7 +16,6 @@ public static class ProjectSetup {
 
     private const string Rendering = "Assets/Game/Settings/Rendering";
     private const string Materials = "Assets/Game/Settings/Materials";
-    private const string Interface = "Assets/Game/Settings/UI";
     private const string Art = "Assets/Game/Art";
     private const string ScenePath = "Assets/Game/Scenes/Map.unity";
     private const string Sky = "Assets/Game/Planet/Sky";
@@ -28,7 +26,7 @@ public static class ProjectSetup {
     [MenuItem("Max-Q/Rebuild Project Setup")]
     public static void Run() {
 
-        foreach (string folder in new[] { Rendering, Materials, Interface, Path.GetDirectoryName(ScenePath) }) {
+        foreach (string folder in new[] { Rendering, Materials, Path.GetDirectoryName(ScenePath) }) {
 
             Directory.CreateDirectory(folder);
 
@@ -42,7 +40,6 @@ public static class ProjectSetup {
         PlayerSettings.colorSpace = ColorSpace.Linear;
 
         Material surface = SaveMaterial(new Material(Shader.Find("Universal Render Pipeline/Lit")), "Surface");
-        Material line = SaveMaterial(new Material(Shader.Find("MaxQ/MapLine")), "MapLine");
         Material groundTemplate = new Material(Shader.Find("MaxQ/Ground"));
         groundTemplate.SetTexture("_GroundAlbedo", GroundArray("albedo_height", false, "Ground Albedo"));
         groundTemplate.SetTexture("_GroundNormal", GroundArray("normal", true, "Ground Normals"));
@@ -64,7 +61,7 @@ public static class ProjectSetup {
         sky.SetFloat("_Exposure", 1.0f);
         sky = SaveMaterial(sky, "Sky");
 
-        BuildScene(surface, line, sky, ground, water, rock, grass, tree);
+        BuildScene(surface, sky, ground, water, rock, grass, tree);
 
         AssetDatabase.SaveAssets();
         Debug.Log("Max-Q setup complete");
@@ -179,7 +176,7 @@ public static class ProjectSetup {
 
     }
 
-    private static void BuildScene(Material surface, Material line, Material sky, Material ground, Material water, Material rock, Material grass, Material tree) {
+    private static void BuildScene(Material surface, Material sky, Material ground, Material water, Material rock, Material grass, Material tree) {
 
         EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
@@ -210,17 +207,7 @@ public static class ProjectSetup {
         volume.isGlobal = true;
         volume.sharedProfile = profile;
 
-        PanelSettings panel = LoadOrCreate($"{Interface}/Hud Panel.asset", () => ScriptableObject.CreateInstance<PanelSettings>());
-        panel.scaleMode = PanelScaleMode.ScaleWithScreenSize;
-        panel.referenceResolution = new Vector2Int(1920, 1080);
-        panel.match = 0.5f;
-        panel.themeStyleSheet = AssetDatabase.LoadAssetAtPath<ThemeStyleSheet>($"{Interface}/Runtime.tss");
-        EditorUtility.SetDirty(panel);
-
-        GameObject map = new GameObject("Map");
-        map.AddComponent<UIDocument>().panelSettings = panel;
-
-        SerializedObject view = new SerializedObject(map.AddComponent<MapView>());
+        SerializedObject view = new SerializedObject(new GameObject("Map").AddComponent<MapView>());
         SetArray(view.FindProperty("_seleneFaces"), Faces("Selene"));
         view.FindProperty("_surfaceMaterial").objectReferenceValue = surface;
         view.FindProperty("_groundMaterial").objectReferenceValue = ground;
@@ -232,9 +219,7 @@ public static class ProjectSetup {
         view.FindProperty("_atmosphereTables").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>($"{Sky}/AtmosphereLuts.shader");
         view.FindProperty("_atmosphereSky").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>($"{Sky}/AtmosphereSky.shader");
         view.FindProperty("_exposure").objectReferenceValue = AssetDatabase.LoadAssetAtPath<ComputeShader>($"{Sky}/Exposure.compute");
-        view.FindProperty("_lineMaterial").objectReferenceValue = line;
         view.FindProperty("_skyMaterial").objectReferenceValue = sky;
-        view.FindProperty("_hudStyle").objectReferenceValue = AssetDatabase.LoadAssetAtPath<StyleSheet>("Assets/Game/Map/Overlay/Hud.uss");
         view.ApplyModifiedPropertiesWithoutUndo();
 
         EditorSceneManager.SaveScene(EditorSceneManager.GetActiveScene(), ScenePath);

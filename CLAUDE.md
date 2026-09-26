@@ -14,7 +14,7 @@ patched conics, 1/5 Earth scale. Personal project, never distributed. Successor 
     vessels, `Compatibility/` polyfills.
   - `Tests/` - assembly `MaxQ.Sim.Tests`, EditMode tests mirroring the sim folders.
 - `Assets/Game/` - assembly `MaxQ.Game`. Rendering, input, UI. No physics.
-  - `Map/` the map view and free camera (`Rendering/` bodies and lines, `Overlay/` HUD), `Planet/`
+  - `Map/` the scene and its free camera (`Rendering/` bodies without a survey), `Planet/`
     surveyed bodies (`Sun.cs` the shadow-casting light and its per-frame cascade fit; `Ground/` CDLOD
     quadtree, Burst patch jobs with horizon occlusion and rock and plant scatter, streamed colour tiles, ground,
     water, rock, grass and tree shaders, and `Vegetation` choosing plants on the GPU from the ground's materials;
@@ -74,7 +74,9 @@ public Vessel Stage(double time) {
 }
 ```
 
-File-scoped namespaces (`namespace MaxQ.Sim;`). The only exceptions to the blank-line rule are
+File-scoped namespaces (`namespace MaxQ.Sim;`), except for a MonoBehaviour a scene or asset references
+(`MapView`): Unity's script importer cannot see classes in file-scoped namespaces, so the scene falls back to an
+embedded script reference that breaks the player at random. The only exceptions to the blank-line rule are
 `using` groups and single-line members.
 
 ### Error Handling
