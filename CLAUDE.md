@@ -10,27 +10,33 @@ patched conics, 1/5 Earth scale. Personal project, never distributed. Successor 
   mechanics. **No `UnityEngine` reference** - the compiler enforces it.
   - `Numerics/` vectors and maths types, `Orbits/` conics, patches, maneuvers and prediction,
     `Bodies/` celestial bodies and the system catalogue, `Surface/` the terrain function (memory-mapped
-    survey plus procedural relief and cliff strata; Burst-compatible, so the renderer and physics share it), `Vessels/`
-    vessels, `Compatibility/` polyfills.
+    survey plus procedural relief and cliff strata, water levels, shore distance, fetch and rivers; Burst-compatible,
+    so the renderer and physics share it), `Ocean/` the ERA5 sea-state climatology and the directional wave spectrum,
+    `Vessels/` vessels, `Compatibility/` polyfills.
   - `Tests/` - assembly `MaxQ.Sim.Tests`, EditMode tests mirroring the sim folders.
 - `Assets/Game/` - assembly `MaxQ.Game`. Rendering, input, UI. No physics.
   - `Map/` the scene and its free camera (`Rendering/` bodies without a survey), `Planet/`
     surveyed bodies (`Sun.cs` the shadow-casting light and its per-frame cascade fit; `Ground/` CDLOD
     quadtree, Burst patch builds in stages (terrain sampled a row per work item across the workers, then rocks and
-    tree places, then the assembled mesh with horizon occlusion) so no job runs long, streamed colour tiles, ground,
-    water and rock shaders; `Ground/Plants/` grass, trees of foliage cards then painted cards, groves strewn by
+    tree places, then the assembled mesh and water sheet with horizon occlusion) so no job runs long, streamed colour
+    tiles, ground, seabed and rock shaders; `Ground/Plants/` grass, trees of foliage cards then painted cards, groves strewn by
     coarser levels out to ten kilometres, and `Vegetation` choosing plants on the GPU from the ground's materials;
-    `Sky/` atmosphere tables, RenderGraph passes and eye adaptation),
-    `Diagnostics/` capture tooling (`-only <text>` filters shots), `Editor/` setup, build, tile and foliage atlas baking,
+    `Sky/` atmosphere tables, RenderGraph passes and eye adaptation; `Water/` seas, lakes and rivers, owned by
+    `WaterView`: `Waves/` FFT cascades on a body-fixed wave frame, `Surface/` the water pass and sheet shader (sky and
+    screen-space reflections, refraction, Jerlov water column, foam, river flow and rapids), `Shore/` shore distance
+    cascades and breakers),
+    `Diagnostics/` capture tooling (`-only <text>[,<text>...]` filters shots), `Editor/` setup, build, tile and foliage atlas baking,
     `Scenes/`, `Settings/` (pipeline, materials, UI panel), `Art/`.
 - Colour space is Linear; lighting is in physical units with auto-exposure, so never tune colours by eye in gamma.
 - `Assets/csc.rsp` raises C# to 10 (file-scoped namespaces); it must stay at the Assets root.
 - `tools/` - `run.sh` runs the game without the editor, rebuilding the player first when sources
   changed (extra args go to the player); `build.sh` builds the player, or runs the sim tests with
   `--tests [results.xml]`. The engine path lives in `build.sh` (override with `UNITY=`). `terra.sh`
-  downloads Terra's sources and bakes them (`terra_bake.py`, then BC7 tiles in Unity).
+  downloads Terra's sources (ERA5 through `terra_era5.py`; HydroSHEDS and GLOBathy by hand) and bakes them
+  (`terra_bake.py`, then BC7 tiles in Unity).
 - `Data/` - gitignored. `Sources/` downloads and bake intermediates; `Terra/` the baked survey
-  (`elevation.i16`, `water.i16`) and colour tiles (`colour.tiles`) the game streams at runtime.
+  (`elevation.i16`, `levels.i16`, `shore.i16`, `fetch.u8`, `rivers.bin`, `sea_state.bin`) and colour tiles
+  (`colour.tiles`) the game streams at runtime.
 
 Group by feature, not by file type: a feature's code, shader and stylesheet live together. When a
 folder collects more than a handful of files, split it into subfolders. Namespaces mirror folders

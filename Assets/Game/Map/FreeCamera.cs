@@ -30,6 +30,9 @@ public sealed class FreeCamera {
 
     public FreeCamera(Camera camera) => _camera = camera;
 
+    /// <summary>Metres the camera keeps above the water's level, clear of the crests of the waves on it.</summary>
+    public double WaveClearance { get; set; }
+
     private double Altitude => _position.Length - _body.Radius - Ground(_position / _position.Length);
 
     /// <summary>Hovers <paramref name="altitude"/> metres above the ground at a place, looking along <paramref name="heading"/>
@@ -102,7 +105,7 @@ public sealed class FreeCamera {
 
     private static double Axis(bool positive, bool negative) => (positive ? 1.0 : 0.0) - (negative ? 1.0 : 0.0);
 
-    // Ground or water, whichever is higher.
+    // Ground or water, whichever is higher; water with room for its crests.
     private double Ground(Vector3d direction) {
 
         if (_body?.Terrain is not { } terrain) {
@@ -111,10 +114,10 @@ public sealed class FreeCamera {
 
         }
 
-        double level = terrain.WaterLevelAt(direction);
+        double level = terrain.WaterLevelAt(direction, 0.0);
         double ground = terrain.HeightAt(direction, 0.0);
 
-        return double.IsNaN(level) ? ground : Math.Max(ground, level);
+        return double.IsNaN(level) ? ground : Math.Max(ground, level + WaveClearance);
 
     }
 

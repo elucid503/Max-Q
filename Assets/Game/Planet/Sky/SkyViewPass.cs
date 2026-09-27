@@ -35,8 +35,12 @@ internal sealed class SkyViewPass : ScriptableRenderPass {
 
             name = "Sky View",
             format = GraphicsFormat.R16G16B16A16_SFloat,
-            filterMode = FilterMode.Bilinear,
+            filterMode = FilterMode.Trilinear,
             wrapMode = TextureWrapMode.Clamp,
+
+            // Water blurs the sky it mirrors by the spread of its waves, reading coarser mips as the sea roughens.
+            useMipMap = true,
+            autoGenerateMips = true,
 
         };
 

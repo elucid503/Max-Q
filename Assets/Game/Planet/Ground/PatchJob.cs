@@ -2,6 +2,7 @@ using System;
 using System.Runtime.InteropServices;
 
 using MaxQ.Sim.Numerics;
+using MaxQ.Sim.Ocean;
 using MaxQ.Sim.Surface;
 
 using Terrain = MaxQ.Sim.Surface.Terrain;
@@ -30,11 +31,26 @@ internal struct PatchJob : IJob {
 
     public const int GroundVertices = Vertices * Vertices + 4 * Vertices;
     public const int WaterVertices = Vertices * Vertices + 4 * Vertices;
-    public const int MaxIndices = 2 * (Quads * Quads * 6 + 4 * Quads * 6);
+    public const int MaxIndices = 3 * (Quads * Quads * 6 + 4 * Quads * 6);
 
     // Water depth range the detail texture encodes, metres either side of the surface. Depth is stored as a signed
     // square root: fine near the shore, and it never saturates, so coarse patches keep smooth coastlines.
     public const double WaterDepthRange = 16_384.0;
+
+    // The water detail: two texels to a quad, holding the river's current (m/s, either way up to FlowRange) and the
+    // land's shelter from the wind's sea and from swell; must match WaterSurface.hlsl.
+    public const int WaterTexels = 2 * Quads + 1;
+    public const double FlowRange = 8.0;
+
+    // Ground lies under water deeper than this (m) only where no light it returns could reach the eye: the clearest
+    // ocean swallows the round trip through a hundred real metres.
+    private const double SeabedDepth = 20.0;
+
+    // Waves reach this far (m) above and below the sheet, which culling and bounds must allow for.
+    public const double WaveReach = 30.0;
+
+    // A vertex with no water level carries this one.
+    private const float NoLevel = -1e6f;
 
     public const int InfoMinHeight = 0;
     public const int InfoMaxHeight = 1;
@@ -44,10 +60,11 @@ internal struct PatchJob : IJob {
     public const int InfoRocks = 5;
     public const int InfoTufts = 6;
     public const int InfoTrees = 7;
+    public const int InfoCoarseWaterIndices = 8;
 
     // Added to a skirt vertex's first texture coordinate; must match SKIRT_FLAG in Ground.hlsl.
     private const float SkirtFlag = 2.0f;
-    public const int InfoLength = 8;
+    public const int InfoLength = 9;
 
     // Places where grass or trees may grow; the ground's materials decide which do, on the GPU (see Vegetation). Each is
     // two float4s in the patch's scene axes: position in kilometres from the patch centre and a random number; the place
@@ -84,12 +101,18 @@ internal struct PatchJob : IJob {
     public const int HorizonLength = Vertices * Vertices * HorizonDirections;
     public const int HorizonReach = 15;
 
+    // A water vertex's Parent is the offset (km, scene axes) to one end of the parent's edge or diagonal it morphs onto,
+    // the other end mirrored through its morph target, so its waves can morph as its position does; a skirt's w is how
+    // far it hangs below its edge vertex (km). Water is how far the sheet's level stands over the vertex (m, or NoLevel
+    // where there is none) and the distance to shore (m).
     [StructLayout(LayoutKind.Sequential)]
     public struct Vertex {
 
         public float3 Position;
         public float2 Uv;
         public float3 Morph;
+        public float4 Parent;
+        public float2 Water;
 
     }
 
@@ -98,12 +121,20 @@ internal struct PatchJob : IJob {
         new VertexAttributeDescriptor(VertexAttribute.Position, VertexAttributeFormat.Float32, 3),
         new VertexAttributeDescriptor(VertexAttribute.TexCoord0, VertexAttributeFormat.Float32, 2),
         new VertexAttributeDescriptor(VertexAttribute.TexCoord1, VertexAttributeFormat.Float32, 3),
+        new VertexAttributeDescriptor(VertexAttribute.TexCoord2, VertexAttributeFormat.Float32, 4),
+        new VertexAttributeDescriptor(VertexAttribute.TexCoord3, VertexAttributeFormat.Float32, 2),
 
     };
 
     // Read-only views of the memory-mapped survey, shared by every job.
     [NativeDisableUnsafePtrRestriction]
     public Terrain Terrain;
+
+    [NativeDisableUnsafePtrRestriction]
+    public SeaState SeaState;
+
+    // Month of the sea-state climatology the shelter is measured against.
+    public int Month;
 
     public int Face;
     public int Depth;
@@ -112,6 +143,7 @@ internal struct PatchJob : IJob {
 
     public Mesh.MeshData Mesh;
     public NativeArray<ushort> Detail;
+    public NativeArray<ushort> WaterDetail;
     public NativeArray<double> Info;
     public NativeArray<byte> Horizons;
     public NativeArray<float4> Rocks;
@@ -133,6 +165,9 @@ internal struct PatchJob : IJob {
 
     [ReadOnly]
     public NativeArray<double> Levels;
+
+    [ReadOnly]
+    public NativeArray<double> Shores;
 
     public NativeArray<Vector3d> Coarse;
 
@@ -175,6 +210,7 @@ internal struct PatchJob : IJob {
         Directions = samples.Directions;
         Heights = samples.Heights;
         Levels = samples.Levels;
+        Shores = samples.Shores;
         Coarse = samples.Coarse;
         Fine = samples.Fine;
         Depths = samples.Depths;
@@ -184,6 +220,8 @@ internal struct PatchJob : IJob {
         JobHandle sampled = new PatchSampleJob {
 
             Terrain = Terrain,
+            SeaState = SeaState,
+            Month = Month,
             Face = Face,
             Depth = Depth,
             X = X,
@@ -192,9 +230,11 @@ internal struct PatchJob : IJob {
             Directions = samples.Directions,
             Heights = samples.Heights,
             Levels = samples.Levels,
+            Shores = samples.Shores,
             Coarse = samples.Coarse,
             Fine = samples.Fine,
             Depths = samples.Depths,
+            WaterDetail = WaterDetail,
 
         }.Schedule(PatchSampleJob.Rows, 1);
 
@@ -236,8 +276,8 @@ internal struct PatchJob : IJob {
 
                 ground[v] = Grid[(j + HorizonReach) * PatchSamples.GridSize + i + HorizonReach];
 
-                minHeight = Math.Min(minHeight, height);
-                maxHeight = Math.Max(maxHeight, double.IsNaN(level) ? height : Math.Max(height, level));
+                minHeight = Math.Min(minHeight, double.IsNaN(level) ? height : Math.Min(height, level - WaveReach));
+                maxHeight = Math.Max(maxHeight, double.IsNaN(level) ? height : Math.Max(height, level + WaveReach));
 
             }
 
@@ -520,8 +560,11 @@ internal struct PatchJob : IJob {
             for (int i = 0; i < Vertices; i++) {
 
                 int v = j * Vertices + i;
+                Vertex vertex = MakeVertex(ground[v], coarse[v], centre, i, j, ref low, ref high);
 
-                vertices[v] = MakeVertex(ground[v], coarse[v], centre, i, j, ref low, ref high);
+                // Judged on the same levels as the sheet's triangles, so the ground is a bed only where a sheet covers it.
+                vertex.Water = WaterOf(levels, v);
+                vertices[v] = vertex;
 
             }
 
@@ -550,8 +593,11 @@ internal struct PatchJob : IJob {
             for (int i = 0; i < Vertices; i++) {
 
                 int v = j * Vertices + i;
+                Vertex vertex = MakeVertex(sheet[v], sheetCoarse[v], centre, i, j, ref low, ref high);
 
-                vertices[GroundVertices + v] = MakeVertex(sheet[v], sheetCoarse[v], centre, i, j, ref low, ref high);
+                vertex.Parent = new float4(Scene(sheet[ParentEnd(i, j)] - sheet[v]), 0.0f);
+                vertex.Water = WaterOf(sheetLevels, v);
+                vertices[GroundVertices + v] = vertex;
 
             }
 
@@ -561,7 +607,7 @@ internal struct PatchJob : IJob {
         WriteSkirts(vertices, GroundVertices, sheet, sheetCoarse, directions, centre, skirt, ref low, ref high);
 
         int count = 0;
-        double deep = Math.Max(2.0, 0.05 * footprint);
+        double deep = Math.Max(SeabedDepth, 0.05 * footprint);
 
         for (int j = 0; j < Quads; j++) {
 
@@ -618,20 +664,36 @@ internal struct PatchJob : IJob {
 
             for (int i = 0; i < Quads; i++) {
 
+                AddWaterQuad(indices, ref count, vertices, heights, levels, i, j, centre);
+
+            }
+
+        }
+
+        AddWaterSkirts(indices, ref count, vertices, heights, levels);
+
+        int fineCount = count;
+
+        // The sheet again at half resolution away from its shores, for a view that sees its quads edge-on: the parent's
+        // triangles, onto whose edges and diagonals the odd vertices morph.
+        for (int j = 0; j < Quads; j += 2) {
+
+            for (int i = 0; i < Quads; i += 2) {
+
                 int a = j * Vertices + i;
-                int b = a + 1;
-                int c = a + Vertices;
-                int d = c + 1;
 
-                if (Wet(heights, levels, a, b, c)) {
+                if (Open(heights, levels, a)) {
 
-                    AddTriangle(indices, ref count, vertices, GroundVertices + a, GroundVertices + b, GroundVertices + c, centre);
+                    AddTriangle(indices, ref count, vertices, GroundVertices + a, GroundVertices + a + 2, GroundVertices + a + 2 * Vertices, centre);
+                    AddTriangle(indices, ref count, vertices, GroundVertices + a + 2, GroundVertices + a + 2 * Vertices + 2, GroundVertices + a + 2 * Vertices, centre);
+
+                    continue;
 
                 }
 
-                if (Wet(heights, levels, b, d, c)) {
+                for (int q = 0; q < 4; q++) {
 
-                    AddTriangle(indices, ref count, vertices, GroundVertices + b, GroundVertices + d, GroundVertices + c, centre);
+                    AddWaterQuad(indices, ref count, vertices, heights, levels, i + (q & 1), j + (q >> 1), centre);
 
                 }
 
@@ -639,27 +701,12 @@ internal struct PatchJob : IJob {
 
         }
 
-        for (int edge = 0; edge < 4; edge++) {
+        AddWaterSkirts(indices, ref count, vertices, heights, levels);
 
-            for (int k = 0; k < Quads; k++) {
+        if (count > groundCount) {
 
-                int v0 = EdgeVertex(edge, k);
-                int v1 = EdgeVertex(edge, k + 1);
-
-                if (!Wet(heights, levels, v0, v1, v1)) {
-
-                    continue;
-
-                }
-
-                int s0 = GroundVertices + Vertices * Vertices + edge * Vertices + k;
-                int s1 = s0 + 1;
-                float3 outward = vertices[v0].Position + vertices[v1].Position;
-
-                AddFacing(indices, ref count, vertices, GroundVertices + v0, GroundVertices + v1, s0, outward);
-                AddFacing(indices, ref count, vertices, GroundVertices + v1, s1, s0, outward);
-
-            }
+            low -= (float)(WaveReach / 1_000.0);
+            high += (float)(WaveReach / 1_000.0);
 
         }
 
@@ -667,14 +714,16 @@ internal struct PatchJob : IJob {
 
         Mesh.subMeshCount = 2;
         Mesh.SetSubMesh(0, new SubMeshDescriptor(0, groundCount) { bounds = bounds, vertexCount = GroundVertices }, Flags);
-        Mesh.SetSubMesh(1, new SubMeshDescriptor(groundCount, count - groundCount) { bounds = bounds, firstVertex = GroundVertices, vertexCount = WaterVertices }, Flags);
+        Mesh.SetSubMesh(1, new SubMeshDescriptor(groundCount, fineCount - groundCount) { bounds = bounds, firstVertex = GroundVertices, vertexCount = WaterVertices }, Flags);
 
         Info[InfoGroundIndices] = groundCount;
-        Info[InfoWaterIndices] = count - groundCount;
+        Info[InfoWaterIndices] = fineCount - groundCount;
+        Info[InfoCoarseWaterIndices] = count - fineCount;
 
     }
 
-    // One surface's skirts, after its grid of vertices from first: each edge vertex dropped straight down.
+    // One surface's skirts, after its grid of vertices from first: each edge vertex dropped straight down, keeping its
+    // edge vertex's water and, for the sheet, its parent's edge and how far below it hangs.
     private static void WriteSkirts(NativeArray<Vertex> vertices, int first, NativeArray<Vector3d> surface, NativeArray<Vector3d> coarse,
         NativeArray<Vector3d> directions, Vector3d centre, double depth, ref float3 low, ref float3 high) {
 
@@ -686,6 +735,9 @@ internal struct PatchJob : IJob {
                 Vector3d drop = directions[v] * depth;
 
                 Vertex hanging = MakeVertex(surface[v] - drop, coarse[v] - drop, centre, v % Vertices, v / Vertices, ref low, ref high);
+
+                hanging.Parent = new float4(vertices[first + v].Parent.xyz, (float)(depth / 1_000.0));
+                hanging.Water = vertices[first + v].Water;
 
                 // Skirts carry their texture coordinates shifted by SkirtFlag, so the sun's shadow pass can leave them out.
                 hanging.Uv.x += SkirtFlag;
@@ -711,6 +763,37 @@ internal struct PatchJob : IJob {
 
     }
 
+    private float2 WaterOf(NativeArray<double> levels, int v) =>
+        new float2(double.IsNaN(levels[v]) ? NoLevel : (float)(levels[v] - Heights[v]), (float)Shores[v]);
+
+    // The end of the parent's edge or diagonal an odd vertex morphs onto, as Between takes it; an even vertex's own.
+    private static int ParentEnd(int i, int j) {
+
+        bool oddI = (i & 1) == 1;
+        bool oddJ = (j & 1) == 1;
+
+        if (oddI && oddJ) {
+
+            return (j - 1) * Vertices + i + 1;
+
+        }
+
+        if (oddI) {
+
+            return j * Vertices + i - 1;
+
+        }
+
+        return oddJ ? (j - 1) * Vertices + i : j * Vertices + i;
+
+    }
+
+    /// <summary>A current (m/s) as a water-detail channel.</summary>
+    public static ushort EncodeFlow(double speed) => Unorm((float)(0.5 + 0.5 * speed / FlowRange));
+
+    /// <summary>A share, 0 to 1, as a water-detail channel.</summary>
+    public static ushort EncodeUnit(double share) => Unorm((float)share);
+
     // Sim frame (Z up, metres) to the patch's object space: kilometres, Y up, as MapSpace.
     public static float3 Scene(Vector3d v) => new float3((float)(v.X / 1_000.0), (float)(v.Z / 1_000.0), (float)(v.Y / 1_000.0));
 
@@ -722,6 +805,79 @@ internal struct PatchJob : IJob {
         _ => k * Vertices + Quads,
 
     };
+
+    // A quad of the sheet: the triangles of it that are wet.
+    private static void AddWaterQuad(NativeArray<ushort> indices, ref int count, NativeArray<Vertex> vertices, NativeArray<double> heights, NativeArray<double> levels,
+        int i, int j, Vector3d centre) {
+
+        int a = j * Vertices + i;
+        int b = a + 1;
+        int c = a + Vertices;
+        int d = c + 1;
+
+        if (Wet(heights, levels, a, b, c)) {
+
+            AddTriangle(indices, ref count, vertices, GroundVertices + a, GroundVertices + b, GroundVertices + c, centre);
+
+        }
+
+        if (Wet(heights, levels, b, d, c)) {
+
+            AddTriangle(indices, ref count, vertices, GroundVertices + b, GroundVertices + d, GroundVertices + c, centre);
+
+        }
+
+    }
+
+    // The sheet's skirts, under each wet stretch of its edges.
+    private static void AddWaterSkirts(NativeArray<ushort> indices, ref int count, NativeArray<Vertex> vertices, NativeArray<double> heights, NativeArray<double> levels) {
+
+        for (int edge = 0; edge < 4; edge++) {
+
+            for (int k = 0; k < Quads; k++) {
+
+                int v0 = EdgeVertex(edge, k);
+                int v1 = EdgeVertex(edge, k + 1);
+
+                if (!Wet(heights, levels, v0, v1, v1)) {
+
+                    continue;
+
+                }
+
+                int s0 = GroundVertices + Vertices * Vertices + edge * Vertices + k;
+                int s1 = s0 + 1;
+                float3 outward = vertices[v0].Position + vertices[v1].Position;
+
+                AddFacing(indices, ref count, vertices, GroundVertices + v0, GroundVertices + v1, s0, outward);
+                AddFacing(indices, ref count, vertices, GroundVertices + v1, s1, s0, outward);
+
+            }
+
+        }
+
+    }
+
+    // Whether the two by two quads from vertex a all lie under water, far enough from any shore to need no finer edge.
+    private static bool Open(NativeArray<double> heights, NativeArray<double> levels, int a) {
+
+        for (int j = 0; j <= 2; j++) {
+
+            for (int i = 0; i <= 2; i++) {
+
+                if (!Below(heights, levels, a + j * Vertices + i, 0.0)) {
+
+                    return false;
+
+                }
+
+            }
+
+        }
+
+        return true;
+
+    }
 
     private static bool Submerged(NativeArray<double> heights, NativeArray<double> levels, int a, int b, int c, double deep) =>
         Below(heights, levels, a, deep) && Below(heights, levels, b, deep) && Below(heights, levels, c, deep);

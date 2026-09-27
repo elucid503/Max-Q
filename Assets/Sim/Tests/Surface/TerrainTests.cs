@@ -61,15 +61,123 @@ public sealed class TerrainTests {
 
         Vector3d direction = At(latitude, longitude);
 
-        Assert.That(Terra.WaterLevelAt(direction), Is.EqualTo(level).Within(1.2));
-        Assert.That(Terra.HeightAt(direction, 0.0), Is.LessThan(Terra.WaterLevelAt(direction)));
+        Assert.That(Terra.WaterLevelAt(direction, 0.0), Is.EqualTo(level).Within(1.2));
+        Assert.That(Terra.HeightAt(direction, 0.0), Is.LessThan(Terra.WaterLevelAt(direction, 0.0)));
 
     }
 
     [Test]
     public void DryLandHasNoWater() {
 
-        Assert.That(Terra.WaterLevelAt(At(23.0, 12.0)), Is.NaN);
+        Assert.That(Terra.WaterLevelAt(At(23.0, 12.0), 0.0), Is.NaN);
+
+    }
+
+    // Real-world surface levels (m) along rivers, from their gauges; the bake takes them from the survey's valleys.
+    [TestCase("Rhine at Basel", 47.560, 7.590, 230.0, 262.0)]
+    [TestCase("Rhine at Mainz", 50.000, 8.270, 70.0, 95.0)]
+    [TestCase("Rhine at Cologne", 50.940, 6.965, 30.0, 55.0)]
+    [TestCase("Mississippi at St Louis", 38.630, -90.180, 105.0, 140.0)]
+    [TestCase("Amazon at Manaus", -3.140, -59.900, 5.0, 40.0)]
+    public void RiversRunAtTheirValleyLevels(string river, double latitude, double longitude, double low, double high) {
+
+        RiverPoint point = NearestRiver(latitude, longitude);
+
+        Assert.That(point.Level, Is.InRange(low, high), river);
+        Assert.That(Terra.WaterLevelAt(point.Centre, 0.0), Is.EqualTo(point.Level * Terrain.VerticalScale).Within(1.0), river);
+        Assert.That(Terra.HeightAt(point.Centre, 0.0), Is.LessThan(Terra.WaterLevelAt(point.Centre, 0.0)), river);
+
+    }
+
+    [Test]
+    public void RiversNeverRiseDownstream() {
+
+        double basel = NearestRiver(47.560, 7.590).Level;
+        double mainz = NearestRiver(50.000, 8.270).Level;
+        double cologne = NearestRiver(50.940, 6.965).Level;
+
+        Assert.That(mainz, Is.LessThan(basel));
+        Assert.That(cologne, Is.LessThan(mainz));
+
+    }
+
+    [Test]
+    public void RiversFlowDownstreamMidChannel() {
+
+        RiverPoint point = NearestRiver(50.940, 6.965);
+        Vector3d flow = Terra.FlowAt(point.Centre);
+
+        Assert.That(flow.Length, Is.GreaterThan(0.5));
+        Assert.That(Vector3d.Dot(flow.Normalized, point.Downstream), Is.GreaterThan(0.99));
+
+    }
+
+    [Test]
+    public void RiversRunFastWhereTheyFallSteeply() {
+
+        RiverPoint pool = new RiverPoint { Speed = 1.2, Depth = 0.8, Fall = 0.0 };
+        RiverPoint drop = pool with { Fall = 0.01 / Terra.HorizontalScale };
+
+        // Four real metres deep falling one in a hundred: Manning's law puts the current near seven metres a second.
+        Assert.That(Terra.RiverSpeed(pool), Is.EqualTo(1.2));
+        Assert.That(Terra.RiverSpeed(drop), Is.InRange(6.5, 8.0));
+
+        // The lowland Rhine falls too gently to run faster than its reach's mean.
+        RiverPoint cologne = NearestRiver(50.940, 6.965);
+
+        Assert.That(Terra.RiverSpeed(cologne), Is.LessThan(1.3 * cologne.Speed));
+
+    }
+
+    [Test]
+    public void ShoreDistanceIsNegativeOffshoreAndPositiveInland() {
+
+        Assert.That(Terra.ShoreDistanceAt(At(0.0, -150.0)), Is.LessThan(-20_000.0));
+        Assert.That(Terra.ShoreDistanceAt(At(23.0, 12.0)), Is.GreaterThan(20_000.0));
+        Assert.That(Terra.ShoreDistanceAt(At(38.7, -9.6)), Is.LessThan(0.0));
+        Assert.That(Terra.ShoreDistanceAt(At(40.4, -3.7)), Is.GreaterThan(0.0));
+
+    }
+
+    [Test]
+    public void FetchFollowsTheOpenWater() {
+
+        Assert.That(Terra.FetchAt(At(-55.0, 0.0), 1.5 * Math.PI), Is.GreaterThan(500_000.0));
+        Assert.That(Terra.FetchAt(At(23.0, 12.0), 0.0), Is.EqualTo(0.0));
+
+        // Lake Geneva runs east-west: long fetch along it, short across it, and nothing like the open sea.
+        Vector3d geneva = At(46.45, 6.5);
+
+        Assert.That(Terra.FetchAt(geneva, 0.5 * Math.PI), Is.InRange(8_000.0, 100_000.0));
+        Assert.That(Terra.FetchAt(geneva, 0.0), Is.LessThan(Terra.FetchAt(geneva, 0.5 * Math.PI)));
+
+    }
+
+    // The biggest river by a town, found by searching a few kilometres around it, and the point nearest its centreline.
+    private RiverPoint NearestRiver(double latitude, double longitude) {
+
+        RiverPoint best = default;
+        bool found = false;
+
+        for (int i = -20; i <= 20; i++) {
+
+            for (int j = -20; j <= 20; j++) {
+
+                if (Terra.RiverAt(At(latitude + i * 0.002, longitude + j * 0.002), out RiverPoint point) &&
+                    (!found || point.HalfWidth > best.HalfWidth || (point.HalfWidth == best.HalfWidth && point.Distance < best.Distance))) {
+
+                    best = point;
+                    found = true;
+
+                }
+
+            }
+
+        }
+
+        Assert.That(found, Is.True, $"no river near {latitude}, {longitude}");
+
+        return best;
 
     }
 

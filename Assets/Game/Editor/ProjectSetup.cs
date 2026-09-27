@@ -19,6 +19,7 @@ public static class ProjectSetup {
     private const string Art = "Assets/Game/Art";
     private const string ScenePath = "Assets/Game/Scenes/Map.unity";
     private const string Sky = "Assets/Game/Planet/Sky";
+    private const string Water = "Assets/Game/Planet/Water";
 
     // Slice order of the ground material arrays; GroundMaterials.hlsl names the same slices.
     private static readonly string[] GroundMaterials = { "grass", "forest", "soil", "sand", "rock", "snow" };
@@ -219,6 +220,10 @@ public static class ProjectSetup {
         view.FindProperty("_atmosphereTables").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>($"{Sky}/AtmosphereLuts.shader");
         view.FindProperty("_atmosphereSky").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>($"{Sky}/AtmosphereSky.shader");
         view.FindProperty("_exposure").objectReferenceValue = AssetDatabase.LoadAssetAtPath<ComputeShader>($"{Sky}/Exposure.compute");
+        view.FindProperty("_waves").objectReferenceValue = AssetDatabase.LoadAssetAtPath<ComputeShader>($"{Water}/Waves/Waves.compute");
+        view.FindProperty("_waterCopy").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>($"{Water}/Surface/WaterCopy.shader");
+        view.FindProperty("_shore").objectReferenceValue = AssetDatabase.LoadAssetAtPath<ComputeShader>($"{Water}/Shore/Shore.compute");
+        view.FindProperty("_shoreDepth").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>($"{Water}/Shore/ShoreDepth.shader");
         view.FindProperty("_skyMaterial").objectReferenceValue = sky;
         view.ApplyModifiedPropertiesWithoutUndo();
 

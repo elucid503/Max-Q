@@ -8,7 +8,7 @@ Material:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_Name: Water
-  m_Shader: {fileID: 4800000, guid: c06a565ded29bd84f8f6cc4ad5870ae9, type: 3}
+  m_Shader: {fileID: 4800000, guid: dcb437300d652824f963a6c269aed60c, type: 3}
   m_Parent: {fileID: 0}
   m_ModifiedSerializedProperties: 0
   m_ValidKeywords: []
@@ -35,6 +35,14 @@ Material:
         m_Texture: {fileID: 0}
         m_Scale: {x: 1, y: 1}
         m_Offset: {x: 0, y: 0}
+    - _ParentWaterDetail:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _WaterDetail:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
     m_Ints: []
     m_Floats:
     - _Level: 0
@@ -45,7 +53,5 @@ Material:
     - _TileOriginFar: {r: 0, g: 0, b: 0, a: 0}
     - _TileOriginMacro: {r: 0, g: 0, b: 0, a: 0}
     - _TileOriginNear: {r: 0, g: 0, b: 0, a: 0}
-    - _WaveOrigin: {r: 0, g: 0, b: 0, a: 0}
-    - _WaveOriginLong: {r: 0, g: 0, b: 0, a: 0}
   m_BuildTextureStacks: []
   m_AllowLocking: 1

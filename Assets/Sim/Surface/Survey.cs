@@ -2,41 +2,53 @@ using System;
 using System.IO;
 using System.IO.MemoryMappedFiles;
 
+using MaxQ.Sim.Ocean;
+
 namespace MaxQ.Sim.Surface;
 
-/// <summary>Owns the baked survey files, mapped into memory so only the pages the ground touches are read.</summary>
+/// <summary>Owns the baked survey files, mapped into memory so only the pages the ground and sea touch are read.</summary>
 public sealed unsafe class Survey : IDisposable {
 
-    private readonly MemoryMappedFile _elevationFile;
-    private readonly MemoryMappedFile _waterFile;
-    private readonly MemoryMappedViewAccessor _elevationView;
-    private readonly MemoryMappedViewAccessor _waterView;
+    private static readonly string[] Files = { "elevation.i16", "levels.i16", "shore.i16", "fetch.u8", "rivers.bin", "sea_state.bin" };
+
+    private readonly MemoryMappedFile[] _files = new MemoryMappedFile[Files.Length];
+    private readonly MemoryMappedViewAccessor[] _views = new MemoryMappedViewAccessor[Files.Length];
 
     public Terrain Terrain { get; }
 
+    public SeaState SeaState { get; }
+
     private Survey(string directory, double radius) {
 
-        _elevationFile = MemoryMappedFile.CreateFromFile(Path.Combine(directory, "elevation.i16"), FileMode.Open, null, 0, MemoryMappedFileAccess.Read);
-        _waterFile = MemoryMappedFile.CreateFromFile(Path.Combine(directory, "water.i16"), FileMode.Open, null, 0, MemoryMappedFileAccess.Read);
-        _elevationView = _elevationFile.CreateViewAccessor(0, 0, MemoryMappedFileAccess.Read);
-        _waterView = _waterFile.CreateViewAccessor(0, 0, MemoryMappedFileAccess.Read);
+        IntPtr[] data = new IntPtr[Files.Length];
 
-        byte* elevation = null;
-        byte* water = null;
+        for (int i = 0; i < Files.Length; i++) {
 
-        _elevationView.SafeMemoryMappedViewHandle.AcquirePointer(ref elevation);
-        _waterView.SafeMemoryMappedViewHandle.AcquirePointer(ref water);
+            _files[i] = MemoryMappedFile.CreateFromFile(Path.Combine(directory, Files[i]), FileMode.Open, null, 0, MemoryMappedFileAccess.Read);
+            _views[i] = _files[i].CreateViewAccessor(0, 0, MemoryMappedFileAccess.Read);
 
-        Terrain = new Terrain((IntPtr)(elevation + _elevationView.PointerOffset), (IntPtr)(water + _waterView.PointerOffset), radius);
+            byte* pointer = null;
+
+            _views[i].SafeMemoryMappedViewHandle.AcquirePointer(ref pointer);
+            data[i] = (IntPtr)(pointer + _views[i].PointerOffset);
+
+        }
+
+        Terrain = new Terrain(data[0], data[1], data[2], data[3], new Rivers(data[4]), radius);
+        SeaState = new SeaState(data[5]);
 
     }
 
     /// <summary>Maps the survey baked into <paramref name="directory"/> by tools/terra.sh; null if it has not been baked.</summary>
     public static Survey Open(string directory, double radius) {
 
-        if (!File.Exists(Path.Combine(directory, "elevation.i16")) || !File.Exists(Path.Combine(directory, "water.i16"))) {
+        foreach (string file in Files) {
 
-            return null;
+            if (!File.Exists(Path.Combine(directory, file))) {
+
+                return null;
+
+            }
 
         }
 
@@ -46,12 +58,13 @@ public sealed unsafe class Survey : IDisposable {
 
     public void Dispose() {
 
-        _elevationView.SafeMemoryMappedViewHandle.ReleasePointer();
-        _waterView.SafeMemoryMappedViewHandle.ReleasePointer();
-        _elevationView.Dispose();
-        _waterView.Dispose();
-        _elevationFile.Dispose();
-        _waterFile.Dispose();
+        for (int i = 0; i < Files.Length; i++) {
+
+            _views[i].SafeMemoryMappedViewHandle.ReleasePointer();
+            _views[i].Dispose();
+            _files[i].Dispose();
+
+        }
 
     }
 

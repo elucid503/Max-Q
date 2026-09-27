@@ -6,6 +6,7 @@ using MaxQ.Game.Planet;
 using MaxQ.Game.Planet.Ground;
 using MaxQ.Game.Planet.Ground.Plants;
 using MaxQ.Game.Planet.Sky;
+using MaxQ.Game.Planet.Water;
 using MaxQ.Sim.Bodies;
 using MaxQ.Sim.Numerics;
 using MaxQ.Sim.Surface;
@@ -16,7 +17,7 @@ using UnityEngine.Rendering;
 // Block-scoped: Unity's script importer cannot see classes in file-scoped namespaces, and a scene needs this one.
 namespace MaxQ.Game.Map {
 
-    /// <summary>The scene: owns the clock, flies the free camera over Terra and draws the ground, sky and Selene in order.</summary>
+    /// <summary>The scene: owns the clock, flies the free camera over Terra and draws the ground, water, sky and Selene in order.</summary>
     public sealed class MapView : MonoBehaviour {
 
         [SerializeField] private Texture2D[] _seleneFaces;
@@ -30,6 +31,10 @@ namespace MaxQ.Game.Map {
         [SerializeField] private Shader _atmosphereTables;
         [SerializeField] private Shader _atmosphereSky;
         [SerializeField] private ComputeShader _exposure;
+        [SerializeField] private ComputeShader _waves;
+        [SerializeField] private Shader _waterCopy;
+        [SerializeField] private ComputeShader _shore;
+        [SerializeField] private Shader _shoreDepth;
         [SerializeField] private Material _skyMaterial;
 
         private CelestialBody _terra;
@@ -37,6 +42,7 @@ namespace MaxQ.Game.Map {
 
         private Survey _survey;
         private GroundView _ground;
+        private WaterView _water;
         private Atmosphere _atmosphere;
         private Sun _sun;
         private BodyView _seleneView;
@@ -61,7 +67,8 @@ namespace MaxQ.Game.Map {
 
             _atmosphere = new Atmosphere(_terra, _atmosphereTables, _atmosphereSky, _exposure, MapSpace.Direction(Vector3d.UnitX), SunIlluminance);
             Vegetation vegetation = new Vegetation(_grassMaterial, _treeMaterial, _vegetation, _groundMaterial.GetTexture("_GroundAlbedo"), (float)(_terra.Radius / MapSpace.MetresPerUnit));
-            _ground = new GroundView(_terra, new ColourTiles(Path.Combine(data, "colour.tiles")), _groundMaterial, _waterMaterial, _rockMaterial, vegetation);
+            _ground = new GroundView(_terra, _survey.SeaState, new ColourTiles(Path.Combine(data, "colour.tiles")), _groundMaterial, _waterMaterial, _rockMaterial, vegetation);
+            _water = new WaterView(_terra, _survey.SeaState, _waves, _waterCopy, _shore, _shoreDepth);
             _seleneView = new BodyView(selene, _seleneFaces, _surfaceMaterial, 0.0f);
 
             RenderSettings.skybox = _skyMaterial;
@@ -83,6 +90,7 @@ namespace MaxQ.Game.Map {
         private void OnDestroy() {
 
             _ground?.Dispose();
+            _water?.Dispose();
             _atmosphere?.Dispose();
             _survey?.Dispose();
 
@@ -96,6 +104,8 @@ namespace MaxQ.Game.Map {
             _freeCamera.Update(_time, dt);
 
             _atmosphere.Update(_time, _camera.transform.position, dt);
+            _water.Update(_time, _camera, _ground);
+            _freeCamera.WaveClearance = 1.25 * _water.SeaHeight;
             _ground.Draw(_time, _camera, MapSpace.Direction(Vector3d.UnitX));
             _sun.Fit(_ground.CameraAltitude / MapSpace.MetresPerUnit, _terra.Radius / MapSpace.MetresPerUnit);
             _seleneView.Draw(_time, _camera);
@@ -110,12 +120,15 @@ namespace MaxQ.Game.Map {
 
             _time = (time % day + day) % day;
             _freeCamera.Place(_terra, latitude, longitude, altitude, heading, pitch);
+            _water?.Jump();
 
         }
 
         internal GroundView Ground => _ground;
 
         internal Atmosphere Atmosphere => _atmosphere;
+
+        internal WaterView Water => _water;
 
         internal Sun Sun => _sun;
 

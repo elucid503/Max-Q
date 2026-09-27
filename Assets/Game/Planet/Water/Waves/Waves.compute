@@ -1,0 +1,210 @@
+// The sea's waves as four cascades of Tessendorf's FFT ocean, each a square tile of the sea holding one band of
+// wavelengths. Per frame: evolve each cascade's spectrum to the sim's time, transform it back to the sea surface along
+// rows then columns (Stockham's radix-2 FFT in group memory, eight real fields in four complex transforms), and
+// assemble the displacement, slopes and slope moments the surface samples, plus the foam where the surface breaks.
+#pragma kernel Evolve
+#pragma kernel TransformRows
+#pragma kernel TransformColumns
+#pragma kernel Assemble
+#pragma kernel Foam
+
+#define SIZE 256
+#define HALF (SIZE / 2)
+#define PI 3.14159265359
+
+// Must match MaxQ.Sim.Ocean.Spectrum.
+#define GRAVITY 9.81
+#define TENSION 7.4e-5
+#define LOOP_SECONDS 1024.0
+
+// Each texel's spectrum: h0(k) and h0(-k), now and the spectrum being blended toward.
+Texture2DArray<float4> _Initial;
+Texture2DArray<float4> _InitialNext;
+float _Blend;
+
+float4 _CascadeSize;
+
+// Sim time as a share of the loop period.
+float _LoopPhase;
+
+// Per k: (Dx + i h, Dz + i dh/dx) and (dh/dz + i dDx/dx, dDz/dz + i dDx/dz), transformed in place.
+RWTexture2DArray<float4> _SpectrumA;
+RWTexture2DArray<float4> _SpectrumB;
+
+// Displacement (Dx, h, Dz, dDx/dz), slopes of the displaced surface with the stretch of the chop (sx, sz, dDx/dx,
+// dDz/dz), and the slopes' second moments (sx^2, sz^2, sx sz): metres, in each tile's axes.
+RWTexture2DArray<float4> _Displacement;
+RWTexture2DArray<float4> _Derivatives;
+RWTexture2DArray<float4> _Moments;
+
+// Foam: coverage and fresh foam, carried downwind and fading, raised where the surface folds.
+Texture2DArray<float4> _AssembledDisplacement;
+Texture2DArray<float4> _AssembledDerivatives;
+Texture2DArray<float2> _FoamSource;
+RWTexture2DArray<float2> _Foam;
+SamplerState sampler_linear_repeat;
+
+// Per cascade: the Jacobian under which the sea breaks, and the drift of a foam step in tile texels (xy, zw).
+float4 _FoamThreshold;
+float4 _FoamDriftNear;
+float4 _FoamDriftFar;
+float2 _FoamKeep;
+
+float2 Mul(float2 a, float2 b) {
+
+    return float2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+
+}
+
+float2 TimesI(float2 a) {
+
+    return float2(-a.y, a.x);
+
+}
+
+[numthreads(8, 8, 1)]
+void Evolve(uint3 id : SV_DispatchThreadID) {
+
+    float2 k = (float2(id.xy) - HALF) * (2.0 * PI / _CascadeSize[id.z]);
+    float kLength = length(k);
+    float4 initial = lerp(_Initial[id], _InitialNext[id], _Blend);
+
+    // Every frequency is a whole number of cycles in the loop, so its phase stays small in single precision.
+    float omega = sqrt(GRAVITY * kLength + TENSION * kLength * kLength * kLength);
+    float cycles = max(round(omega * LOOP_SECONDS / (2.0 * PI)), 1.0);
+    float phase = 2.0 * PI * frac(cycles * _LoopPhase);
+    float2 turn = float2(cos(phase), sin(phase));
+
+    // h(k, t) = h0(k) e^(iwt) + conj(h0(-k)) e^(-iwt), so h(-k) = conj(h(k)) and the surface is real.
+    float2 later = Mul(initial.zw, turn);
+    float2 h = Mul(initial.xy, turn) + float2(later.x, -later.y);
+    float2 unit = kLength > 1e-6 ? k / kLength : 0.0;
+
+    // Chop: each particle circles as far across as up and down (Tessendorf's D = -i k/|k| h); derivatives multiply
+    // by i k.
+    float2 dx = -TimesI(h) * unit.x;
+    float2 dz = -TimesI(h) * unit.y;
+    float2 dhdx = TimesI(h) * k.x;
+    float2 dhdz = TimesI(h) * k.y;
+    float2 dxdx = h * (k.x * unit.x);
+    float2 dzdz = h * (k.y * unit.y);
+    float2 dxdz = h * (k.x * unit.y);
+
+    // Two real fields ride one complex transform: the first as its real part, the second as its imaginary.
+    _SpectrumA[id] = float4(dx + TimesI(h), dz + TimesI(dhdx));
+    _SpectrumB[id] = float4(dhdz + TimesI(dxdx), dzdz + TimesI(dxdz));
+
+}
+
+groupshared float4 _a[2][SIZE];
+groupshared float4 _b[2][SIZE];
+
+// Inverse transform of the line in _a[0] and _b[0]; returns which half holds the result.
+uint Stockham(uint thread) {
+
+    uint source = 0;
+
+    [unroll]
+    for (uint span = 1; span < SIZE; span <<= 1) {
+
+        uint k = thread & (span - 1);
+        uint to = ((thread - k) << 1) + k;
+        float angle = PI * k / span;
+        float2 twiddle = float2(cos(angle), sin(angle));
+
+        float4 a0 = _a[source][thread];
+        float4 a1 = _a[source][thread + HALF];
+        float4 b0 = _b[source][thread];
+        float4 b1 = _b[source][thread + HALF];
+        float4 a = float4(Mul(twiddle, a1.xy), Mul(twiddle, a1.zw));
+        float4 b = float4(Mul(twiddle, b1.xy), Mul(twiddle, b1.zw));
+
+        _a[1 - source][to] = a0 + a;
+        _a[1 - source][to + span] = a0 - a;
+        _b[1 - source][to] = b0 + b;
+        _b[1 - source][to + span] = b0 - b;
+
+        source = 1 - source;
+        GroupMemoryBarrierWithGroupSync();
+
+    }
+
+    return source;
+
+}
+
+[numthreads(HALF, 1, 1)]
+void TransformRows(uint3 group : SV_GroupID, uint thread : SV_GroupIndex) {
+
+    uint3 first = uint3(thread, group.x, group.y);
+    uint3 second = uint3(thread + HALF, group.x, group.y);
+
+    _a[0][thread] = _SpectrumA[first];
+    _a[0][thread + HALF] = _SpectrumA[second];
+    _b[0][thread] = _SpectrumB[first];
+    _b[0][thread + HALF] = _SpectrumB[second];
+    GroupMemoryBarrierWithGroupSync();
+
+    uint result = Stockham(thread);
+
+    _SpectrumA[first] = _a[result][thread];
+    _SpectrumA[second] = _a[result][thread + HALF];
+    _SpectrumB[first] = _b[result][thread];
+    _SpectrumB[second] = _b[result][thread + HALF];
+
+}
+
+[numthreads(HALF, 1, 1)]
+void TransformColumns(uint3 group : SV_GroupID, uint thread : SV_GroupIndex) {
+
+    uint3 first = uint3(group.x, thread, group.y);
+    uint3 second = uint3(group.x, thread + HALF, group.y);
+
+    _a[0][thread] = _SpectrumA[first];
+    _a[0][thread + HALF] = _SpectrumA[second];
+    _b[0][thread] = _SpectrumB[first];
+    _b[0][thread + HALF] = _SpectrumB[second];
+    GroupMemoryBarrierWithGroupSync();
+
+    uint result = Stockham(thread);
+
+    _SpectrumA[first] = _a[result][thread];
+    _SpectrumA[second] = _a[result][thread + HALF];
+    _SpectrumB[first] = _b[result][thread];
+    _SpectrumB[second] = _b[result][thread + HALF];
+
+}
+
+[numthreads(8, 8, 1)]
+void Assemble(uint3 id : SV_DispatchThreadID) {
+
+    // The spectrum is centred on k = 0, which shifts the transformed surface by alternating signs.
+    float sign = ((id.x + id.y) & 1) == 0 ? 1.0 : -1.0;
+    float4 a = _SpectrumA[id] * sign;
+    float4 b = _SpectrumB[id] * sign;
+
+    // Slopes of the displaced surface: the chop squeezes the crests, steepening them.
+    float2 stretch = max(1.0 + b.yz, 0.3);
+    float2 slope = float2(a.w, b.x) / stretch;
+
+    _Displacement[id] = float4(a.x, a.y, a.z, b.w);
+    _Derivatives[id] = float4(slope, b.y, b.z);
+    _Moments[id] = float4(slope * slope, slope.x * slope.y, 0.0);
+
+}
+
+[numthreads(8, 8, 1)]
+void Foam(uint3 id : SV_DispatchThreadID) {
+
+    float4 displacement = _AssembledDisplacement[id];
+    float4 derivatives = _AssembledDerivatives[id];
+    float jacobian = (1.0 + derivatives.z) * (1.0 + derivatives.w) - displacement.w * displacement.w;
+
+    float2 drift = id.z == 0 ? _FoamDriftNear.xy : id.z == 1 ? _FoamDriftNear.zw : id.z == 2 ? _FoamDriftFar.xy : _FoamDriftFar.zw;
+    float2 uv = (float2(id.xy) + 0.5 - drift) / SIZE;
+    float2 previous = _FoamSource.SampleLevel(sampler_linear_repeat, float3(uv, id.z), 0.0);
+    float breaking = saturate((_FoamThreshold[id.z] - jacobian) * 8.0);
+
+    _Foam[id] = float2(max(previous.x * _FoamKeep.x, breaking), max(previous.y * _FoamKeep.y, breaking));
+
+}

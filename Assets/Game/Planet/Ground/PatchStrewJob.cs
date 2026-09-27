@@ -140,7 +140,7 @@ internal struct PatchStrewJob : IJobParallelFor {
 
                 Vector3d direction = CubeFace.Direction(Face, a0 + (i + unit.y) * span / PatchJob.Quads, b0 + (j + unit.z) * span / PatchJob.Quads);
                 double height = Terrain.HeightAt(direction, finest);
-                double level = Terrain.WaterLevelAt(direction);
+                double level = Terrain.WaterLevelAt(direction, finest);
 
                 if (!double.IsNaN(level) && height < level + 0.5) {
 
@@ -188,7 +188,7 @@ internal struct PatchStrewJob : IJobParallelFor {
                 float u = (hash >> 16) / 65_536.0f;
                 Vector3d direction = CubeFace.Direction(Face, a0 + (i + s) * span / PatchJob.Quads, b0 + (j + u) * span / PatchJob.Quads);
                 double height = Terrain.HeightAt(direction, TreeFootprint);
-                double level = Terrain.WaterLevelAt(direction);
+                double level = Terrain.WaterLevelAt(direction, TreeFootprint);
 
                 if (!double.IsNaN(level) && height < level + 0.5) {
 

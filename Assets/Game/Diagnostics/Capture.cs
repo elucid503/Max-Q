@@ -10,9 +10,9 @@ using UnityEngine;
 namespace MaxQ.Game.Diagnostics;
 
 /// <summary>Scripted screenshots for headless review: run the player with <c>-capture &lt;dir&gt;</c>, optionally
-/// <c>-only &lt;text&gt;</c> to keep just the shots whose names contain it. Each shot waits for the ground to finish
-/// streaming, then logs GPU time to timings.txt beside the images: the whole frame, and what each part in
-/// <see cref="Parts"/> costs. Add a shot or a part with one line in its table.</summary>
+/// <c>-only &lt;text&gt;[,&lt;text&gt;...]</c> to keep just the shots whose names contain one of them. Each shot waits
+/// for the ground to finish streaming, then logs GPU time to timings.txt beside the images: the whole frame, and what
+/// each part in <see cref="Parts"/> costs. Add a shot or a part with one line in its table.</summary>
 public sealed class Capture : MonoBehaviour {
 
     private const int SettleFrameLimit = 900;
@@ -47,6 +47,15 @@ public sealed class Capture : MonoBehaviour {
         ("forest-canopy-60m", 48.3, 8.2, 60.0, 100.0, -15.0, 10.5),
         ("forest-reach-400m", 48.3, 8.2, 400.0, 280.0, -6.0, 10.5),
         ("amazon-1km", -3.0, -60.0, 1_000.0, 70.0, -15.0, 9.0),
+        ("surf-beach-30m", 21.66, -158.06, 30.0, 330.0, -6.0, 15.0),
+        ("southern-storm-40m", -52.0, 100.0, 40.0, 60.0, -4.0, 12.0),
+        ("lagoon-reef-200m", -18.93, -159.78, 200.0, 350.0, -20.0, 12.0),
+        ("river-rhine-150m", 50.10, 7.72, 150.0, 330.0, -12.0, 14.0),
+        ("rapids-zambezi-80m", -17.93, 25.85, 80.0, 90.0, -18.0, 10.0),
+        ("lake-dawn-20m", 46.43, 6.62, 20.0, 115.0, -2.0, 6.4),
+        ("glint-orbit-400km", 5.0, -35.0, 400_000.0, 90.0, -60.0, 12.0),
+        ("ice-edge-2km", -63.0, -45.0, 2_000.0, 180.0, -12.0, 13.0),
+        ("fjord-100m", 61.13, 6.4, 100.0, 90.0, -6.0, 13.0),
 
     };
 
@@ -56,11 +65,12 @@ public sealed class Capture : MonoBehaviour {
         ("ground", (view, shown) => view.Ground.Hidden = !shown),
         ("atmosphere", (view, shown) => view.Atmosphere.Enabled = shown),
         ("shadows", (view, shown) => view.Sun.Shadows = shown),
+        ("water", (view, shown) => view.Water.Hidden = !shown),
 
     };
 
     private string _directory;
-    private string _only;
+    private string[] _only;
     private float _settleSeconds;
     private readonly List<string> _timings = new List<string>();
     private readonly FrameTiming[] _frameTimings = new FrameTiming[1];
@@ -77,9 +87,13 @@ public sealed class Capture : MonoBehaviour {
 
         }
 
+        // Frames run unthrottled, so the GPU holds its clocks and the timings compare run to run.
+        QualitySettings.vSyncCount = 0;
+        Application.targetFrameRate = -1;
+
         Capture capture = new GameObject("Capture").AddComponent<Capture>();
         capture._directory = directory;
-        capture._only = Argument(args, "-only");
+        capture._only = Argument(args, "-only")?.Split(',', StringSplitOptions.RemoveEmptyEntries);
 
     }
 
@@ -98,7 +112,7 @@ public sealed class Capture : MonoBehaviour {
 
         foreach ((string name, double latitude, double longitude, double altitude, double heading, double pitch, double solarHour) in Shots) {
 
-            if (_only != null && !name.Contains(_only)) {
+            if (_only != null && !Array.Exists(_only, name.Contains)) {
 
                 continue;
 
@@ -107,7 +121,8 @@ public sealed class Capture : MonoBehaviour {
             view.Look(latitude, longitude, altitude, heading, pitch, solarHour);
 
             yield return Settle(view);
-            yield return Save(view, name);
+
+            yield return Save(view, name, () => view.Look(latitude, longitude, altitude, heading, pitch, solarHour));
 
         }
 
@@ -164,7 +179,8 @@ public sealed class Capture : MonoBehaviour {
 
     }
 
-    private IEnumerator Save(MapView view, string name) {
+    // Retakes the shot's place and time just before the screenshot, so the sun, sky and sea are the same run to run.
+    private IEnumerator Save(MapView view, string name, Action retake) {
 
         double[] gpu = new double[1];
 
@@ -190,7 +206,13 @@ public sealed class Capture : MonoBehaviour {
         }
 
         _timings.Add($"{name}: {string.Join(", ", costs)}; " +
-            $"{view.Ground.ShownCount} patches drawn, {view.Ground.PatchCount} built, {view.Ground.Pending} pending, settled in {_settleSeconds:F1} s; exposure {Math.Log(view.Atmosphere.Exposure, 2.0):+0.0;-0.0} EV");
+            $"{view.Ground.ShownCount} patches drawn, {view.Ground.PatchCount} built, {view.Ground.Pending} pending, settled in {_settleSeconds:F1} s; exposure {Math.Log(view.Atmosphere.Exposure, 2.0):+0.0;-0.0} EV; " +
+            $"sea {view.Water.SeaHeight:F2} m, drawn {view.Water.DrawnHeight:F2} m");
+
+        retake();
+
+        yield return null;
+        yield return null;
 
         ScreenCapture.CaptureScreenshot(Path.Combine(_directory, name + ".png"));
 
