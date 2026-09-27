@@ -50,8 +50,8 @@ public static class ProjectSetup {
         Material rock = SaveMaterial(rockTemplate, "Rock");
         Material grass = SaveMaterial(new Material(Shader.Find("MaxQ/Grass")), "Grass");
         Material treeTemplate = new Material(Shader.Find("MaxQ/Tree"));
+        treeTemplate.SetTexture("_Foliage", FoliageAtlas.Bake($"{Materials}/Foliage.asset"));
         treeTemplate.SetTexture("_GroundAlbedo", groundTemplate.GetTexture("_GroundAlbedo"));
-        treeTemplate.SetTexture("_GroundNormal", groundTemplate.GetTexture("_GroundNormal"));
         Material tree = SaveMaterial(treeTemplate, "Tree");
         Material water = SaveMaterial(new Material(Shader.Find("MaxQ/Water")), "Water");
 
@@ -215,7 +215,7 @@ public static class ProjectSetup {
         view.FindProperty("_rockMaterial").objectReferenceValue = rock;
         view.FindProperty("_grassMaterial").objectReferenceValue = grass;
         view.FindProperty("_treeMaterial").objectReferenceValue = tree;
-        view.FindProperty("_vegetation").objectReferenceValue = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Game/Planet/Ground/Vegetation.compute");
+        view.FindProperty("_vegetation").objectReferenceValue = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Game/Planet/Ground/Plants/Vegetation.compute");
         view.FindProperty("_atmosphereTables").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>($"{Sky}/AtmosphereLuts.shader");
         view.FindProperty("_atmosphereSky").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>($"{Sky}/AtmosphereSky.shader");
         view.FindProperty("_exposure").objectReferenceValue = AssetDatabase.LoadAssetAtPath<ComputeShader>($"{Sky}/Exposure.compute");

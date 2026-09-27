@@ -10,7 +10,7 @@ Shader "MaxQ/Grass" {
 
         HLSLINCLUDE
 
-        #include "Sunlight.hlsl"
+        #include "../Sunlight.hlsl"
 
         struct Plant {
 

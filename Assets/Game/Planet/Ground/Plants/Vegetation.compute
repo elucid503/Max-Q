@@ -13,10 +13,10 @@
 #define CBUFFER_START(name)
 #define CBUFFER_END
 
-#include "GroundMaterials.hlsl"
+#include "../GroundMaterials.hlsl"
 
 // Places, as PatchJob writes them: position (km from the patch centre, scene axes) and a random number; place on the
-// patch. Plants, as the vegetation shaders read them.
+// patch, and for a grove the ground's normal. Plants, as the vegetation shaders read them.
 StructuredBuffer<float4> _Candidates;
 uint _CandidateCount;
 
@@ -44,6 +44,7 @@ struct Place {
     float3 position;
     float random;
     float2 uv;
+    float2 ground;
     float3 up;
     float altitude;
     GroundSite site;
@@ -60,6 +61,7 @@ Place Survey(uint id) {
     place.position = a.xyz;
     place.random = a.w;
     place.uv = b.xy;
+    place.ground = b.zw;
 
     float3 fromCentre = _PatchCentre + a.xyz;
     GroundDetail detail = SampleDetail(b.xy, 0.0);
@@ -98,7 +100,10 @@ bool Tuft(Place place, out Plant plant) {
 }
 
 // Trees in forest; conifers take over toward the poles and up the mountains, with a mix where the two meet. Canopy seen
-// from above is the satellite's colour; each tree strays a little from it.
+// from above is the satellite's colour, gaps and shade included, so a sunlit crown is brighter than it: broadleaves by a
+// third and yellower, conifers a little darker and bluer. Each tree strays from its neighbours in brightness and hue, as
+// a real stand does. Crowns are as wide as a closed stand leaves room for, some five metres between trees. A grove takes
+// the same choices for the trees it stands for, and carries on the ground's normal under it.
 bool Tree(Place place, out Plant plant) {
 
     float forest = Share(place.site, FOREST);
@@ -106,15 +111,17 @@ bool Tree(Place place, out Plant plant) {
     float conifer = saturate((latitude - 38.0) / 14.0) + saturate((place.altitude - 200.0) / 150.0);
     bool needles = Another(place.random, 2.0) < conifer;
     float3 satellite = SAMPLE_TEXTURE2D_LOD(_Colour, sampler_Colour, place.uv * _ColourRect.xy + _ColourRect.zw, 0.0).rgb;
-    // The satellite's canopy colour mixes in whatever shows between crowns; leaves keep its brightness and half its hue.
     float luma = max(dot(satellite, float3(0.2126, 0.7152, 0.0722)), 1e-4);
-    float3 leaf = luma * lerp(satellite / luma, float3(0.7, 1.15, 0.45), 0.5);
-    float3 foliage = leaf * (0.8 + 0.4 * Another(place.random, 3.0)) * (needles ? float3(0.85, 0.95, 1.0) : float3(1.05, 1.0, 0.9));
+    // Hues of unit luminance.
+    float3 hue = lerp(satellite / luma, needles ? float3(0.62, 1.1, 0.62) : float3(0.78, 1.15, 0.42), 0.55);
+    float3 swing = float3(1.0, 0.0, -1.0) * 0.15 * (Another(place.random, 8.0) - 0.5);
+    float3 foliage = luma * (needles ? 0.9 : 1.3) * lerp(0.7, 1.3, Another(place.random, 3.0)) * hue * (1.0 + swing);
     float height = (needles ? lerp(14.0, 30.0, Another(place.random, 4.0)) : lerp(10.0, 24.0, Another(place.random, 4.0))) * (0.75 + 0.25 * forest);
+    float crown = height * (needles ? lerp(0.12, 0.17, Another(place.random, 5.0)) : lerp(0.17, 0.25, Another(place.random, 5.0)));
 
     plant.position = float4(place.position, place.random);
     plant.colour = float4(foliage, needles ? 1.0 : 0.0);
-    plant.shape = float4(height, height * (needles ? 0.2 : 0.33) * (0.85 + 0.3 * Another(place.random, 5.0)), Another(place.random, 6.0), Another(place.random, 7.0));
+    plant.shape = float4(height, crown, place.ground);
 
     return place.dry && Another(place.random, 1.0) < 1.15 * forest;
 

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 
 using MaxQ.Game.Map;
+using MaxQ.Game.Planet.Ground.Plants;
 using MaxQ.Sim.Bodies;
 using MaxQ.Sim.Numerics;
 using MaxQ.Sim.Surface;
@@ -10,6 +11,7 @@ using Terrain = MaxQ.Sim.Surface.Terrain;
 
 using Unity.Collections;
 using Unity.Jobs;
+using Unity.Jobs.LowLevel.Unsafe;
 using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
@@ -31,8 +33,9 @@ public sealed class GroundView : IDisposable {
     private const double ShadowReach = 60_000.0;
     private const double MorphStart = 0.85;
 
-    private const int BuildSlots = 48;
-    private const int BuildsPerFrame = 32;
+    // Each build spreads across every worker, so a few in flight keep them all busy; more would only queue ahead of
+    // the engine's own jobs. The six roots build together before the first frame.
+    private static readonly int BuildSlots = Math.Clamp(JobsUtility.JobWorkerCount / 4, 2, 8);
     private const int Capacity = 2_400;
 
     // Deepest trench on Terra, below which nothing can hide the horizon.
@@ -99,9 +102,9 @@ public sealed class GroundView : IDisposable {
 
             double corner = 0.0;
 
-            foreach ((double ca, double cb) in new[] { (a, b), (a + span, b), (a, b + span), (a + span, b + span) }) {
+            for (int c = 0; c < 4; c++) {
 
-                corner = Math.Max(corner, (CubeFace.Direction(face, ca, cb) - Direction).Length * bodyRadius);
+                corner = Math.Max(corner, (CubeFace.Direction(face, a + span * (c & 1), b + span * (c >> 1)) - Direction).Length * bodyRadius);
 
             }
 
@@ -143,6 +146,7 @@ public sealed class GroundView : IDisposable {
         public NativeArray<byte> Horizons;
         public NativeArray<float4> Rocks;
         public NativeArray<float4> Plants;
+        public PatchSamples Samples;
 
     }
 
@@ -154,7 +158,7 @@ public sealed class GroundView : IDisposable {
     private readonly Transform _root;
 
     private readonly Node[] _roots = new Node[6];
-    private readonly Build[] _builds = new Build[BuildSlots];
+    private readonly Build[] _builds = new Build[Math.Max(BuildSlots, 6)];
     private readonly Stack<Patch> _sparePatches = new Stack<Patch>();
     private readonly List<Patch> _patches = new List<Patch>();
     private readonly NativeArray<byte> _noHorizons = new NativeArray<byte>(0, Allocator.Persistent);
@@ -166,6 +170,7 @@ public sealed class GroundView : IDisposable {
     private readonly Plane[] _planes = new Plane[6];
     private readonly Rocks _rocks;
     private readonly Vegetation _vegetation;
+    private readonly Comparison<Node> _byPriority;
 
     private Vector3d _camera;
     private Vector3 _sunward;
@@ -216,7 +221,7 @@ public sealed class GroundView : IDisposable {
         _waterTemplate = water;
         _root = new GameObject(body.Name).transform;
 
-        for (int i = 0; i < BuildSlots; i++) {
+        for (int i = 0; i < _builds.Length; i++) {
 
             _builds[i] = new Build {
 
@@ -225,10 +230,14 @@ public sealed class GroundView : IDisposable {
                 Horizons = new NativeArray<byte>(PatchJob.HorizonLength, Allocator.Persistent),
                 Rocks = new NativeArray<float4>(PatchJob.RockLength, Allocator.Persistent),
                 Plants = new NativeArray<float4>(PatchJob.PlantLength, Allocator.Persistent),
+                Samples = new PatchSamples(),
 
             };
 
         }
+
+        // Coarse levels first, then nearest: the view fills in top-down and never waits on a far patch.
+        _byPriority = (a, b) => a.Depth != b.Depth ? a.Depth.CompareTo(b.Depth) : Distance(a).CompareTo(Distance(b));
 
         Vector4[] morph = new Vector4[MaxDepth + 1];
 
@@ -515,22 +524,13 @@ public sealed class GroundView : IDisposable {
 
     }
 
-    // Coarse levels first, then nearest: the view fills in top-down and never waits on a far patch.
     private void ScheduleRequests() {
 
-        _requests.Sort((a, b) => a.Depth != b.Depth ? a.Depth.CompareTo(b.Depth) : Distance(a).CompareTo(Distance(b)));
-
-        int scheduled = 0;
+        _requests.Sort(_byPriority);
 
         foreach (Node node in _requests) {
 
-            if (scheduled == BuildsPerFrame) {
-
-                break;
-
-            }
-
-            Build slot = Array.Find(_builds, b => b.Node == null);
+            Build slot = FreeSlot(BuildSlots);
 
             if (slot == null) {
 
@@ -539,11 +539,27 @@ public sealed class GroundView : IDisposable {
             }
 
             Schedule(node, slot);
-            scheduled++;
 
         }
 
         JobHandle.ScheduleBatchedJobs();
+
+    }
+
+    // A slot among the first count with no build in it.
+    private Build FreeSlot(int count) {
+
+        for (int i = 0; i < count; i++) {
+
+            if (_builds[i].Node == null) {
+
+                return _builds[i];
+
+            }
+
+        }
+
+        return null;
 
     }
 
@@ -569,7 +585,7 @@ public sealed class GroundView : IDisposable {
             Plants = slot.Plants,
             ParentHorizons = node.Parent?.Patch.Horizons ?? _noHorizons,
 
-        }.Schedule();
+        }.ScheduleStages(slot.Samples);
 
     }
 
@@ -602,7 +618,7 @@ public sealed class GroundView : IDisposable {
             if (tufts + trees > 0) {
 
                 patch.Plot ??= new Vegetation.Plot();
-                _vegetation.Load(patch.Plot, slot.Plants, tufts + trees, trees > 0);
+                _vegetation.Load(patch.Plot, slot.Plants, tufts + trees, trees > 0, node.Depth);
 
             } else if (patch.Plot != null) {
 
@@ -808,6 +824,7 @@ public sealed class GroundView : IDisposable {
             slot.Horizons.Dispose();
             slot.Rocks.Dispose();
             slot.Plants.Dispose();
+            slot.Samples.Dispose();
 
         }
 

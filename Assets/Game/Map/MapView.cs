@@ -4,6 +4,7 @@ using System.IO;
 using MaxQ.Game.Map.Rendering;
 using MaxQ.Game.Planet;
 using MaxQ.Game.Planet.Ground;
+using MaxQ.Game.Planet.Ground.Plants;
 using MaxQ.Game.Planet.Sky;
 using MaxQ.Sim.Bodies;
 using MaxQ.Sim.Numerics;

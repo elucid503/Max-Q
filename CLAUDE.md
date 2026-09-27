@@ -16,10 +16,12 @@ patched conics, 1/5 Earth scale. Personal project, never distributed. Successor 
 - `Assets/Game/` - assembly `MaxQ.Game`. Rendering, input, UI. No physics.
   - `Map/` the scene and its free camera (`Rendering/` bodies without a survey), `Planet/`
     surveyed bodies (`Sun.cs` the shadow-casting light and its per-frame cascade fit; `Ground/` CDLOD
-    quadtree, Burst patch jobs with horizon occlusion and rock and plant scatter, streamed colour tiles, ground,
-    water, rock, grass and tree shaders, and `Vegetation` choosing plants on the GPU from the ground's materials;
+    quadtree, Burst patch builds in stages (terrain sampled a row per work item across the workers, then rocks and
+    tree places, then the assembled mesh with horizon occlusion) so no job runs long, streamed colour tiles, ground,
+    water and rock shaders; `Ground/Plants/` grass, trees of foliage cards then painted cards, groves strewn by
+    coarser levels out to ten kilometres, and `Vegetation` choosing plants on the GPU from the ground's materials;
     `Sky/` atmosphere tables, RenderGraph passes and eye adaptation),
-    `Diagnostics/` capture tooling (`-only <text>` filters shots), `Editor/` setup, build and tile baking,
+    `Diagnostics/` capture tooling (`-only <text>` filters shots), `Editor/` setup, build, tile and foliage atlas baking,
     `Scenes/`, `Settings/` (pipeline, materials, UI panel), `Art/`.
 - Colour space is Linear; lighting is in physical units with auto-exposure, so never tune colours by eye in gamma.
 - `Assets/csc.rsp` raises C# to 10 (file-scoped namespaces); it must stay at the Assets root.
