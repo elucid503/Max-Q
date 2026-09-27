@@ -41,7 +41,10 @@ Shader "MaxQ/Ground" {
 
             #include "GroundMaterials.hlsl"
             #include "../Water/Surface/WaterSurface.hlsl"
-            #include "../Water/Shore/Shore.hlsl"
+
+            // The land's own ground runs on under water shallower than this (m), handing over to the bed the
+            // satellite saw, whose coastal pixels are mostly water; the waterline then shows no seam.
+            #define SHALLOWS 0.15
 
             // The water's optics where the ground lies under it.
             WaterOptics OpticsHere(GroundVaryings input, GroundDetail detail, SeaState sea, WaterDetail water) {
@@ -50,12 +53,11 @@ Shader "MaxQ/Ground" {
 
             }
 
-            // The bed under the water: the satellite's colour with the water it saw undone, lit by the sun and sky that
-            // reach down through the water. The water's surface then adds what the water does on the way back up.
-            float3 BedRadiance(GroundVaryings input, GroundDetail detail, Sunlight light, WaterOptics optics) {
+            // The bed of an albedo under the water, lit by the sun and sky that reach down through the water. The water's
+            // surface then adds what the water does on the way back up.
+            float3 BedRadiance(GroundDetail detail, Sunlight light, WaterOptics optics, float3 albedo) {
 
                 float depth = detail.waterDepth / TERRA_SCALE;
-                float3 albedo = InvertBed(SatelliteColour(input.uv), optics, depth);
                 float cosSun = saturate(dot(_SunDirection, light.up));
                 float refracted = sqrt(1.0 - (1.0 - cosSun * cosSun) / (1.333 * 1.333));
                 float3 sun = light.direct * light.shadow * cosSun * (1.0 - EffectiveFresnel(cosSun, 0.01)) * exp(-optics.attenuation * depth / refracted);
@@ -84,16 +86,15 @@ Shader "MaxQ/Ground" {
                 UNITY_BRANCH
                 if (detail.waterDepth < BED_REACH) {
 
-                    bed = BedRadiance(input, detail, light, optics);
+                    bed = BedRadiance(detail, light, optics, InvertBed(SatelliteColour(input.uv), optics, depth));
                     path = depth / max(dot(look.view, look.up), 0.05);
 
                 }
 
                 float3 body = WaterBody(optics, bed, path, depth, Underwater(light, look.up, look.variance));
                 float3 ice = GroundRadiance(SeaIceAlbedo(SatelliteColour(input.uv)), look.up, light, Surroundings(input.uv), 1.0);
-                float height = length(float2(sea.seaHeight * water.seaShelter, sea.swellHeight * water.swellShelter)) * (1.0 - sea.ice);
 
-                return WaterColour(look, light, reflection, body, 0.0, optics, sea, max(SurfFoam(detail.waterDepth, height), RAPIDS_FOAM * rapids), float3(FoamStructure(coords).xx, 1.0), ice);
+                return WaterColour(look, light, reflection, body, 0.0, optics, sea, RAPIDS_FOAM * rapids, float3(FoamStructure(coords).xx, 1.0), ice, 0.0);
 
             }
 
@@ -111,8 +112,16 @@ Shader "MaxQ/Ground" {
                 if (detail.waterDepth > 0.0 && input.water.x > 0.0) {
 
                     WaterOptics optics = OpticsHere(input, detail, SeaStateAt(input.positionWS), SampleWaterDetail(input.uv, input.morph));
+                    float3 albedo = InvertBed(SatelliteColour(input.uv), optics, detail.waterDepth / TERRA_SCALE);
 
-                    return float4(BedRadiance(input, detail, light, optics), 1.0);
+                    UNITY_BRANCH
+                    if (detail.waterDepth < SHALLOWS) {
+
+                        albedo = lerp(GroundMaterial(input, detail, light.up, footprint).albedo, albedo, detail.waterDepth / SHALLOWS);
+
+                    }
+
+                    return float4(BedRadiance(detail, light, optics, albedo), 1.0);
 
                 }
 

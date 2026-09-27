@@ -23,8 +23,8 @@ patched conics, 1/5 Earth scale. Personal project, never distributed. Successor 
     coarser levels out to ten kilometres, and `Vegetation` choosing plants on the GPU from the ground's materials;
     `Sky/` atmosphere tables, RenderGraph passes and eye adaptation; `Water/` seas, lakes and rivers, owned by
     `WaterView`: `Waves/` FFT cascades on a body-fixed wave frame, `Surface/` the water pass and sheet shader (sky and
-    screen-space reflections, refraction, Jerlov water column, foam, river flow and rapids), `Shore/` shore distance
-    cascades and breakers),
+    screen-space reflections, refraction, Jerlov water column, foam, a soft waterline, river flow
+    and rapids)),
     `Diagnostics/` capture tooling (`-only <text>[,<text>...]` filters shots), `Editor/` setup, build, tile and foliage atlas baking,
     `Scenes/`, `Settings/` (pipeline, materials, UI panel), `Art/`.
 - Colour space is Linear; lighting is in physical units with auto-exposure, so never tune colours by eye in gamma.

@@ -11,8 +11,8 @@ TEXTURE2D_FLOAT(_WaterSceneDepth);
 
 // Screen-space reflections march this many steps, each this much longer than the last, and are left to the sky's
 // reflection where the surface is rougher than ROUGHEST_MIRROR.
-#define REFLECTION_STEPS 16
-#define REFLECTION_GROWTH 1.55
+#define REFLECTION_STEPS 12
+#define REFLECTION_GROWTH 1.8
 #define ROUGHEST_MIRROR 0.01
 
 // Before marching, the ray's path across the screen is looked along at this mip of the scene's depth, where a texel

@@ -344,8 +344,6 @@ MonoBehaviour:
   _exposure: {fileID: 7200000, guid: dea943aae46aa8a4292a82239d750d5c, type: 3}
   _waves: {fileID: 7200000, guid: 908e06d3739e6bb42ad1cd6f69094d20, type: 3}
   _waterCopy: {fileID: 4800000, guid: c256988523014b6418bd33c20f373f20, type: 3}
-  _shore: {fileID: 7200000, guid: 746e9c76bb93b9e498434fff42d55b6d, type: 3}
-  _shoreDepth: {fileID: 4800000, guid: dc13de980207f7d4b91a269741217f6b, type: 3}
   _skyMaterial: {fileID: 2100000, guid: 2df2d35379943174282f635e572bf182, type: 2}
 --- !u!4 &1892225328
 Transform:

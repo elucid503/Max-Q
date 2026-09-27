@@ -118,7 +118,7 @@ internal sealed class WaveCascades : IDisposable {
 
             };
 
-            _foam[i] = CascadeTexture("Wave Foam", GraphicsFormat.R16G16_SFloat, false);
+            _foam[i] = CascadeTexture("Wave Foam", GraphicsFormat.R16G16_SFloat, true);
 
         }
 
@@ -277,6 +277,13 @@ internal sealed class WaveCascades : IDisposable {
             cmd.SetComputeTextureParam(_shader, _foamKernel, FoamId, _foam[1 - _foamSource]);
             cmd.DispatchCompute(_shader, _foamKernel, Size / 8, Size / 8, Cascades);
             _foamSource = 1 - _foamSource;
+
+        }
+
+        // Seen from afar a tile shrinks under a pixel, where only its mipmaps give the foam's true share.
+        if (steps > 0) {
+
+            cmd.GenerateMips(_foam[_foamSource]);
 
         }
 

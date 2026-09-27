@@ -640,16 +640,17 @@ WaterLook LookAtWater(float3 positionWS, WaveSurface waves, float3 up) {
 }
 
 // The water's radiance toward the eye: the mirrored sky or scenery, the light from its body and crests, the sun's
-// glint, whitecaps where the sea breaks (as much of it as Monahan's law gives the local wind), white water where waves
-// break on the shore or a river runs in rapids (surf), and ice lying on it. Foam's structure comes in two phases
-// (FoamStructures), each feathered before they blend, so moving foam keeps its bubbles crisp.
-float3 WaterColour(WaterLook look, Sunlight light, float3 reflection, float3 body, float crest, WaterOptics optics, SeaState sea, float surf, float3 structure, float3 ice) {
+// glint, whitecaps where the sea breaks (as much of it as Monahan's law gives the local wind), white water where a river
+// runs in rapids (surf), and ice lying on it. Where the water thins to nothing at the
+// waterline, the bed seen straight through it (film, its share in alpha) takes over, so the edge has no seam. Foam's
+// structure comes in two phases (FoamStructures), each feathered before they blend, so moving foam keeps its bubbles crisp.
+float3 WaterColour(WaterLook look, Sunlight light, float3 reflection, float3 body, float crest, WaterOptics optics, SeaState sea, float surf, float3 structure, float3 ice, float4 film) {
 
     float3 glow = optics.reflectance * light.direct * light.shadow * crest * pow(saturate(dot(-look.view, _SunDirection) + 0.2), 4.0);
     float3 glint = SunGlint(look.view, _SunDirection, look.up, look.east, look.north, look.waves) * light.direct * light.shadow;
     float coverage = max(saturate(look.waves.foam * WhitecapCoverage(sea.wind) / max(_WaterCoverage, 1e-4)), saturate(surf));
     float whitecaps = lerp(FeatherFoam(coverage, structure.y), FeatherFoam(coverage, structure.x), structure.z);
-    float3 colour = look.fresnel * reflection + (1.0 - look.fresnel) * (body + glow) + glint;
+    float3 colour = lerp(look.fresnel * reflection + (1.0 - look.fresnel) * (body + glow) + glint, film.rgb, film.a);
 
     // White water in the surf and in rapids is foam still breaking.
     colour = lerp(colour, FoamRadiance(max(look.waves.fresh, saturate(2.0 * surf)), look.normal, light), whitecaps);

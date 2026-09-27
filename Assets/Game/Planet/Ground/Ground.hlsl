@@ -126,6 +126,15 @@ float3 DecodeOctahedral(float2 encoded) {
 
 }
 
+// Water depth (m over the bed, negative on land) from the detail's blue channel, stored as its signed square root.
+float DecodeWaterDepth(float channel) {
+
+    float encoded = channel * 2.0 - 1.0;
+
+    return sign(encoded) * encoded * encoded * WATER_DEPTH_RANGE;
+
+}
+
 struct GroundDetail {
 
     float3 normalOS;
@@ -144,8 +153,7 @@ GroundDetail SampleDetail(float2 uv, float morph) {
     GroundDetail detail;
     detail.normalOS = normalize(lerp(DecodeOctahedral(own.rg), DecodeOctahedral(parent.rg), morph));
     detail.normalWS = TransformObjectToWorldNormal(detail.normalOS);
-    float encoded = lerp(own.b, parent.b, morph) * 2.0 - 1.0;
-    detail.waterDepth = sign(encoded) * encoded * encoded * WATER_DEPTH_RANGE;
+    detail.waterDepth = DecodeWaterDepth(lerp(own.b, parent.b, morph));
     detail.occlusion = lerp(own.a, parent.a, morph);
 
     return detail;

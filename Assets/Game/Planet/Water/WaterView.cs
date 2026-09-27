@@ -1,8 +1,6 @@
 using System;
 
 using MaxQ.Game.Map;
-using MaxQ.Game.Planet.Ground;
-using MaxQ.Game.Planet.Water.Shore;
 using MaxQ.Game.Planet.Water.Surface;
 using MaxQ.Game.Planet.Water.Waves;
 using MaxQ.Sim.Bodies;
@@ -21,9 +19,8 @@ using UnityEngine.Rendering.Universal;
 namespace MaxQ.Game.Planet.Water;
 
 /// <summary>A body's seas, lakes and rivers: keeps the wave frame under the camera, fills the waves for the open sea
-/// there from the climatology, runs them each frame, keeps the shore around the camera drawn for the waves breaking on
-/// it, publishes what the water and ground shaders need to weight the waves by the sea where they fall, and adds the
-/// water's pass to every game and scene camera.</summary>
+/// there from the climatology, runs them each frame, publishes what the water and ground shaders need to weight the
+/// waves by the sea where they fall, and adds the water's pass to every game and scene camera.</summary>
 public sealed class WaterView : IDisposable {
 
     /// <summary>Month of the climatology shown: June, as the satellite's land, snow and ice are.</summary>
@@ -43,12 +40,6 @@ public sealed class WaterView : IDisposable {
 
     // Only the two longest cascades break into whitecaps; each raises half the coverage.
     private const int BreakingCascades = 2;
-
-    // Waves reach a coast in groups of this many; must match GROUP_WAVES in Shore.hlsl. The shore's water within about
-    // a wavelength upwave shelters what lies behind it.
-    private const double GroupWaves = 7.0;
-    private const double ShortestUpwave = 20.0;
-    private const double LongestUpwave = 300.0;
 
     // The sea's slow variation and foam's structure repeat over this many metres; must match PATTERN_PERIOD in
     // WaterSurface.hlsl.
@@ -77,7 +68,6 @@ public sealed class WaterView : IDisposable {
     private static readonly int SwellId = Shader.PropertyToID("_WaterSwell");
     private static readonly int BandsId = Shader.PropertyToID("_WaterBands");
     private static readonly int TimeId = Shader.PropertyToID("_WaterTime");
-    private static readonly int ShorePeriodId = Shader.PropertyToID("_WaterShorePeriod");
     private static readonly int FoamTextureId = Shader.PropertyToID("_WaterFoamTexture");
     private static readonly int PatternId = Shader.PropertyToID("_WaterPattern");
 
@@ -86,7 +76,6 @@ public sealed class WaterView : IDisposable {
     private readonly SeaState _seaState;
     private readonly WaveFrame _frame = new WaveFrame();
     private readonly WaveCascades _cascades;
-    private readonly ShoreCascades _shore;
     private readonly Material _copy;
     private readonly WaterPass _pass;
     private readonly Texture2D _seaMap;
@@ -111,13 +100,12 @@ public sealed class WaterView : IDisposable {
 
     public double DrawnHeight => 4.0 * Math.Sqrt(math.csum(_cascades.HeightVariance));
 
-    public WaterView(CelestialBody body, SeaState seaState, ComputeShader waves, Shader copy, ComputeShader shore, Shader shoreDepth) {
+    public WaterView(CelestialBody body, SeaState seaState, ComputeShader waves, Shader copy) {
 
         _body = body;
         _terrain = body.Terrain ?? throw new ArgumentException($"{body.Name} has no terrain", nameof(body));
         _seaState = seaState;
         _cascades = new WaveCascades(waves);
-        _shore = new ShoreCascades(shore, shoreDepth);
         _copy = new Material(copy);
         _pass = new WaterPass(_copy);
 
@@ -149,8 +137,8 @@ public sealed class WaterView : IDisposable {
     public void Jump() => _placed = false;
 
     /// <summary>Carries the wave frame with <paramref name="camera"/>, fills the waves when the sea under it has
-    /// changed, runs them to sim <paramref name="time"/> (s), and redraws the shore from <paramref name="ground"/>.</summary>
-    public void Update(double time, Camera camera, GroundView ground) {
+    /// changed, and runs them to sim <paramref name="time"/> (s).</summary>
+    public void Update(double time, Camera camera) {
 
         Vector3d bodyPosition = _body.PositionAt(time);
         Vector3 cameraScene = camera.transform.position;
@@ -205,13 +193,7 @@ public sealed class WaterView : IDisposable {
 
         _cascades.Update(time, thresholds, _frame.Heading(_filledSea.WindEast, _filledSea.WindNorth), FoamDrift * _filledSea.WindSpeed, keep);
 
-        // The shore is sheltered from where the stronger of the wind's sea and swell comes from.
-        bool swell = _filledSea.SwellHeight > _filledSea.SeaHeight;
-        double upwave = swell ? _filledSwellHeading + Math.PI : _filledSeaHeading + Math.PI;
-
-        _shore.Update(ground, _frame, _terrain.Radius, upwave, Math.Clamp(_cascades.MeanWavelength[0], ShortestUpwave, LongestUpwave));
-        _shore.Publish(_body, time);
-        Publish(time, bodyPosition, coverage, swell ? _filledSea.SwellPeriod : _filledSea.SeaPeriod);
+        Publish(time, bodyPosition, coverage);
 
     }
 
@@ -232,7 +214,7 @@ public sealed class WaterView : IDisposable {
 
     }
 
-    private void Publish(double time, Vector3d bodyPosition, double coverage, double shorePeriod) {
+    private void Publish(double time, Vector3d bodyPosition, double coverage) {
 
         Vector4 near = Vector4.zero;
         Vector4 far = Vector4.zero;
@@ -268,11 +250,7 @@ public sealed class WaterView : IDisposable {
         Shader.SetGlobalFloat(CoverageId, (float)coverage);
         Shader.SetGlobalTexture(FoamId, _cascades.Foam);
 
-        // Waves on the shore keep whole groups within the loop, so nothing jumps when time wraps.
-        double groups = Math.Max(Math.Round(Spectrum.LoopSeconds / (GroupWaves * Math.Max(shorePeriod, 1.0))), 1.0);
-
         Shader.SetGlobalFloat(TimeId, (float)(time - Math.Floor(time / Spectrum.LoopSeconds) * Spectrum.LoopSeconds));
-        Shader.SetGlobalFloat(ShorePeriodId, (float)(Spectrum.LoopSeconds / (GroupWaves * groups)));
 
     }
 
@@ -433,7 +411,6 @@ public sealed class WaterView : IDisposable {
 
         RenderPipelineManager.beginCameraRendering -= Enqueue;
         _cascades.Dispose();
-        _shore.Dispose();
         UnityEngine.Object.Destroy(_copy);
         UnityEngine.Object.Destroy(_seaMap);
         UnityEngine.Object.Destroy(_swellMap);

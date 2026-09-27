@@ -46,7 +46,9 @@ Shader "MaxQ/Water" {
             #include "../../Ground/Ground.hlsl"
             #include "WaterSurface.hlsl"
             #include "WaterScene.hlsl"
-            #include "../Shore/Shore.hlsl"
+
+            // Under this depth (m) the water thins to a film the bed shows straight through.
+            #define WATER_FILM 0.03
 
             struct WaterVaryings {
 
@@ -85,7 +87,6 @@ Shader "MaxQ/Water" {
             struct WavePoint {
 
                 float3 displacement;
-                float3 breaker;
                 float4 weights;
                 float depth;
                 float height;
@@ -95,18 +96,16 @@ Shader "MaxQ/Water" {
 
             };
 
-            // How strongly each cascade stands at a point depth metres deep, felt as felt metres: as the local sea
-            // weights it, as deep as the bottom lets it, never so high that a crest climbs over the shore.
-            float4 Strength(float4 weights, float depth, float felt, float shoreDistance, float height) {
+            // How strongly each cascade stands at a point depth metres deep: as the local sea weights it, as deep as the
+            // bottom lets it, never so high that a crest climbs over the shore.
+            float4 Strength(float4 weights, float depth, float shoreDistance, float height) {
 
-                return weights * DepthFade(felt, shoreDistance) * saturate(depth / max(height, 0.05));
+                return weights * DepthFade(depth, shoreDistance) * saturate(depth / max(height, 0.05));
 
             }
 
             // The surface at a point of the sheet: the open sea's cascades as strongly as the local sea stands against
-            // the camera's, or rapids raise them, as deep as the bottom lets them (the shallowest water upwave, so the
-            // lee of a reef is calm); and the waves breaking on the shore, which the longest cascade gives way to.
-            // Displacement in the scene (km), the breakers' apart.
+            // the camera's, or rapids raise them, as deep as the bottom lets them. Displacement in the scene (km).
             WavePoint Surface(float3 positionWS, float2 uv, float morph, float shoreDistance) {
 
                 GroundDetail detail = SampleDetail(uv, morph);
@@ -115,30 +114,11 @@ Shader "MaxQ/Water" {
                 wave.depth = detail.waterDepth;
                 wave.water = SampleWaterDetail(uv, morph);
                 wave.sea = SeaStateAt(positionWS);
-
-                // The shore shelters and breaks only waves that feel the bottom, in water under half their length.
-                Shore shore = (Shore)0;
-
-                UNITY_BRANCH
-                if (detail.waterDepth < 0.5 * _WaterWavelength.x) {
-
-                    shore = ShoreAt(positionWS);
-
-                }
-
-                float3 up = normalize(positionWS - _PlanetCentre);
-                float felt = lerp(detail.waterDepth, min(detail.waterDepth, shore.upwave), shore.weight);
-
                 wave.height = LocalHeight(wave.sea, wave.water);
-
-                Breaker breaker = BreakerAt(positionWS, shore, detail.waterDepth, wave.height, up);
-
                 wave.weights = CascadeWeights(wave.sea, wave.water.seaShelter, wave.water.swellShelter) * WaveVariation(FrameCoords(positionWS));
                 wave.rapids = Rapids(length(wave.water.flow), detail.waterDepth / TERRA_SCALE);
                 wave.weights = RapidsWeights(wave.weights, wave.rapids);
-                wave.weights.x *= 1.0 - 0.8 * breaker.presence;
-                wave.displacement = WaveDisplacementWS(positionWS, Strength(wave.weights, detail.waterDepth, felt, shoreDistance, wave.height));
-                wave.breaker = (up * breaker.height + shore.toward * breaker.push) / 1000.0;
+                wave.displacement = WaveDisplacementWS(positionWS, Strength(wave.weights, detail.waterDepth, shoreDistance, wave.height));
 
                 return wave;
 
@@ -188,16 +168,14 @@ Shader "MaxQ/Water" {
                         float depthA = SampleDetail(uv + step, morph).waterDepth;
                         float depthB = SampleDetail(uv - step, morph).waterDepth;
 
-                        strengthA = Strength(wave.weights, depthA, depthA, input.water.y, wave.height);
-                        strengthB = Strength(wave.weights, depthB, depthB, input.water.y, wave.height);
+                        strengthA = Strength(wave.weights, depthA, input.water.y, wave.height);
+                        strengthB = Strength(wave.weights, depthB, input.water.y, wave.height);
 
                     }
 
                     displacement = lerp(displacement, 0.5 * (WaveDisplacementWS(endA, strengthA) + WaveDisplacementWS(endB, strengthB)), morph);
 
                 }
-
-                displacement += wave.breaker;
 
                 float3 restWS = TransformObjectToWorld(input.position + input.morph * morph);
 
@@ -231,12 +209,13 @@ Shader "MaxQ/Water" {
             float4 WaterFragment(WaterVaryings input) : SV_Target {
 
                 float morph = input.water.w;
+                float2 coordsDx = ddx(input.coords);
+                float2 coordsDy = ddy(input.coords);
                 GroundDetail detail = SampleDetail(input.uv, morph);
-                WaveSurface waves = SampleWaves(input.coords, ddx(input.coords), ddy(input.coords), input.weights, input.flow, WhitecapCoverage(input.sea.x) > 1e-5);
+                WaveSurface waves = SampleWaves(input.coords, coordsDx, coordsDy, input.weights, input.flow, WhitecapCoverage(input.sea.x) > 1e-5);
 
                 // Where the detail finds the ground above the water, the ground shows: coasts as crisp as the detail.
                 clip(detail.waterDepth);
-
 
                 Sunlight light;
                 light.up = normalize(input.positionWS - _PlanetCentre);
@@ -248,22 +227,6 @@ Shader "MaxQ/Water" {
                 sea.wind = input.sea.x;
                 sea.ice = input.sea.y;
                 sea.latitude = input.sea.z;
-
-                float height = input.sea.w;
-                Shore shore = (Shore)0;
-                Breaker breaker = (Breaker)0;
-
-                // Only water shallow enough for its waves to break can hold breakers.
-                UNITY_BRANCH
-                if (detail.waterDepth < 2.0 * height / BREAKING_INDEX + 1.0) {
-
-                    shore = ShoreAt(input.positionWS);
-                    breaker = BreakerAt(input.positionWS, shore, detail.waterDepth, height, light.up);
-
-                    // The breakers tilt the surface toward and away from the land.
-                    waves.slope -= float2(dot(shore.toward, _WaterEast), dot(shore.toward, _WaterNorth)) * breaker.slope;
-
-                }
 
                 WaterLook look = LookAtWater(input.positionWS, waves, light.up);
                 float3 reflected = reflect(-look.view, look.normal);
@@ -290,7 +253,7 @@ Shader "MaxQ/Water" {
 
                 // Crests thin toward the sun glow with the light passing through them.
                 float crest = saturate(input.water.y / max(0.25 * _WaterWavelength.x, 0.1));
-                float surf = max(lerp(SurfFoam(detail.waterDepth, height), breaker.foam, shore.weight), RAPIDS_FOAM * input.water.z);
+                float surf = RAPIDS_FOAM * input.water.z;
                 float3 structure = 0.0;
 
                 UNITY_BRANCH
@@ -309,7 +272,9 @@ Shader "MaxQ/Water" {
 
                 }
 
-                return float4(WaterColour(look, light, reflection, body, crest, optics, sea, surf, structure, ice), 1.0);
+                float4 film = float4(bed.colour, 1.0 - saturate(detail.waterDepth / WATER_FILM));
+
+                return float4(WaterColour(look, light, reflection, body, crest, optics, sea, surf, structure, ice, film), 1.0);
 
             }
 

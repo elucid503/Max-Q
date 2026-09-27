@@ -196,9 +196,6 @@ public sealed class GroundView : IDisposable {
 
     public int PatchCount => _patchCount;
 
-    /// <summary>Counts every patch built or released, so what is drawn from the ground knows when to redraw.</summary>
-    public int Revision { get; private set; }
-
     public int ShownCount => _shown.Count;
 
     /// <summary>Metres from the camera down to the ground or water beneath it, as of the last draw.</summary>
@@ -570,79 +567,6 @@ public sealed class GroundView : IDisposable {
 
     }
 
-    /// <summary>A built patch, for drawing the ground's data somewhere else: its node and detail texture.</summary>
-    internal readonly struct BuiltPatch {
-
-        public readonly int Face;
-        public readonly int Depth;
-        public readonly int X;
-        public readonly int Y;
-        public readonly Texture2D Detail;
-
-        public BuiltPatch(int face, int depth, int x, int y, Texture2D detail) {
-
-            Face = face;
-            Depth = depth;
-            X = x;
-            Y = y;
-            Detail = detail;
-
-        }
-
-    }
-
-    /// <summary>The finest built patches that together cover the ground within <paramref name="reach"/> metres of the
-    /// body-fixed unit <paramref name="direction"/>, whether shown or not.</summary>
-    internal void Cover(Vector3d direction, double reach, List<BuiltPatch> patches) {
-
-        patches.Clear();
-
-        foreach (Node root in _roots) {
-
-            Cover(root, direction, reach, patches);
-
-        }
-
-    }
-
-    private void Cover(Node node, Vector3d direction, double reach, List<BuiltPatch> patches) {
-
-        double angle = Math.Acos(Math.Clamp(Vector3d.Dot(node.Direction, direction), -1.0, 1.0));
-
-        if (node.Patch == null || (angle * _terrain.Radius) - node.Radius > reach) {
-
-            return;
-
-        }
-
-        bool built = node.Children != null;
-
-        if (built) {
-
-            foreach (Node child in node.Children) {
-
-                built &= child.Patch != null;
-
-            }
-
-        }
-
-        if (!built) {
-
-            patches.Add(new BuiltPatch(node.Face, node.Depth, node.X, node.Y, node.Patch.Detail));
-
-            return;
-
-        }
-
-        foreach (Node child in node.Children) {
-
-            Cover(child, direction, reach, patches);
-
-        }
-
-    }
-
     private void ScheduleRequests() {
 
         _requests.Sort(_byPriority);
@@ -794,7 +718,6 @@ public sealed class GroundView : IDisposable {
 
             slot.Node = null;
             _patchCount++;
-            Revision++;
 
         }
 
@@ -940,7 +863,6 @@ public sealed class GroundView : IDisposable {
         _sparePatches.Push(node.Patch);
         node.Patch = null;
         _patchCount--;
-        Revision++;
 
     }
 

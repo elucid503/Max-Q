@@ -222,8 +222,6 @@ public static class ProjectSetup {
         view.FindProperty("_exposure").objectReferenceValue = AssetDatabase.LoadAssetAtPath<ComputeShader>($"{Sky}/Exposure.compute");
         view.FindProperty("_waves").objectReferenceValue = AssetDatabase.LoadAssetAtPath<ComputeShader>($"{Water}/Waves/Waves.compute");
         view.FindProperty("_waterCopy").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>($"{Water}/Surface/WaterCopy.shader");
-        view.FindProperty("_shore").objectReferenceValue = AssetDatabase.LoadAssetAtPath<ComputeShader>($"{Water}/Shore/Shore.compute");
-        view.FindProperty("_shoreDepth").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>($"{Water}/Shore/ShoreDepth.shader");
         view.FindProperty("_skyMaterial").objectReferenceValue = sky;
         view.ApplyModifiedPropertiesWithoutUndo();
 
