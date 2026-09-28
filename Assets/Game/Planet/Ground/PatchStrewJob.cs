@@ -142,7 +142,7 @@ internal struct PatchStrewJob : IJobParallelFor {
                 double height = Terrain.HeightAt(direction, finest);
                 double level = Terrain.WaterLevelAt(direction, finest);
 
-                if (!double.IsNaN(level) && height < level + 0.5) {
+                if (!double.IsNaN(level) && height < level + PatchJob.DryClearance) {
 
                     continue;
 
@@ -190,7 +190,7 @@ internal struct PatchStrewJob : IJobParallelFor {
                 double height = Terrain.HeightAt(direction, TreeFootprint);
                 double level = Terrain.WaterLevelAt(direction, TreeFootprint);
 
-                if (!double.IsNaN(level) && height < level + 0.5) {
+                if (!double.IsNaN(level) && height < level + PatchJob.DryClearance) {
 
                     Trees[slot] = new float4(0.0f, 0.0f, 0.0f, -1.0f);
 

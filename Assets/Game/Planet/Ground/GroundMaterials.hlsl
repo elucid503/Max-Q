@@ -1,9 +1,11 @@
 // The ground's materials: grass, forest floor, soil, sand, rock, scree and snow. Where each lies comes from the land
 // itself: how steep it is, whether it is a crest or a hollow, how high, and world-anchored noise, inside the bounds the
-// satellite's tone sets (vegetated, bare, sandy or snowbound). Near the camera they are tiled textures at two scales, out
-// to 15 km a macro scale of the same textures, and past that the satellite colour, reshaded by the same choice of
-// materials. Everything is recoloured by how the satellite pixel differs from the materials its tone implies, so the
-// handover never shifts the colour the ground has from further away, while a cliff in snow still shows as rock.
+// satellite's tone sets (vegetated, bare, sandy or snowbound). Near the camera they are textures at two scales, out to
+// 15 km a macro scale of the same textures, and past that the satellite colour, reshaded by the same choice of
+// materials. Each texture is laid stochastically, turned and shifted at random across a lattice, so none shows a repeat.
+// Everything is recoloured by how the satellite pixel differs from the materials its tone implies, so the handover never
+// shifts the colour the ground has from further away, while a cliff in snow still shows as rock, coloured like the bare
+// land around it.
 #ifndef MAXQ_GROUND_MATERIALS_INCLUDED
 #define MAXQ_GROUND_MATERIALS_INCLUDED
 
@@ -19,6 +21,151 @@ SAMPLER(sampler_GroundAlbedo);
 // trilinear filtering, far cheaper at grazing angles.
 SAMPLER(sampler_trilinear_repeat);
 
+// Repeats of each scale before its tile origin wraps; must match GroundView.TilePeriod. Anything drawn at random on a
+// lattice tied to the repeats wraps with it, so every patch draws the same numbers at the same place.
+#define TILE_PERIOD 64
+
+uint3 Pcg3(uint3 v) {
+
+    v = v * 1664525u + 1013904223u;
+    v.x += v.y * v.z;
+    v.y += v.z * v.x;
+    v.z += v.x * v.y;
+    v ^= v >> 16u;
+    v.x += v.y * v.z;
+    v.y += v.z * v.x;
+    v.z += v.x * v.y;
+
+    return v;
+
+}
+
+// Three uniform numbers, ten bits each, for a lattice point, the lattice wrapping every period points (a power of two, so
+// the wrap is a mask rather than a division, which GPUs do slowly).
+float3 LatticeRandom(int3 lattice, int period, uint seed) {
+
+    uint3 wrapped = (uint3)lattice & (uint)(period - 1);
+    uint h = seed * 0x9E3779B9u ^ wrapped.x * 0x8DA6B343u ^ wrapped.y * 0xD8163841u ^ wrapped.z * 0xCB1AB31Fu;
+
+    h = (h ^ (h >> 16)) * 0x7FEB352Du;
+    h = (h ^ (h >> 15)) * 0x846CA68Bu;
+    h ^= h >> 16;
+
+    return float3(h & 1023u, (h >> 10) & 1023u, (h >> 20) & 1023u) / 1023.0;
+
+}
+
+// Stochastic tiling (after Heitz and Neyret, and Mikkelsen's hex tiling): a lattice of STOCHASTIC_CELLS points to a
+// repeat each way, split into triangles; each point turns and shifts the texture at random, and a spot blends the three
+// of its triangle, weighted sharply toward the nearest, keeping the texture's contrast where they mix. Points weighing
+// under STOCHASTIC_FAINT are skipped, so most spots take one sample and few take three.
+#define STOCHASTIC_CELLS 1
+#define STOCHASTIC_SHARPNESS 8.0
+#define STOCHASTIC_FAINT 0.1
+
+// The stochastic layout at a spot: the lattice cell and which of its triangles holds the spot, and how much each of that
+// triangle's points weighs. Each point's turn and shift are drawn only as it is sampled, so none is held between samples.
+struct Stochastic {
+
+    int2 cell;
+    bool upper;
+    float3 weight;
+
+};
+
+Stochastic StochasticAt(float2 uv) {
+
+    float2 p = uv * STOCHASTIC_CELLS;
+    float2 cell = floor(p);
+    float2 f = p - cell;
+
+    Stochastic s;
+    s.cell = (int2)cell;
+    s.upper = f.x + f.y > 1.0;
+
+    float3 w = s.upper ? float3(f.x + f.y - 1.0, 1.0 - f.y, 1.0 - f.x) : float3(1.0 - f.x - f.y, f.x, f.y);
+
+    w = pow(max(w, 1e-4), STOCHASTIC_SHARPNESS);
+    s.weight = w / (w.x + w.y + w.z);
+
+    return s;
+
+}
+
+// How the k-th point of a layout turns and shifts the texture.
+void StochasticTransform(Stochastic s, int k, int repeats, uint seed, out float2x2 turn, out float2 shift) {
+
+    int2 corner = k == 0 ? (s.upper ? int2(1, 1) : int2(0, 0)) : k == 1 ? int2(1, 0) : int2(0, 1);
+    float3 random = LatticeRandom(int3(s.cell + corner, 0), STOCHASTIC_CELLS * TILE_PERIOD * repeats, seed);
+    float2 heading = normalize(float2(random.z, frac(random.x + random.y + random.z)) * 2.0 - 1.0 + 1e-4);
+
+    turn = float2x2(heading.x, -heading.y, heading.y, heading.x);
+    shift = random.xy;
+
+}
+
+// Albedo and height, and the tangent-space normal when normals is set, blended from the stochastic layout at uv; mean is
+// the texture's own albedo and height, which the blend keeps its contrast about. A negative lod filters each sample by the
+// gradients dx and dy, turned with it, as an anisotropic sampler needs; otherwise every sample takes that mip.
+void StochasticSample(int slice, float2 uv, float2 dx, float2 dy, float lod, int repeats, uint seed, bool normals, float4 mean, SamplerState state,
+    out float4 albedo, out float3 normal) {
+
+    Stochastic s = StochasticAt(uv);
+    float4 sum = 0.0;
+    float3 bent = 0.0;
+
+    [unroll]
+    for (int k = 0; k < 3; k++) {
+
+        [flatten]
+        if (s.weight[k] > STOCHASTIC_FAINT) {
+
+            float2x2 turn;
+            float2 shift;
+
+            StochasticTransform(s, k, repeats, seed, turn, shift);
+
+            float2 at = mul(turn, uv) + shift;
+            float4 a;
+            float3 t = float3(0.0, 0.0, 1.0);
+
+            [flatten]
+            if (lod < 0.0) {
+
+                a = SAMPLE_TEXTURE2D_ARRAY_GRAD(_GroundAlbedo, state, at, slice, mul(turn, dx), mul(turn, dy));
+
+                if (normals) {
+
+                    t = UnpackNormal(SAMPLE_TEXTURE2D_ARRAY_GRAD(_GroundNormal, state, at, slice, mul(turn, dx), mul(turn, dy)));
+
+                }
+
+            } else {
+
+                a = SAMPLE_TEXTURE2D_ARRAY_LOD(_GroundAlbedo, state, at, slice, lod);
+
+                if (normals) {
+
+                    t = UnpackNormal(SAMPLE_TEXTURE2D_ARRAY_LOD(_GroundNormal, state, at, slice, lod));
+
+                }
+
+            }
+
+            sum += s.weight[k] * (a - mean);
+            bent += s.weight[k] * float3(mul(t.xy, turn), t.z);
+
+        }
+
+    }
+
+    float contrast = rsqrt(dot(s.weight, s.weight));
+
+    albedo = saturate(mean + sum * contrast);
+    normal = normalize(float3(bent.xy * contrast, bent.z));
+
+}
+
 #define GRASS 0
 #define FOREST 1
 #define SOIL 2
@@ -28,9 +175,10 @@ SAMPLER(sampler_trilinear_repeat);
 #define SCREE 6
 #define MATERIALS 7
 
-// Texture slice of each material, and how many of its repeats fit in one NEAR_TILE: scree is rock broken small.
+// Texture slice of each material, and how many of its repeats fit in one NEAR_TILE: scree is rock broken small. Repeats
+// are powers of two, so the stochastic lattice wraps with a mask.
 static const int Slice[MATERIALS] = { 0, 1, 2, 3, 4, 5, 4 };
-static const float Repeats[MATERIALS] = { 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 3.0 };
+static const float Repeats[MATERIALS] = { 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 4.0 };
 
 // Metres per repeat of the near, far, macro and broad samples; each is a whole multiple of the one before where they
 // must line up, and GroundView keeps each one's origin.
@@ -48,9 +196,10 @@ static const float ParallaxDepth[MATERIALS] = { 0.0, 0.0, 0.05, 0.04, 0.08, 0.05
 // Texels per metre of the near sample: 1024-texel materials over NEAR_TILE metres.
 #define NEAR_TEXELS_PER_METRE (1024.0 / NEAR_TILE)
 
-// Metres from the camera over which the near textures fade into the macro scale, and the macro into the satellite.
-#define FINE_START 80.0
-#define FINE_END 150.0
+// Metres from the camera over which the near textures fade into the far ones (past about 40 m the far repeat's texels
+// are as fine as the pixels), the far into the macro scale, and the macro into the satellite.
+#define FINE_START 30.0
+#define FINE_END 60.0
 #define DETAIL_START 1500.0
 #define DETAIL_END 4000.0
 #define MACRO_START 9000.0
@@ -67,20 +216,73 @@ struct Layer {
 
 };
 
-// Triplanar in the body-fixed frame, skipping planes the surface barely faces; normals, when wanted, by whiteout blending.
-Layer Triplanar(int slice, float3 position, float3 normal, float3 weights, bool normals, SamplerState state) {
+// A scale of a material: where a spot falls in its repeats, how far that moves across the pixel, and the repeats to a
+// tile origin's repeat, which its stochastic lattice wraps with.
+struct Tiling {
+
+    float3 position;
+    float3 dx;
+    float3 dy;
+    int repeats;
+    uint seed;
+
+};
+
+float2 OnPlane(float3 v, int plane) {
+
+    return plane == 0 ? v.zy : plane == 1 ? v.xz : v.xy;
+
+}
+
+// One plane of a triplanar sample, its albedo and height and its tangent-space normal each laid stochastically or plainly.
+void PlaneSample(int slice, Tiling tiling, int plane, bool stochastic, bool stochasticNormal, float4 mean, SamplerState state,
+    out float4 albedo, out float3 normal) {
+
+    float2 uv = OnPlane(tiling.position, plane);
+    float2 dx = OnPlane(tiling.dx, plane);
+    float2 dy = OnPlane(tiling.dy, plane);
+
+    // Laid plainly, a sample needs no gradients: its mip from the widest step across the pixel, 1024 texels a repeat.
+    float lod = log2(max(max(length(dx), length(dy)) * 1024.0, 1e-6));
+
+    UNITY_BRANCH
+    if (stochastic) {
+
+        // Blended normals only where asked; the near sample's anisotropic filter needs the gradients.
+        StochasticSample(slice, uv, dx, dy, stochasticNormal ? -1.0 : lod, tiling.repeats, tiling.seed + 17u * plane, stochasticNormal, mean, state,
+            albedo, normal);
+
+        if (!stochasticNormal) {
+
+            normal = UnpackNormal(SAMPLE_TEXTURE2D_ARRAY_LOD(_GroundNormal, state, uv, slice, lod));
+
+        }
+
+        return;
+
+    }
+
+    albedo = SAMPLE_TEXTURE2D_ARRAY_LOD(_GroundAlbedo, state, uv, slice, lod);
+    normal = UnpackNormal(SAMPLE_TEXTURE2D_ARRAY_LOD(_GroundNormal, state, uv, slice, lod));
+
+}
+
+// Triplanar in the body-fixed frame, skipping planes the surface barely faces; normals by whiteout blending. Mean is the
+// texture's own albedo and height, which a stochastic layout keeps its contrast about; its normals may be laid plainly.
+Layer Triplanar(int slice, Tiling tiling, bool stochastic, bool stochasticNormal, float4 mean, float3 normal, float3 weights, SamplerState state) {
 
     Layer layer;
     layer.albedo = 0.0;
     layer.normalOS = 0.0;
     layer.height = 0.0;
 
+    float4 albedo;
+    float3 t;
+
     UNITY_BRANCH
     if (weights.x > 0.02) {
 
-        float4 albedo = SAMPLE_TEXTURE2D_ARRAY(_GroundAlbedo, state, position.zy, slice);
-        float3 t = normals ? UnpackNormal(SAMPLE_TEXTURE2D_ARRAY(_GroundNormal, state, position.zy, slice)) : float3(0.0, 0.0, 1.0);
-
+        PlaneSample(slice, tiling, 0, stochastic, stochasticNormal, mean, state, albedo, t);
         t = float3(t.xy + normal.zy, abs(t.z) * normal.x);
         layer.albedo += albedo.rgb * weights.x;
         layer.height += albedo.a * weights.x;
@@ -91,9 +293,7 @@ Layer Triplanar(int slice, float3 position, float3 normal, float3 weights, bool 
     UNITY_BRANCH
     if (weights.y > 0.02) {
 
-        float4 albedo = SAMPLE_TEXTURE2D_ARRAY(_GroundAlbedo, state, position.xz, slice);
-        float3 t = normals ? UnpackNormal(SAMPLE_TEXTURE2D_ARRAY(_GroundNormal, state, position.xz, slice)) : float3(0.0, 0.0, 1.0);
-
+        PlaneSample(slice, tiling, 1, stochastic, stochasticNormal, mean, state, albedo, t);
         t = float3(t.xy + normal.xz, abs(t.z) * normal.y);
         layer.albedo += albedo.rgb * weights.y;
         layer.height += albedo.a * weights.y;
@@ -104,9 +304,7 @@ Layer Triplanar(int slice, float3 position, float3 normal, float3 weights, bool 
     UNITY_BRANCH
     if (weights.z > 0.02) {
 
-        float4 albedo = SAMPLE_TEXTURE2D_ARRAY(_GroundAlbedo, state, position.xy, slice);
-        float3 t = normals ? UnpackNormal(SAMPLE_TEXTURE2D_ARRAY(_GroundNormal, state, position.xy, slice)) : float3(0.0, 0.0, 1.0);
-
+        PlaneSample(slice, tiling, 2, stochastic, stochasticNormal, mean, state, albedo, t);
         t = float3(t.xy + normal.xy, abs(t.z) * normal.z);
         layer.albedo += albedo.rgb * weights.z;
         layer.height += albedo.a * weights.z;
@@ -139,22 +337,57 @@ float3 Average(int material) {
 
 }
 
-// Where a spot falls in the near repeat of a material.
-float3 NearTiles(int material, float3 metres) {
+// Where a spot, metres from the patch centre, falls in a scale's repeats and how far that moves across the pixel.
+Tiling TilingOf(float3 metres, float3 dx, float3 dy, float tile, float4 origin, int repeats, uint seed) {
 
-    return (metres / NEAR_TILE + _TileOriginNear.xyz) * Repeats[material];
+    Tiling tiling;
+    tiling.position = (metres / tile + origin.xyz) * repeats;
+    tiling.dx = dx / tile * repeats;
+    tiling.dy = dy / tile * repeats;
+    tiling.repeats = repeats;
+    tiling.seed = seed;
+
+    return tiling;
+
+}
+
+// The macro sample is filtered to texels of at least this many metres: the materials' textures magnified fifty times
+// would otherwise show as smeared copies of their finest grain, where all it should carry is how colour and relief wander.
+// So blurred, its repeats hardly show, and it is laid plainly.
+#define MACRO_TEXEL 2.4
+
+Tiling Blurred(Tiling tiling) {
+
+    float spread = max(max(length(tiling.dx), length(tiling.dy)), 1e-8);
+    float widen = max(MACRO_TEXEL / MACRO_TILE / spread, 1.0);
+
+    tiling.dx *= widen;
+    tiling.dy *= widen;
+
+    return tiling;
+
+}
+
+// Seed of a material's scale, for its stochastic layout.
+uint LayoutSeed(int material, int scale) {
+
+    return (uint)(material * 4 + scale) * 0x2545F491u;
 
 }
 
 // One material: the macro sample sets its colour and carries relief a few metres to tens of metres across; within
 // DETAIL_END the far sample adds relief and grain a few centimetres up, and within FINE_END the near one adds the finest
-// grain and its height, with the far one breaking up its repeats. The macro and far samples blend planes over a narrower
-// band than the near one: their seams are too coarse to show, and most slopes then need only one plane of each.
-Layer SampleMaterial(int material, float3 metres, float3 macroMetres, float3 normalOS, float3 weights, float3 sharpWeights, float detail, float fine) {
+// grain and its height, with the far one breaking up its tone. The macro and far samples blend planes over a narrower
+// band than the near one: their seams are too coarse to show, and most slopes then need only one plane of each. dx and dy
+// are how far metres moves across the pixel.
+Layer SampleMaterial(int material, float3 metres, float3 macroMetres, float3 dx, float3 dy, float3 normalOS, float3 weights, float3 sharpWeights,
+    float detail, float fine) {
 
     int slice = Slice[material];
     float3 average = Average(material);
-    Layer macro = Triplanar(slice, macroMetres / MACRO_TILE + _TileOriginMacro.xyz, normalOS, sharpWeights, true, sampler_trilinear_repeat);
+    float4 mean = float4(average, 0.5);
+    Tiling macroTiling = Blurred(TilingOf(macroMetres, dx, dy, MACRO_TILE, _TileOriginMacro, 1, LayoutSeed(material, 0)));
+    Layer macro = Triplanar(slice, macroTiling, false, false, mean, normalOS, sharpWeights, sampler_trilinear_repeat);
 
     UNITY_BRANCH
     if (detail <= 0.0) {
@@ -163,14 +396,19 @@ Layer SampleMaterial(int material, float3 metres, float3 macroMetres, float3 nor
 
     }
 
-    Layer far = Triplanar(slice, metres / FAR_TILE + _TileOriginFar.xyz, macro.normalOS, sharpWeights, true, sampler_trilinear_repeat);
+    // The far sample is laid plainly: under the near one it only breaks up its tone, and past it the blurred macro
+    // sample's colour, wandering on its own longer repeat, hides the far one's.
+    Layer far = Triplanar(slice, TilingOf(metres, dx, dy, FAR_TILE, _TileOriginFar, 1, LayoutSeed(material, 1)), false, false, mean,
+        macro.normalOS, sharpWeights, sampler_trilinear_repeat);
     Layer near = far;
     float3 grain = far.albedo / max(average, 1e-3);
 
     UNITY_BRANCH
     if (fine > 0.0) {
 
-        near = Triplanar(slice, NearTiles(material, metres), far.normalOS, weights, true, sampler_GroundAlbedo);
+        Tiling nearTiling = TilingOf(metres, dx, dy, NEAR_TILE, _TileOriginNear, (int)Repeats[material], LayoutSeed(material, 2));
+
+        near = Triplanar(slice, nearTiling, true, true, mean, far.normalOS, weights, sampler_GroundAlbedo);
         grain = lerp(grain, near.albedo * lerp(1.0, grain, 0.5) / max(average, 1e-3), fine);
 
     }
@@ -184,37 +422,57 @@ Layer SampleMaterial(int material, float3 metres, float3 macroMetres, float3 nor
 
 }
 
-// Smooth world-anchored noise in [0, 1] at the macro and broad repeats, from the soil's height map sampled blurred on the
-// plane the ground most faces: patches tens of metres and hundreds of metres across. Blurred further where a pixel spans
-// footprint metres, so neither aliases far away; zero footprint keeps them sharp.
+// The ground's noise (see GroundNoise.cs): one repeat of it spans TILE_PERIOD repeats of a scale.
+TEXTURE2D(_GroundNoise);
+
+#define GROUND_NOISE_TEXELS 2048.0
+
+// Smooth world-anchored noise in [0, 1], on the plane the ground's up most faces: patches tens of metres across (octaves
+// of 38 m and 19 m) and hundreds of metres across (690 m and 340 m). Blurred where a pixel spans footprint metres, so
+// neither aliases far away; zero footprint keeps them sharp.
 float2 GroundNoise(float3 metres, float3 upOS, float footprint) {
 
     float3 a = abs(upOS);
     int plane = a.x > a.y && a.x > a.z ? 0 : a.y > a.z ? 1 : 2;
-    float3 macro = metres / MACRO_TILE + _TileOriginMacro.xyz;
-    float3 broad = metres / BROAD_TILE + _TileOriginBroad.xyz;
-    float2 macroUv = plane == 0 ? macro.zy : plane == 1 ? macro.xz : macro.xy;
-    float2 broadUv = plane == 0 ? broad.zy : plane == 1 ? broad.xz : broad.xy;
+    float2 macro = OnPlane(metres / MACRO_TILE + _TileOriginMacro.xyz, plane) / TILE_PERIOD;
+    float2 broad = OnPlane(metres / BROAD_TILE + _TileOriginBroad.xyz, plane) / TILE_PERIOD;
+    float texel = TILE_PERIOD / GROUND_NOISE_TEXELS;
+    float2 noise = float2(
+        SAMPLE_TEXTURE2D_LOD(_GroundNoise, sampler_trilinear_repeat, macro, max(log2(2.0 * footprint / (MACRO_TILE * texel)), 0.0)).r,
+        SAMPLE_TEXTURE2D_LOD(_GroundNoise, sampler_trilinear_repeat, broad + 0.37, max(log2(2.0 * footprint / (BROAD_TILE * texel)), 0.0)).r);
 
-    // Bilinear texels of one blurred mip show as squares where a threshold cuts them; a finer octave rounds them off.
-    float fine = SAMPLE_TEXTURE2D_ARRAY_LOD(_GroundAlbedo, sampler_trilinear_repeat, macroUv * 3.0 + 0.61, SAND, max(5.0, log2(footprint * 6144.0 / MACRO_TILE))).a;
-
-    return float2(
-        lerp(SAMPLE_TEXTURE2D_ARRAY_LOD(_GroundAlbedo, sampler_trilinear_repeat, macroUv, SOIL, max(6.0, log2(footprint * 2048.0 / MACRO_TILE))).a, fine, 0.35),
-        SAMPLE_TEXTURE2D_ARRAY_LOD(_GroundAlbedo, sampler_trilinear_repeat, broadUv + 0.37, ROCK, max(5.0, log2(footprint * 2048.0 / BROAD_TILE))).a);
+    // The texture holds its octaves' sum over their total amplitude, halved about the middle.
+    return saturate(0.5 + 0.9 * (noise * 2.0 - 1.0) * 1.5);
 
 }
 
 // Convexity is how much more sky a spot sees than a plane of its slope would: negative in hollows, near zero on crests
-// and plains. The horizon occlusion measures it at every scale from the stones to the valley walls.
+// and plains. The horizon occlusion measures it at every scale from the stones to the valley walls. Beach is how far a
+// spot lies in the band just over the water that waves and wind keep bare.
 struct Terrain {
 
     float upness;
     float convexity;
     float altitude;
     float2 noise;
+    float beach;
 
 };
+
+// Metres over the water that a beach reaches: a sea's surf and storms reach far up the shore, a lake's hardly, and a
+// river's banks, grassed to the water, not at all.
+#define SEA_BEACH 1.0
+#define LAKE_BEACH 0.3
+
+// How far a spot lies in the beach band, above water metres over the nearest sheet (negative under it), at altitude, by
+// water whose current runs at flow m/s.
+float BeachAt(float aboveWater, float altitude, float flow) {
+
+    float rise = lerp(SEA_BEACH, LAKE_BEACH, saturate(altitude / 5.0)) * saturate(1.0 - flow / 0.2);
+
+    return saturate(1.0 - aboveWater / max(rise, 1e-3)) * (rise > 1e-3);
+
+}
 
 // How much each material suits a spot. The satellite's tone (sRGB-encoded, as the thresholds were read off the imagery)
 // says what the land is; the terrain says where on it each material lies: rock on steep ground and bare crests, scree on
@@ -267,17 +525,61 @@ void MaterialWeights(float3 tone, Terrain terrain, out float weights[MATERIALS])
 
     weights[SCREE] *= 1.0 - cliff;
 
+    // The satellite's half-kilometre pixels never see a beach: flat ground in the band is sand, save under snow.
+    float beach = terrain.beach * saturate((terrain.upness - 0.9) / 0.05) * (1.0 - snow);
+
+    for (int j = 0; j < MATERIALS; j++) {
+
+        weights[j] *= 1.0 - beach;
+
+    }
+
+    weights[SAND] += 1.5 * beach;
+
+}
+
+// Rock takes the colour of the bare land around it, as cliffs weather to the colour of their ground: red in sandstone
+// country, pale on limestone, dark where the satellite sees dark ground, with the hue muted and the brightness kept to
+// what rock has. Under vegetation or snow the satellite shows no rock, which is then a weathered grey. Tone is the
+// satellite's, sRGB-encoded, as MaterialWeights reads it.
+#define ROCK_GREY float3(0.15, 0.14, 0.125)
+
+float3 RockColour(float3 tone) {
+
+    float sum = max(tone.r + tone.g + tone.b, 1e-4);
+    float vegetation = saturate((tone.g / sum - 0.36) / 0.08);
+    float snow = saturate((dot(tone, float3(0.2126, 0.7152, 0.0722)) - 0.40) / 0.15);
+    float3 land = SRGBToLinear(tone);
+    float brightness = max(Luminance(land), 1e-3);
+    float3 hue = lerp(1.0, land / brightness, 0.7);
+
+    return lerp(ROCK_GREY, hue * clamp(0.9 * brightness, 0.08, 0.35), (1.0 - vegetation) * (1.0 - snow));
+
+}
+
+// Mean colour of a material, rock and scree taking the site's.
+float3 MaterialColour(int material, float3 rock) {
+
+    return material == ROCK || material == SCREE ? rock : Average(material);
+
+}
+
+// How far a material's textures are recoloured from their own mean: rock and scree toward the site's rock.
+float3 Tint(int material, float3 rock) {
+
+    return material == ROCK || material == SCREE ? rock / Average(ROCK) : 1.0;
+
 }
 
 // The mean colour of materials in these proportions.
-float3 Palette(float weights[MATERIALS]) {
+float3 Palette(float weights[MATERIALS], float3 rock) {
 
     float3 colour = 0.0;
     float total = 0.0;
 
     for (int i = 0; i < MATERIALS; i++) {
 
-        colour += Average(i) * weights[i];
+        colour += MaterialColour(i, rock) * weights[i];
         total += weights[i];
 
     }
@@ -291,21 +593,6 @@ float3 Palette(float weights[MATERIALS]) {
 // pixel they blend into the sheen instead.
 #define GLINT_CELLS 1024.0
 #define GLINT_CELL (FAR_TILE / GLINT_CELLS)
-
-uint3 Pcg3(uint3 v) {
-
-    v = v * 1664525u + 1013904223u;
-    v.x += v.y * v.z;
-    v.y += v.z * v.x;
-    v.z += v.x * v.y;
-    v ^= v >> 16u;
-    v.x += v.y * v.z;
-    v.y += v.z * v.x;
-    v.z += v.x * v.y;
-
-    return v;
-
-}
 
 float Glitter(float3 metres, float3 normalWS, float3 toCamera, float footprint) {
 
@@ -345,7 +632,8 @@ struct GroundSurface {
 };
 
 // How far to shift the material samples so the dominant material's height map stands proud of the surface: the view ray
-// is marched down through the relief on the plane the surface most faces until it passes under the height map.
+// is marched down through the relief on the plane the surface most faces until it passes under the height map, as laid
+// by the point of the near sample's stochastic layout that weighs most here.
 float3 Parallax(int material, float3 metres, float3 normalOS, float3 planes, float3 toCameraOS, float distance, float footprint) {
 
     float reach = saturate(1.0 - distance / PARALLAX_REACH);
@@ -365,11 +653,19 @@ float3 Parallax(int material, float3 metres, float3 normalOS, float3 planes, flo
     float3 offset = 0.0;
     float previousGap = -1.0;
 
+    Tiling tiling = TilingOf(metres, 0.0, 0.0, NEAR_TILE, _TileOriginNear, (int)Repeats[material], LayoutSeed(material, 2));
+    float2 uv = OnPlane(tiling.position, plane);
+    Stochastic layout = StochasticAt(uv);
+    float3 w = layout.weight;
+    float2x2 turn;
+    float2 shift;
+
+    StochasticTransform(layout, w.x >= w.y && w.x >= w.z ? 0 : w.y >= w.z ? 1 : 2, tiling.repeats, tiling.seed + 17u * plane, turn, shift);
+
     for (int i = 0; i < PARALLAX_STEPS; i++) {
 
-        float3 p = NearTiles(material, metres + offset);
-        float2 uv = plane == 0 ? p.zy : plane == 1 ? p.xz : p.xy;
-        float surface = (1.0 - SAMPLE_TEXTURE2D_ARRAY_LOD(_GroundAlbedo, sampler_GroundAlbedo, uv, slice, lod).a) * depth;
+        float2 at = mul(turn, uv + OnPlane(offset, plane) / NEAR_TILE * Repeats[material]) + shift;
+        float surface = (1.0 - SAMPLE_TEXTURE2D_ARRAY_LOD(_GroundAlbedo, sampler_GroundAlbedo, at, slice, lod).a) * depth;
         float gap = surface - i * depth / PARALLAX_STEPS;
 
         if (gap <= 0.0) {
@@ -388,44 +684,14 @@ float3 Parallax(int material, float3 metres, float3 normalOS, float3 planes, flo
 
 }
 
-// The materials that suit a spot, and the recolouring toward its satellite pixel.
+// The materials that suit a spot, the colour its rock takes, and the recolouring toward its satellite pixel.
 struct GroundSite {
 
     float weights[MATERIALS];
+    float3 rock;
     float3 transfer;
 
 };
-
-// A spot at metres (object space) on ground that faces upness of the way up (upOS in object space), sees occlusion of
-// the sky, and stands at altitude metres, under a satellite pixel of colour satellite and tone tone, seen by pixels
-// footprint metres across.
-GroundSite Site(float3 satellite, float3 tone, float3 metres, float3 upOS, float upness, float occlusion, float altitude, float footprint) {
-
-    Terrain terrain;
-    terrain.upness = upness;
-    terrain.convexity = occlusion - (1.0 - 0.5 * (1.0 - upness * upness));
-    terrain.altitude = altitude;
-    terrain.noise = GroundNoise(metres, upOS, footprint);
-
-    GroundSite site;
-    MaterialWeights(tone, terrain, site.weights);
-
-    // What the satellite pixel implies from its tone alone, on level, unremarkable ground: the materials' departure
-    // from it becomes the recolouring.
-    Terrain level;
-    level.upness = 1.0;
-    level.convexity = 0.0;
-    level.altitude = 0.0;
-    level.noise = 0.5;
-
-    float implied[MATERIALS];
-    MaterialWeights(tone, level, implied);
-
-    site.transfer = lerp(1.0, clamp(satellite / max(Palette(implied), 1e-3), 0.25, 4.0), 0.8);
-
-    return site;
-
-}
 
 // Share of the ground a material has at a site.
 float Share(GroundSite site, int material) {
@@ -439,6 +705,44 @@ float Share(GroundSite site, int material) {
     }
 
     return site.weights[material] / max(total, 1e-4);
+
+}
+
+// A spot at metres (object space) on ground that faces upness of the way up, sees occlusion of the sky, and stands at
+// altitude metres, aboveWater over the nearest sheet whose current runs at flow m/s, under a satellite pixel of colour
+// satellite and tone tone, seen by pixels footprint metres across; upOS is the way up in object space.
+GroundSite Site(float3 satellite, float3 tone, float3 metres, float3 upOS, float upness, float occlusion, float altitude, float aboveWater,
+    float flow, float footprint) {
+
+    Terrain terrain;
+    terrain.upness = upness;
+    terrain.convexity = occlusion - (1.0 - 0.5 * (1.0 - upness * upness));
+    terrain.altitude = altitude;
+    terrain.noise = GroundNoise(metres, upOS, footprint);
+    terrain.beach = BeachAt(aboveWater, altitude, flow);
+
+    GroundSite site;
+    MaterialWeights(tone, terrain, site.weights);
+    site.rock = RockColour(tone);
+
+    // What the satellite pixel implies from its tone alone, on level, unremarkable ground: the materials' departure
+    // from it becomes the recolouring.
+    Terrain level;
+    level.upness = 1.0;
+    level.convexity = 0.0;
+    level.altitude = 0.0;
+    level.noise = 0.5;
+    level.beach = 0.0;
+
+    float implied[MATERIALS];
+    MaterialWeights(tone, level, implied);
+
+    site.transfer = lerp(1.0, clamp(satellite / max(Palette(implied, site.rock), 1e-3), 0.25, 4.0), 0.8);
+
+    // A beach keeps its sand's own colour: the satellite pixel it falls in is the land or the water beside it.
+    site.transfer = lerp(site.transfer, 1.0, 0.8 * Share(site, SAND) * terrain.beach);
+
+    return site;
 
 }
 
@@ -506,14 +810,18 @@ void Canopy(inout GroundSurface surface, GroundSite site, float3 satellite, floa
 
 }
 
-GroundSurface GroundMaterial(GroundVaryings input, GroundDetail detail, float3 up, float footprint) {
+// The ground's surface at a pixel; dx and dy are how far its object-space metres move across the pixel, taken where
+// screen-space derivatives are defined.
+GroundSurface GroundMaterial(GroundVaryings input, GroundDetail detail, float3 up, float footprint, float3 dx, float3 dy) {
 
     float3 satellite = SatelliteColour(input.uv);
     float3 metres = input.positionOS * 1000.0;
     float distance = length(input.positionWS - _WorldSpaceCameraPos) * 1000.0;
     float altitude = (length(input.positionWS - _PlanetCentre) - _PlanetRadius) * 1000.0;
 
-    GroundSite site = Site(satellite, LinearToSRGB(SatelliteTone(input.uv)), metres, TransformWorldToObjectDir(up), dot(detail.normalWS, up), detail.occlusion, altitude, footprint);
+    GroundSite site = Site(satellite, LinearToSRGB(SatelliteTone(input.uv)), metres, TransformWorldToObjectDir(up), dot(detail.normalWS, up),
+        detail.occlusion, altitude,
+        -detail.waterDepth, length(SampleWaterDetail(input.uv, input.morph).flow), footprint);
     float3 transfer = site.transfer;
     float weights[MATERIALS];
 
@@ -524,7 +832,7 @@ GroundSurface GroundMaterial(GroundVaryings input, GroundDetail detail, float3 u
     }
 
     GroundSurface surface;
-    surface.albedo = Palette(weights) * transfer;
+    surface.albedo = Palette(weights, site.rock) * transfer;
     surface.normalWS = detail.normalWS;
     surface.snow = Share(site, SNOW);
 
@@ -570,14 +878,14 @@ GroundSurface GroundMaterial(GroundVaryings input, GroundDetail detail, float3 u
     float3 shifted = metres + Parallax(first, metres, detail.normalOS, planes, toCameraOS, distance, footprint);
 
     float wa = weights[first] / max(weights[first] + weights[second], 1e-4);
-    Layer a = SampleMaterial(first, shifted, metres, detail.normalOS, planes, sharpPlanes, detailed, fine);
+    Layer a = SampleMaterial(first, shifted, metres, dx, dy, detail.normalOS, planes, sharpPlanes, detailed, fine);
     Layer b = a;
 
     // Where one material has most of the ground, the other barely shows through the interlock; not worth sampling.
     UNITY_BRANCH
     if (wa < 0.8) {
 
-        b = SampleMaterial(second, shifted, metres, detail.normalOS, planes, sharpPlanes, detailed, fine);
+        b = SampleMaterial(second, shifted, metres, dx, dy, detail.normalOS, planes, sharpPlanes, detailed, fine);
 
     }
 
@@ -588,7 +896,7 @@ GroundSurface GroundMaterial(GroundVaryings input, GroundDetail detail, float3 u
     float bb = max(hb - top, 0.0);
     float blend = ba / max(ba + bb, 1e-4);
 
-    float3 albedo = lerp(b.albedo, a.albedo, blend) * transfer;
+    float3 albedo = lerp(b.albedo * Tint(second, site.rock), a.albedo * Tint(first, site.rock), blend) * transfer;
     float3 normalOS = normalize(lerp(b.normalOS, a.normalOS, blend));
     float snow = (first == SNOW ? blend : 0.0) + (second == SNOW ? 1.0 - blend : 0.0);
 

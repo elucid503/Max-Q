@@ -36,11 +36,12 @@ public readonly struct RiverPoint {
 
 }
 
-/// <summary>Rivers mapped from rivers.bin: centrelines smoothed as quadratic B-splines through their vertices, a
-/// surface level at each vertex, and each reach's width, depth and speed, found through an index of 0.1 degree cells.</summary>
+/// <summary>Rivers mapped from rivers.bin: centrelines smoothed as quadratic B-splines through their vertices, running on
+/// through the junctions of a main stem, a surface level, width and depth at each vertex, and each reach's speed, found
+/// through an index of 0.1 degree cells.</summary>
 public readonly unsafe struct Rivers {
 
-    private const int Magic = 0x5652514D;
+    private const int Magic = 0x5652514F;
     private const double Fixed = 1.0 / (1 << 30);
     private const double LevelUnit = 0.25;
     private const double WidthUnit = 0.1;
@@ -59,8 +60,9 @@ public readonly unsafe struct Rivers {
 
     public const double FloodplainMinimum = 20.0;
 
-    private readonly IntPtr _first;
     private readonly IntPtr _owner;
+    private readonly IntPtr _before;
+    private readonly IntPtr _after;
     private readonly IntPtr _positions;
     private readonly IntPtr _levels;
     private readonly IntPtr _flags;
@@ -88,11 +90,14 @@ public readonly unsafe struct Rivers {
         _rows = header[3];
         _columns = header[4];
 
-        int* next = header + 6;
+        // Past the header and each reach's first vertex, which the neighbours below make redundant here.
+        int* next = header + 6 + reaches + 1;
 
-        _first = (IntPtr)next;
-        next += reaches + 1;
         _owner = (IntPtr)next;
+        next += vertices;
+        _before = (IntPtr)next;
+        next += vertices;
+        _after = (IntPtr)next;
         next += vertices;
         _positions = (IntPtr)next;
         next += 3 * vertices;
@@ -101,9 +106,9 @@ public readonly unsafe struct Rivers {
         _flags = (IntPtr)next;
         next += (vertices + 3) / 4;
         _widths = (IntPtr)next;
-        next += reaches;
+        next += vertices;
         _depths = (IntPtr)next;
-        next += reaches;
+        next += vertices;
         _speeds = (IntPtr)next;
         next += reaches;
         _starts = (IntPtr)next;
@@ -144,17 +149,19 @@ public readonly unsafe struct Rivers {
 
             int vertex = (int)((uint*)_entries)[e];
             int reach = ((int*)_owner)[vertex];
-            int first = ((int*)_first)[reach];
-            int last = ((int*)_first)[reach + 1] - 1;
-            double width = ((int*)_widths)[reach] * WidthUnit;
-            double halfWidth = 0.5 * width;
+            int before = ((int*)_before)[vertex];
+            int after = ((int*)_after)[vertex];
+            double widthV = ((int*)_widths)[vertex] * WidthUnit;
+            double widthA = 0.5 * (((int*)_widths)[before] * WidthUnit + widthV);
+            double widthB = 0.5 * (((int*)_widths)[after] * WidthUnit + widthV);
+            double widest = Math.Max(widthV, Math.Max(widthA, widthB));
 
             Vector3d v = Position(vertex) * radius;
-            Vector3d a = vertex > first ? 0.5 * (Position(vertex - 1) * radius + v) : v;
-            Vector3d b = vertex < last ? 0.5 * (Position(vertex + 1) * radius + v) : v;
+            Vector3d a = before != vertex ? 0.5 * (Position(before) * radius + v) : v;
+            Vector3d b = after != vertex ? 0.5 * (Position(after) * radius + v) : v;
             double span = Math.Max((a - v).Length, (b - v).Length);
 
-            if ((here - v).Length - span > Reach(width)) {
+            if ((here - v).Length - span > Reach(widest)) {
 
                 continue;
 
@@ -162,15 +169,18 @@ public readonly unsafe struct Rivers {
 
             Closest(here, a, v, b, out double t, out double distance);
 
-            if (distance > Reach(width) || distance - halfWidth >= best) {
+            double halfWidth = 0.5 * Spline(widthA, widthV, widthB, t);
+
+            if (distance > Reach(2.0 * halfWidth) || distance - halfWidth >= best) {
 
                 continue;
 
             }
 
             double levelV = ((int*)_levels)[vertex] * LevelUnit;
-            double levelA = vertex > first ? 0.5 * (((int*)_levels)[vertex - 1] * LevelUnit + levelV) : levelV;
-            double levelB = vertex < last ? 0.5 * (((int*)_levels)[vertex + 1] * LevelUnit + levelV) : levelV;
+            double levelA = 0.5 * (((int*)_levels)[before] * LevelUnit + levelV);
+            double levelB = 0.5 * (((int*)_levels)[after] * LevelUnit + levelV);
+            double depthV = ((int*)_depths)[vertex] * DepthUnit;
             Vector3d along = 2.0 * (1.0 - t) * (v - a) + 2.0 * t * (b - v);
             Vector3d centre = Bezier(a, v, b, t);
 
@@ -187,9 +197,9 @@ public readonly unsafe struct Rivers {
             point = new RiverPoint {
 
                 Distance = distance,
-                Level = (1.0 - t) * (1.0 - t) * levelA + 2.0 * (1.0 - t) * t * levelV + t * t * levelB,
+                Level = Spline(levelA, levelV, levelB, t),
                 HalfWidth = halfWidth,
-                Depth = ((int*)_depths)[reach] * DepthUnit,
+                Depth = Spline(0.5 * (((int*)_depths)[before] * DepthUnit + depthV), depthV, 0.5 * (((int*)_depths)[after] * DepthUnit + depthV), t),
                 Speed = ((int*)_speeds)[reach] * SpeedUnit,
                 Fall = lengthAlong > 1e-6 ? -(2.0 * (1.0 - t) * (levelV - levelA) + 2.0 * t * (levelB - levelV)) / lengthAlong : 0.0,
                 Downstream = along.LengthSquared > 1e-12 ? along.Normalized : Vector3d.Zero,
@@ -211,6 +221,10 @@ public readonly unsafe struct Rivers {
         return new Vector3d(p[0] * Fixed, p[1] * Fixed, p[2] * Fixed);
 
     }
+
+    // A value carried along a vertex's piece of the curve as its position is: from the midpoint before, through the vertex's,
+    // to the midpoint after.
+    private static double Spline(double a, double v, double b, double t) => (1.0 - t) * (1.0 - t) * a + 2.0 * (1.0 - t) * t * v + t * t * b;
 
     private static Vector3d Bezier(Vector3d a, Vector3d v, Vector3d b, double t) =>
         (1.0 - t) * (1.0 - t) * a + 2.0 * (1.0 - t) * t * v + t * t * b;

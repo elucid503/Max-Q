@@ -84,6 +84,10 @@ internal struct PatchJob : IJob {
     public const int FarthestGroveDepth = 10;
     public const int GrovesPerQuad = 2;
 
+    // Plants and rocks stand only on ground at least this far (m) over any water sheet: the shores hold dry land just
+    // clear of the water, and grass, trees and stones reach down to it.
+    public const double DryClearance = 0.05;
+
     // Boulders are strewn by the patches of one level, a few hundred metres across, and outcrops of bedrock by a coarser
     // one, a few kilometres across: chances per quad, each taken more often the steeper the ground (see PatchStrewJob).
     // Each rock is three float4s in the patch's scene axes: position in kilometres from the patch centre and size in
@@ -387,7 +391,7 @@ internal struct PatchJob : IJob {
                 int c = a + Vertices;
                 int d = c + 1;
 
-                if (Below(heights, levels, a, -0.3) || Below(heights, levels, b, -0.3) || Below(heights, levels, c, -0.3) || Below(heights, levels, d, -0.3)) {
+                if (Below(heights, levels, a, -DryClearance) || Below(heights, levels, b, -DryClearance) || Below(heights, levels, c, -DryClearance) || Below(heights, levels, d, -DryClearance)) {
 
                     continue;
 
@@ -431,7 +435,7 @@ internal struct PatchJob : IJob {
                 int c = a + Vertices;
                 int d = c + 1;
 
-                if (Below(heights, levels, a, -0.3) || Below(heights, levels, b, -0.3) || Below(heights, levels, c, -0.3) || Below(heights, levels, d, -0.3)) {
+                if (Below(heights, levels, a, -DryClearance) || Below(heights, levels, b, -DryClearance) || Below(heights, levels, c, -DryClearance) || Below(heights, levels, d, -DryClearance)) {
 
                     continue;
 

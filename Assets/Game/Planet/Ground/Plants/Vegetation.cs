@@ -52,6 +52,9 @@ public sealed class Vegetation : IDisposable {
     private static readonly int ColourRectId = Shader.PropertyToID("_ColourRect");
     private static readonly int DetailId = Shader.PropertyToID("_Detail");
     private static readonly int ParentDetailId = Shader.PropertyToID("_ParentDetail");
+    private static readonly int WaterDetailId = Shader.PropertyToID("_WaterDetail");
+    private static readonly int GroundNoiseId = Shader.PropertyToID("_GroundNoise");
+    private static readonly int ParentWaterDetailId = Shader.PropertyToID("_ParentWaterDetail");
     private static readonly int ParentRectId = Shader.PropertyToID("_ParentRect");
     private static readonly int TileOriginMacroId = Shader.PropertyToID("_TileOriginMacro");
     private static readonly int TileOriginBroadId = Shader.PropertyToID("_TileOriginBroad");
@@ -112,7 +115,7 @@ public sealed class Vegetation : IDisposable {
     private readonly float _radiusMetres;
 
     /// <summary><paramref name="radius"/> is the planet's, in scene units.</summary>
-    public Vegetation(Material grass, Material tree, ComputeShader select, Texture groundAlbedo, float radius) {
+    public Vegetation(Material grass, Material tree, ComputeShader select, Texture groundAlbedo, Texture groundNoise, float radius) {
 
         _grass = grass;
         _tree = tree;
@@ -123,6 +126,7 @@ public sealed class Vegetation : IDisposable {
         foreach (int kernel in new[] { _selectTufts, _selectTrees }) {
 
             _select.SetTexture(kernel, GroundAlbedoId, groundAlbedo);
+            _select.SetTexture(kernel, GroundNoiseId, groundNoise);
             _select.SetBuffer(kernel, ScratchId, _scratch);
             _select.SetBuffer(kernel, KeptId, _kept);
 
@@ -151,7 +155,7 @@ public sealed class Vegetation : IDisposable {
     }
 
     /// <summary>Keeps the places the ground under them suits, against the patch's satellite tile and detail.</summary>
-    public void Select(Plot plot, Texture colour, Vector4 rect, Texture detail, Vector4 macroOrigin, Vector4 broadOrigin, Vector3 centre) {
+    public void Select(Plot plot, Texture colour, Vector4 rect, Texture detail, Texture waterDetail, Vector4 macroOrigin, Vector4 broadOrigin, Vector3 centre) {
 
         int kernel = plot.Trees ? _selectTrees : _selectTufts;
 
@@ -161,6 +165,8 @@ public sealed class Vegetation : IDisposable {
         _select.SetTexture(kernel, ColourId, colour);
         _select.SetTexture(kernel, DetailId, detail);
         _select.SetTexture(kernel, ParentDetailId, detail);
+        _select.SetTexture(kernel, WaterDetailId, waterDetail);
+        _select.SetTexture(kernel, ParentWaterDetailId, waterDetail);
         _select.SetVector(ColourRectId, rect);
         _select.SetVector(ParentRectId, new Vector4(1.0f, 1.0f, 0.0f, 0.0f));
         _select.SetVector(TileOriginMacroId, macroOrigin);

@@ -63,7 +63,13 @@ Shader "MaxQ/Ground" {
                 float3 sun = light.direct * light.shadow * cosSun * (1.0 - EffectiveFresnel(cosSun, 0.01)) * exp(-optics.attenuation * depth / refracted);
                 float3 sky = light.sky * exp(-optics.attenuation * depth * 1.2);
 
-                return albedo / PI * (sun * saturate(dot(detail.normalWS, light.up)) + sky * (0.5 + 0.5 * dot(detail.normalWS, light.up)));
+                float3 lit = albedo / PI * (sun * saturate(dot(detail.normalWS, light.up)) + sky * (0.5 + 0.5 * dot(detail.normalWS, light.up)));
+
+                // Toward BED_REACH, past which the mesh leaves the bed out and the water has none, the bed gives way to
+                // what bottomless water returns from this depth, so the water looks the same where the bed ends.
+                float3 bottomless = optics.reflectance * Underwater(light, light.up, 0.01) / PI * exp(-optics.attenuation * depth);
+
+                return lerp(lit, bottomless, smoothstep(0.5 * BED_REACH, 0.9 * BED_REACH, detail.waterDepth));
 
             }
 
@@ -101,6 +107,8 @@ Shader "MaxQ/Ground" {
             float4 Frag(GroundVaryings input) : SV_Target {
 
                 float footprint = PixelFootprint(input.positionWS);
+                float3 metresDx = ddx(input.positionOS) * 1000.0;
+                float3 metresDy = ddy(input.positionOS) * 1000.0;
                 float2 coords = FrameCoords(input.positionWS);
                 float2 coordsDx = ddx(coords);
                 float2 coordsDy = ddy(coords);
@@ -117,7 +125,7 @@ Shader "MaxQ/Ground" {
                     UNITY_BRANCH
                     if (detail.waterDepth < SHALLOWS) {
 
-                        albedo = lerp(GroundMaterial(input, detail, light.up, footprint).albedo, albedo, detail.waterDepth / SHALLOWS);
+                        albedo = lerp(GroundMaterial(input, detail, light.up, footprint, metresDx, metresDy).albedo, albedo, detail.waterDepth / SHALLOWS);
 
                     }
 
@@ -125,7 +133,7 @@ Shader "MaxQ/Ground" {
 
                 }
 
-                GroundSurface surface = GroundMaterial(input, detail, light.up, footprint);
+                GroundSurface surface = GroundMaterial(input, detail, light.up, footprint, metresDx, metresDy);
 
                 float3 ground = GroundRadiance(surface.albedo, surface.normalWS, light, Surroundings(input.uv), detail.occlusion);
 

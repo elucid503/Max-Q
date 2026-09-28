@@ -56,6 +56,11 @@ public sealed class Capture : MonoBehaviour {
         ("glint-orbit-400km", 5.0, -35.0, 400_000.0, 90.0, -60.0, 12.0),
         ("ice-edge-2km", -63.0, -45.0, 2_000.0, 180.0, -12.0, 13.0),
         ("fjord-100m", 61.13, 6.4, 100.0, 90.0, -6.0, 13.0),
+        ("lake-shore-30m", 46.508, 6.487, 30.0, 170.0, -12.0, 11.0),
+        ("dune-beach-40m", 52.37, 4.535, 40.0, 250.0, -12.0, 15.0),
+        ("river-banks-40m", 49.995, 8.285, 40.0, 300.0, -15.0, 14.0),
+        ("canyon-walls-400m", 36.08, -112.12, 400.0, 20.0, -12.0, 10.0),
+        ("meadow-tiling-20m", 46.93, 7.72, 20.0, 200.0, -25.0, 14.0),
 
     };
 
@@ -63,6 +68,7 @@ public sealed class Capture : MonoBehaviour {
     private static readonly (string Name, Action<MapView, bool> Show)[] Parts = {
 
         ("ground", (view, shown) => view.Ground.Hidden = !shown),
+        ("plants and rocks", (view, shown) => view.Ground.StrewHidden = !shown),
         ("atmosphere", (view, shown) => view.Atmosphere.Enabled = shown),
         ("shadows", (view, shown) => view.Sun.Shadows = shown),
         ("water", (view, shown) => view.Water.Hidden = !shown),

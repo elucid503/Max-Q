@@ -9,7 +9,7 @@ namespace MaxQ.Sim.Surface;
 /// <summary>Owns the baked survey files, mapped into memory so only the pages the ground and sea touch are read.</summary>
 public sealed unsafe class Survey : IDisposable {
 
-    private static readonly string[] Files = { "elevation.i16", "levels.i16", "shore.i16", "fetch.u8", "rivers.bin", "sea_state.bin" };
+    private static readonly string[] Files = { "elevation.i16", "levels.i16", "shore.i16", "fetch.u8", "coast.i8", "rivers.bin", "sea_state.bin" };
 
     private readonly MemoryMappedFile[] _files = new MemoryMappedFile[Files.Length];
     private readonly MemoryMappedViewAccessor[] _views = new MemoryMappedViewAccessor[Files.Length];
@@ -34,8 +34,8 @@ public sealed unsafe class Survey : IDisposable {
 
         }
 
-        Terrain = new Terrain(data[0], data[1], data[2], data[3], new Rivers(data[4]), radius);
-        SeaState = new SeaState(data[5]);
+        Terrain = new Terrain(data[0], data[1], data[2], data[3], data[4], new Rivers(data[5]), radius);
+        SeaState = new SeaState(data[6]);
 
     }
 

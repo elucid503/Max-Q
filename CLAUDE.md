@@ -35,7 +35,7 @@ patched conics, 1/5 Earth scale. Personal project, never distributed. Successor 
   downloads Terra's sources (ERA5 through `terra_era5.py`; HydroSHEDS and GLOBathy by hand) and bakes them
   (`terra_bake.py`, then BC7 tiles in Unity).
 - `Data/` - gitignored. `Sources/` downloads and bake intermediates; `Terra/` the baked survey
-  (`elevation.i16`, `levels.i16`, `shore.i16`, `fetch.u8`, `rivers.bin`, `sea_state.bin`) and colour tiles
+  (`elevation.i16`, `levels.i16`, `shore.i16`, `coast.i8`, `fetch.u8`, `rivers.bin`, `sea_state.bin`) and colour tiles
   (`colour.tiles`) the game streams at runtime.
 
 Group by feature, not by file type: a feature's code, shader and stylesheet live together. When a

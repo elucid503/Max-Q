@@ -66,6 +66,9 @@ public sealed class GroundView : IDisposable {
     private const double MacroTile = 153.0;
     private const double BroadTile = 1_377.0;
 
+    // Repeats before a tile origin wraps; must match TILE_PERIOD in GroundMaterials.hlsl.
+    private const double TilePeriod = 64.0;
+
     private static readonly int MorphId = Shader.PropertyToID("_GroundMorph");
     private static readonly int GroundCameraId = Shader.PropertyToID("_GroundCamera");
 
@@ -190,6 +193,9 @@ public sealed class GroundView : IDisposable {
 
     /// <summary>Keeps selecting and streaming but draws nothing; the capture uses it to time the ground.</summary>
     public bool Hidden { get; set; }
+
+    /// <summary>Draws the ground but none of the rocks and plants strewn on it; the capture uses it to time them.</summary>
+    public bool StrewHidden { get; set; }
 
     /// <summary>Patches waiting to be built plus colour tiles still streaming; zero once the view has settled.</summary>
     public int Pending => _requests.Count + InFlight + _tiles.Pending;
@@ -522,7 +528,7 @@ public sealed class GroundView : IDisposable {
 
         if (patch.Plot?.Count > 0) {
 
-            _vegetation.Select(patch.Plot, colour, rect, patch.Detail, TileOrigin(patch.Centre, MacroTile), TileOrigin(patch.Centre, BroadTile),
+            _vegetation.Select(patch.Plot, colour, rect, patch.Detail, patch.WaterDetail, TileOrigin(patch.Centre, MacroTile), TileOrigin(patch.Centre, BroadTile),
                 MapSpace.Direction(patch.Centre / MapSpace.MetresPerUnit));
 
         }
@@ -532,7 +538,7 @@ public sealed class GroundView : IDisposable {
     // Rocks and plants of the strewing levels' visible patches, whether those patches are drawn or their finer children are.
     private void Strew(double time, Vector3d bodyPosition, Vector3 camera) {
 
-        if (Hidden) {
+        if (Hidden || StrewHidden) {
 
             return;
 
@@ -723,13 +729,14 @@ public sealed class GroundView : IDisposable {
 
     }
 
-    // Where the patch's centre falls within a material repeat, in object axes; the shader adds the small local offset,
-    // so textures stay put and seamless in single precision anywhere on the planet.
+    // Where the patch's centre falls within TilePeriod repeats of a material, in object axes; the shader adds the small
+    // local offset, so textures and the random layouts tied to their repeats stay put and seamless in single precision
+    // anywhere on the planet.
     private static Vector4 TileOrigin(Vector3d centre, double tile) {
 
-        static float Fraction(double v, double tile) => (float)(v / tile - Math.Floor(v / tile));
+        static float Wrapped(double v, double tile) => (float)(v / tile - TilePeriod * Math.Floor(v / (TilePeriod * tile)));
 
-        return new Vector4(Fraction(centre.X, tile), Fraction(centre.Z, tile), Fraction(centre.Y, tile), 0.0f);
+        return new Vector4(Wrapped(centre.X, tile), Wrapped(centre.Z, tile), Wrapped(centre.Y, tile), 0.0f);
 
     }
 

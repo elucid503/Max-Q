@@ -35,6 +35,25 @@ public readonly unsafe struct Terrain {
     // Land a water sheet can reach always stands this far clear of it, so the sheet never shows through the shore.
     private const double ShoreClearance = 0.05;
 
+    // Distance to the coast of the lakes and seas on the 15" posts, in 8 m units out to 127 of them either side.
+    private const double CoastUnit = 8.0;
+
+    // Within this many metres of the coast the ground takes a shore's profile, rising BeachSlope a metre from the waterline
+    // on land and falling as fast under water. Where the survey is steep the band narrows, so cliffs still meet the water.
+    private const double ShoreBand = 50.0;
+    private const double CliffShoreBand = 15.0;
+    private const double BeachSlope = 0.03;
+
+    // Past the band, dry land stays this far clear of the water and wet ground as far under it; relief that would cross
+    // is squeezed into a soft layer this thick instead of cut flat.
+    private const double DryClearance = 0.1;
+    private const double SoftLayer = 0.3;
+
+    // The coastline wanders from the survey's by noise this share of each wavelength, from Wander metres down to 10 m.
+    private const double Wander = 160.0;
+    private const double WanderRatio = 0.1;
+    private const int WanderOctaves = 5;
+
     // A river's banks stand at least this far over it before its floodplain blends back into the valley.
     private const double BankRise = 0.3;
 
@@ -51,19 +70,22 @@ public readonly unsafe struct Terrain {
     private readonly IntPtr _levels;
     private readonly IntPtr _shore;
     private readonly IntPtr _fetch;
+    private readonly IntPtr _coast;
     private readonly Rivers _rivers;
     private readonly double _spacing;
 
     public double Radius { get; }
 
     /// <summary>Wraps mapped survey data: <paramref name="elevation"/> is the 15" grid and its mips, <paramref name="levels"/>
-    /// and <paramref name="shore"/> the 30" water levels and shore distances, <paramref name="fetch"/> the 2' fetch.</summary>
-    public Terrain(IntPtr elevation, IntPtr levels, IntPtr shore, IntPtr fetch, Rivers rivers, double radius) {
+    /// and <paramref name="shore"/> the 30" water levels and shore distances, <paramref name="fetch"/> the 2' fetch and
+    /// <paramref name="coast"/> the 15" distance to the coast of the lakes and seas.</summary>
+    public Terrain(IntPtr elevation, IntPtr levels, IntPtr shore, IntPtr fetch, IntPtr coast, Rivers rivers, double radius) {
 
         _elevation = elevation;
         _levels = levels;
         _shore = shore;
         _fetch = fetch;
+        _coast = coast;
         _rivers = rivers;
         _spacing = 2.0 * Math.PI * radius / Columns;
         Radius = radius;
@@ -86,17 +108,19 @@ public readonly unsafe struct Terrain {
         Vector3d position = direction * Radius;
         Vector3d gradient = Gradient(direction, row, column, latitude);
         double height = Relief.Strata(position, survey * VerticalScale + Relief.Detail(position, footprint, gradient), gradient.Length, footprint);
-        double level = WaterLevel(row, column);
+        double presence = WaterPresence(row, column, out double level);
 
-        if (!double.IsNaN(level)) {
+        if (presence > 0.0) {
 
-            return survey >= level ? Math.Max(height, level * VerticalScale + ShoreClearance) : height;
+            height = Shore(height, level * VerticalScale, Smooth((presence - 0.25) / 0.25), CoastAt(position, row, column, footprint),
+                gradient.Length);
 
         }
 
         if (_rivers.Nearest(direction, row, column, Radius, out RiverPoint river)) {
 
-            return Channel(height, river, footprint);
+            // A lake or the sea holds the ground clear of its own sheet; a river's floodplain gives way to it.
+            return Channel(height, river, footprint, 1.0 - Smooth((presence - 0.5) / 0.25));
 
         }
 
@@ -110,9 +134,7 @@ public readonly unsafe struct Terrain {
 
         GridPosition(direction, out double row, out double column, out _);
 
-        double level = WaterLevel(row, column);
-
-        if (!double.IsNaN(level)) {
+        if (WaterPresence(row, column, out double level) >= 0.5) {
 
             return level * VerticalScale;
 
@@ -212,10 +234,11 @@ public readonly unsafe struct Terrain {
 
     }
 
-    // Ground where a river runs: a rounded channel inside its banks, then a floodplain kept between just over the water
-    // and a little above it, blending back into the valley. Near the channel the ground never dips under the water
-    // level, so the sheet stays buried.
-    private static double Channel(double height, RiverPoint river, double footprint) {
+    // Ground where a river runs: a rounded channel inside its banks, banks sloping up from the water, then a floodplain
+    // kept between just over the water and a little above it, blending back into the valley. Near the channel the ground
+    // never dips under the water level, so the sheet stays buried. Raise is how far the floodplain may lift the ground:
+    // not at all where a lake or the sea holds it.
+    private static double Channel(double height, RiverPoint river, double footprint, double raise) {
 
         double visible = Visibility(river.HalfWidth, footprint);
 
@@ -241,10 +264,39 @@ public readonly unsafe struct Terrain {
         double floor = level + ShoreClearance;
         double flat = Math.Min(Math.Max(height, floor), level + Math.Max(2.0 * river.Depth, BankRise));
         double shaped = height + (flat - height) * visible * (1.0 - Smooth(bank / floodplain));
+        double lifted = shaped + (Math.Max(shaped, floor) - shaped) * (1.0 - Smooth((bank - margin) / (floodplain - margin)));
+        double water = Math.Min(height, level);
 
-        return shaped + (Math.Max(shaped, floor) - shaped) * (1.0 - Smooth((bank - margin) / (floodplain - margin)));
+        // The bank climbs from the water's edge to the floodplain, so the channel's wall is a slope, never a step.
+        return water + (height + (lifted - height) * raise - water) * Smooth(bank / Math.Max(0.5 * river.HalfWidth, 1.0));
 
     }
+
+    // Ground near a lake or the sea whose surface stands at level (metres on the body), held with the given strength:
+    // within the shore band it takes a beach's profile through the waterline at coast, the distance to the coast (metres,
+    // negative in the water); past the band, dry land stands clear of the sheet and the bed stays under it.
+    private static double Shore(double height, double level, double hold, double coast, double slope) {
+
+        double band = ShoreBand + (CliffShoreBand - ShoreBand) * Smooth((slope - 0.1) / 0.4);
+        double rise = height - level;
+
+        rise += (BeachSlope * coast - rise) * hold * (1.0 - Smooth(Math.Abs(coast) / band));
+
+        double past = hold * Smooth((Math.Abs(coast) - 0.5 * band) / (0.5 * band));
+
+        if (coast > 0.0) {
+
+            return level + rise + (SoftFloor(rise, DryClearance) - rise) * past;
+
+        }
+
+        return level + rise + (-SoftFloor(-rise, DryClearance) - rise) * past;
+
+    }
+
+    // x, or where it falls short of floor + SoftLayer, squeezed smoothly into the layer above floor.
+    private static double SoftFloor(double x, double floor) =>
+        x >= floor + SoftLayer ? x : floor + SoftLayer * Math.Exp((x - floor) / SoftLayer - 1.0);
 
     // A river shows once it is half as wide as the footprint, fully once it spans it.
     private static double Visibility(double halfWidth, double footprint) =>
@@ -316,19 +368,13 @@ public readonly unsafe struct Terrain {
 
     }
 
-    // Real metres. Water reaches as far as the nearest cell does; within it, the level blends across the cells around
-    // that hold water, so rivers slope smoothly.
-    private double WaterLevel(double row, double column) {
+    // Share of the 30" cells around a point that hold water, blended bilinearly: the sheet reaches out to where half do,
+    // and the ground holds itself clear of it out to there, letting go as the share falls to nothing. Level is theirs,
+    // blended alike, in real metres, so rivers slope smoothly.
+    private double WaterPresence(double row, double column, out double level) {
 
         double r = (row + 0.5) * 0.5 - 0.5;
         double c = (column + 0.5) * 0.5 - 0.5;
-
-        if (Level((int)Math.Floor(r + 0.5), (int)Math.Floor(c + 0.5)) == NoWater) {
-
-            return double.NaN;
-
-        }
-
         double fr = Math.Floor(r);
         double fc = Math.Floor(c);
         int r0 = (int)fr;
@@ -340,19 +386,93 @@ public readonly unsafe struct Terrain {
 
         for (int i = 0; i < 4; i++) {
 
-            short level = Level(r0 + (i >> 1), c0 + (i & 1));
+            short cell = Level(r0 + (i >> 1), c0 + (i & 1));
             double weight = ((i >> 1) == 1 ? tr : 1.0 - tr) * ((i & 1) == 1 ? tc : 1.0 - tc);
 
-            if (level != NoWater) {
+            if (cell != NoWater) {
 
-                sum += level * weight;
+                sum += cell * weight;
                 weights += weight;
 
             }
 
         }
 
-        return sum / weights * LevelUnit;
+        level = weights > 0.0 ? sum / weights * LevelUnit : double.NaN;
+
+        return weights;
+
+    }
+
+    // Metres on the body to the coast of the lakes and seas, negative in the water, wandering from the survey's by noise
+    // no finer than the footprint carries.
+    private double CoastAt(Vector3d position, double row, double column, double footprint) {
+
+        double coast = CoastBicubic(row, column) * CoastUnit * HorizontalScale;
+
+        if (Math.Abs(coast) > ShoreBand + 2.0 * WanderRatio * Wander) {
+
+            return coast;
+
+        }
+
+        double wavelength = Wander;
+
+        for (int octave = 0; octave < WanderOctaves; octave++) {
+
+            double weight = footprint <= 0.0 ? 1.0 : Math.Min(Math.Max(wavelength / footprint - 1.0, 0.0), 1.0);
+            Vector3d p = position / wavelength;
+
+            coast += weight * WanderRatio * wavelength * Relief.Noise(p.X, p.Y, p.Z, 71u + (uint)octave);
+            wavelength *= 0.5;
+
+        }
+
+        return coast;
+
+    }
+
+    // Catmull-Rom over 4x4 posts of the coast distance, in its units.
+    private double CoastBicubic(double row, double column) {
+
+        double fr = Math.Floor(row);
+        double fc = Math.Floor(column);
+        int r0 = (int)fr - 1;
+        int c0 = (int)fc - 1;
+        double tr = row - fr;
+        double tc = column - fc;
+        double sum = 0.0;
+
+        for (int i = 0; i < 4; i++) {
+
+            double line = CatmullRom(tc, CoastPost(r0 + i, c0), CoastPost(r0 + i, c0 + 1), CoastPost(r0 + i, c0 + 2), CoastPost(r0 + i, c0 + 3));
+
+            sum += line * CatmullWeight(tr, i);
+
+        }
+
+        return sum;
+
+    }
+
+    // Rows past a pole continue down the far meridian; columns wrap at the date line.
+    private double CoastPost(int row, int column) {
+
+        if (row < 0) {
+
+            row = -1 - row;
+            column += Columns / 2;
+
+        } else if (row >= Rows) {
+
+            row = 2 * Rows - 1 - row;
+            column += Columns / 2;
+
+        }
+
+        column = (column % Columns + Columns) % Columns;
+
+        return ((sbyte*)_coast)[(long)row * Columns + column];
 
     }
 

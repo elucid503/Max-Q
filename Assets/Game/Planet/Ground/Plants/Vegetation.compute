@@ -69,7 +69,8 @@ Place Survey(uint id) {
 
     place.up = normalize(fromCentre);
     place.altitude = (length(fromCentre) - _PlanetRadius) * 1000.0;
-    place.site = Site(satellite, LinearToSRGB(SatelliteTone(b.xy)), a.xyz * 1000.0, place.up, dot(detail.normalOS, place.up), detail.occlusion, place.altitude, 0.0);
+    place.site = Site(satellite, LinearToSRGB(SatelliteTone(b.xy)), a.xyz * 1000.0, place.up, dot(detail.normalOS, place.up), detail.occlusion, place.altitude,
+        -detail.waterDepth, length(SampleWaterDetail(b.xy, 0.0).flow), 0.0);
     place.dry = detail.waterDepth < -0.1;
 
     return place;

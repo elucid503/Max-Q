@@ -4,13 +4,16 @@ Every grid is equirectangular with row 0 at the north edge and column 0 at 180 W
 Earth metres, which the sim scales to Terra.
 
 elevation.i16  GEBCO 2024 heights on the 15" grid, lake beds carved, sea beds the satellite sees raised to the depth
-               it sees them at, and shores banked, followed by six 2x2 box mips.
+               it sees them at, beds shelving from the coast, and shores banked, followed by six 2x2 box mips.
 levels.i16     water surface level in quarter metres on a 30" grid; -32768 where there is no water. Lakes stand at
                HydroLAKES' surveyed levels, and rivers wide enough to show on the grid slope down their valleys.
 shore.i16      signed distance to the nearest shore in units of 16 m on the 30" grid, negative in water.
+coast.i8       signed distance to the coast of the carved bodies in units of 8 m on the 15" grid, out to a kilometre,
+               from the water mask's own 5" pixels, so coastlines keep their shape between the posts.
 fetch.u8       open water upwind on a 2' grid, 8 directions per cell (E, NE, N, NW, W, SW, S, SE), log-encoded.
-rivers.bin     HydroRIVERS reaches carrying at least MIN_DISCHARGE, as smoothed polylines with a level per vertex,
-               width, depth and speed per reach, and an index of the reaches near each 0.1 degree cell.
+rivers.bin     HydroRIVERS reaches carrying at least MIN_DISCHARGE, as smoothed polylines with a level, width and depth per
+               vertex and each vertex's neighbours along the curve (across a junction, on the main stem), speed per
+               reach, and an index of the reaches near each 0.1 degree cell.
 sea_state.bin  ERA5 1991-2020 monthly climatology on a 0.5 degree grid: wind, wind sea, swell and sea ice.
 colour.raw     Blue Marble June 2004 as cube-face tiles (levels 0-6, 256 px: 248 plus a 4 px border),
                uncompressed; the Unity bake (Max-Q > Bake Terra Tiles) compresses it to colour.tiles.
@@ -68,9 +71,18 @@ FETCH_MAX = 1_000_000.0
 # Rivers carrying less than this (m^3/s) are narrower than 15 m by Andreadis' width law, 3 m on Terra.
 MIN_DISCHARGE = 4.34
 TERRA = 0.2
-RIVER_MAGIC = 0x5652514D
+RIVER_MAGIC = 0x5652514F
 RIVER_CELLS = 10
 SEA_MAGIC = 0x5353514D
+
+# The coast's distance on the 15" posts, from the source's own 5" pixels: 8 m units out to a kilometre either side,
+# negative in water. Bands of posts are measured with a halo wide enough for the bodies' filters and that kilometre.
+FINE = 3
+PIXEL = POST / FINE
+COAST_UNIT = 8.0
+COAST_REACH = 127.0 * COAST_UNIT
+COAST_BAND = 64
+COAST_HALO = 8
 
 TILE = 248
 BORDER = 4
@@ -86,6 +98,11 @@ SEEN_SAND = np.array([0.35, 0.3], np.float32)
 SEEN_DEEP = np.array([0.0015, 0.007], np.float32)
 SEEN_CLEAR = np.array([0.072, 0.043], np.float32)
 SEEN_LATITUDE = 35.0
+
+# Within the coast's reach a bed shelves from the coast no steeper than this (real metres down per metre out, from a
+# start): beds carved by posts would otherwise drop at the posts' staircase, which clear water shows.
+SHELF_START = 0.5
+SHELF_SLOPE = 0.15
 
 # Round footprint, five posts in radius, for the banks around each body.
 DISK = np.hypot(*np.mgrid[-5:6, -5:6]) <= 5.0
@@ -151,8 +168,9 @@ def assemble_elevation():
 # --- Water mask -------------------------------------------------------------------------------------
 
 
-def _water_chunk(chunk):
+def _water_rows(chunk):
 
+    # Three rows of the source's 256 px tiles (768 rows of its 5" pixels), as water or not.
     tif = tifffile.TiffFile(os.path.join(SOURCES, "water.tif"))
     page = tif.pages[0]
     handle = tif.filehandle
@@ -174,10 +192,25 @@ def _water_chunk(chunk):
             data = imagecodecs.lzw_decode(handle.read(page.databytecounts[index]), out=65_536)
             rows[tile_row * 256:(tile_row + 1) * 256, tile_col * 256:(tile_col + 1) * 256] = np.frombuffer(data, np.uint8)[:65_536].reshape(256, 256)
 
-    water = (rows[:, :W * 3] == 2).reshape(256, 3, W, 3).sum(axis=(1, 3)) >= 5
+    return rows[:, :W * FINE] == 2
+
+
+def _water_chunk(chunk):
+
+    rows = _water_rows(chunk)
+    water = rows.reshape(256, 3, W, 3).sum(axis=(1, 3)) >= 5
     out = np.memmap(work("water15.u8.part"), np.uint8, "r+", shape=(H, W))
     last = min(256, H - chunk * 256)
     out[chunk * 256:chunk * 256 + last] = water[:last]
+    out.flush()
+
+
+def _water5_chunk(chunk):
+
+    rows = _water_rows(chunk)
+    out = np.memmap(work("water5.bits.part"), np.uint8, "r+", shape=(H * FINE, W * FINE // 8))
+    last = min(768, H * FINE - chunk * 768)
+    out[chunk * 768:chunk * 768 + last] = np.packbits(rows[:last], axis=1)
     out.flush()
 
 
@@ -197,6 +230,23 @@ def decode_water():
         os.replace(path + ".part", path)
 
     return np.memmap(path, np.uint8, "r", shape=(H, W))
+
+
+def decode_water5():
+
+    # The source at its own 5" pixels, a bit each, for the coast's distance field.
+    path = work("water5.bits")
+
+    if not os.path.exists(path):
+
+        log("decoding the ESA CCI water mask at 5\"")
+        np.memmap(path + ".part", np.uint8, "w+", shape=(H * FINE, W * FINE // 8)).flush()
+
+        with Pool(16) as pool:
+
+            pool.map(_water5_chunk, range((H + 255) // 256))
+
+        os.replace(path + ".part", path)
 
 
 # --- Water bodies -----------------------------------------------------------------------------------
@@ -549,6 +599,26 @@ def river_network(elevation, labels, body_levels):
     return result
 
 
+def river_down():
+
+    # Downstream neighbour of each reach traced by river_network, or -1 at an outlet; the reaches read in the same order.
+    path = work("rivers_down.npy")
+
+    if os.path.exists(path):
+
+        return np.load(path)
+
+    meta, _, _, fields = pyogrio.raw.read(RIVERS, columns=["HYRIV_ID", "NEXT_DOWN", "DIS_AV_CMS"], where=f"DIS_AV_CMS >= {MIN_DISCHARGE}", read_geometry=False)
+    f = dict(zip(meta["fields"], fields))
+    ids = f["HYRIV_ID"].astype(np.int64)
+    order = np.argsort(ids)
+    at = np.minimum(np.searchsorted(ids[order], f["NEXT_DOWN"]), len(ids) - 1)
+    down = np.where(ids[order][at] == f["NEXT_DOWN"], order[at], -1)
+    np.save(path, down)
+
+    return down
+
+
 def write_rivers(rivers):
 
     path = os.path.join(OUT, "rivers.bin")
@@ -563,17 +633,41 @@ def write_rivers(rivers):
     owner = np.repeat(np.arange(reaches), np.diff(first)).astype(np.int32)
     width = rivers["width"] * TERRA
 
-    # Each vertex's piece of the curve runs from the midpoint before it to the midpoint after it (a reach end
-    # stands in for its missing midpoint), so its bounds are those three points, widened by the river's reach
-    # into its banks: a floodplain of twice the width, at least 20 m on Terra.
-    start = np.isin(np.arange(vertices), first[:-1])
-    end = np.isin(np.arange(vertices), first[1:] - 1)
-    prev = np.where(start, np.arange(vertices), np.arange(vertices) - 1)
-    after = np.where(end, np.arange(vertices), np.arange(vertices) + 1)
+    # Where reaches meet, the widest flowing in carries on as the main stem through the one below: the curve runs on
+    # across the junction there, which both reaches share, instead of turning a corner. A tributary's end, and a
+    # source, stand in for their missing neighbour.
+    down = river_down()
+    feeding = np.nonzero(down >= 0)[0]
+    feeding = feeding[np.argsort(width[feeding], kind="stable")]
+    upstream = np.full(reaches, -1, np.int64)
+    upstream[down[feeding]] = feeding
+    length = np.diff(first)
+    heads, tails = first[:-1], first[1:] - 1
+    prev = np.arange(vertices) - 1
+    after = np.arange(vertices) + 1
+    prev[heads] = heads
+    after[tails] = tails
+    joined = (upstream >= 0) & (length >= 2)
+    joined[joined] &= length[upstream[joined]] >= 2
+    prev[heads[joined]] = first[upstream[joined] + 1] - 2
+    main = (down >= 0) & (length >= 2)
+    main[main] &= (upstream[down[main]] == np.nonzero(main)[0]) & (length[down[main]] >= 2)
+    after[tails[main]] = first[down[main]] + 1
+
+    # A main stem widens and deepens across a junction rather than at it: the vertex both reaches share takes the mean.
+    across = np.nonzero(joined)[0]
+    vertex_width = width[owner]
+    vertex_depth = rivers["depth"][owner] * TERRA
+    vertex_width[heads[across]] = vertex_width[tails[upstream[across]]] = 0.5 * (width[across] + width[upstream[across]])
+    vertex_depth[heads[across]] = vertex_depth[tails[upstream[across]]] = 0.5 * (rivers["depth"][across] + rivers["depth"][upstream[across]]) * TERRA
+
+    # Each vertex's piece of the curve runs from the midpoint before it to the midpoint after it, so its bounds are those
+    # three points, widened by the river's reach into its banks: a floodplain of twice the width, at least 20 m on Terra.
     unwrap = lambda d: (d + 180.0) % 360.0 - 180.0
     lons = np.stack([lon + 0.5 * unwrap(lon[prev] - lon), lon, lon + 0.5 * unwrap(lon[after] - lon)])
     lats = np.stack([0.5 * (lat + lat[prev]), lat, 0.5 * (lat + lat[after])])
-    reach = (0.5 * width + np.maximum(2.0 * width, 20.0))[owner] / (DEGREE * TERRA)
+    widest = np.maximum(vertex_width, np.maximum(vertex_width[prev], vertex_width[after]))
+    reach = (0.5 * widest + np.maximum(2.0 * widest, 20.0)) / (DEGREE * TERRA)
     across = reach / np.maximum(np.cos(np.radians(np.abs(lat) + reach)), 0.01)
 
     r0 = np.floor((90.0 - (lats.max(axis=0) + reach)) * RIVER_CELLS).astype(np.int64)
@@ -606,6 +700,8 @@ def write_rivers(rivers):
         np.array([RIVER_MAGIC, reaches, vertices, rows, cols, len(entries)], np.int32).tofile(out)
         first.astype(np.int32).tofile(out)
         owner.tofile(out)
+        prev.astype(np.int32).tofile(out)
+        after.astype(np.int32).tofile(out)
         # Positions as unit vectors in the sim frame (Z up, longitude 0 on +X), fixed point at 2^30.
         phi, lam = np.radians(lat), np.radians(lon)
         unit = np.stack([np.cos(phi) * np.cos(lam), np.cos(phi) * np.sin(lam), np.sin(phi)], axis=-1)
@@ -614,8 +710,8 @@ def write_rivers(rivers):
         flags = np.zeros((vertices + 3) // 4 * 4, np.uint8)
         flags[:vertices] = rivers["fixed"]
         flags.tofile(out)
-        np.round(width * 10.0).astype(np.int32).tofile(out)
-        np.round(rivers["depth"] * TERRA * 100.0).astype(np.int32).tofile(out)
+        np.round(vertex_width * 10.0).astype(np.int32).tofile(out)
+        np.round(vertex_depth * 100.0).astype(np.int32).tofile(out)
         np.round(rivers["speed"] * 100.0).astype(np.int32).tofile(out)
         starts.tofile(out)
         entries.tofile(out)
@@ -747,6 +843,7 @@ def carve(elevation, water15, labels, cell_levels, beds, body_depths):
     band, halo = 2_048, 16
     depths = np.nan_to_num(body_depths, nan=-1.0).astype(np.float32)
     colour = np.memmap(work("colour0.u8"), np.uint8, "r", shape=(H, W, 3))
+    coast = np.memmap(os.path.join(OUT, "coast.i8"), np.int8, "r", shape=(H, W))
 
     for r0 in range(0, H, band):
 
@@ -787,6 +884,11 @@ def carve(elevation, water15, labels, cell_levels, beds, body_depths):
         sea = np.nonzero(body & tropical[:, None] & (np.abs(level) < 0.5) & (colour[a:b, :, 1] >= 30))
         seen = level[sea] - seen_depth(colour[a:b][sea])
         e[sea] = np.where(seen > e[sea], seen, e[sea])
+
+        # Beds shelve down from the coast as the coast distance runs, so they follow the coast's shape between the posts.
+        offshore = np.asarray(coast[a:b])
+        shelf = level - (SHELF_START + SHELF_SLOPE * np.maximum(-offshore.astype(np.float32), 0.0) * COAST_UNIT)
+        e = np.where(body & (np.abs(offshore) < 127), np.maximum(e, shelf), e)
 
         # Land near a body stands at least a metre above its surface, so the water sheet's edge stays buried.
         # A round footprint cannot wrap per axis, so the band is padded across the date line by hand.
@@ -900,6 +1002,72 @@ def shore_distance(water15):
     beyond = (np.abs(near) >= SHORE_FINE - POST) & (np.abs(far) > np.abs(near))
     metres = np.where(beyond, np.copysign(np.abs(far), near), near)
     np.clip(np.round(metres / SHORE_UNIT), -32_767, 32_767).astype(np.int16).tofile(path + ".part")
+    os.replace(path + ".part", path)
+
+
+def _coast_band(r0):
+
+    # One band of posts: the bodies the carve banks (water posts holding a level, or two posts from one), and their 5"
+    # water pixels plus any in the posts around them, measured from the posts' centres, which are the pixels 3r + 1.
+    water15 = np.memmap(work("water15.u8"), np.uint8, "r", shape=(H, W))
+    cells = np.memmap(work("levels30.f32"), np.float32, "r", shape=(H // 2, W // 2))
+    bits = np.memmap(work("water5.bits"), np.uint8, "r", shape=(H * FINE, W * FINE // 8))
+    out = np.memmap(os.path.join(OUT, "coast.i8.part"), np.int8, "r+", shape=(H, W))
+
+    a, b = max(0, r0 - COAST_HALO), min(H, r0 + COAST_BAND + COAST_HALO)
+    count = min(COAST_BAND, H - r0)
+    level = np.repeat(np.repeat(np.asarray(cells[a // 2:b // 2]), 2, axis=0), 2, axis=1)
+    level = np.where(np.isnan(level), -np.inf, level)
+    near = ndimage.maximum_filter(level, size=5, mode=("nearest", "wrap"))
+    body = np.asarray(water15[a:b]).astype(bool) & (np.isfinite(level) | np.isfinite(near))
+    reach = ndimage.maximum_filter(body.view(np.uint8), size=3, mode=("nearest", "wrap")).astype(bool)
+    wet = np.unpackbits(np.asarray(bits[a * FINE:b * FINE]), axis=1).astype(bool)
+    wet &= np.repeat(np.repeat(reach, FINE, axis=0), FINE, axis=1)
+
+    top = (r0 - a) * FINE + 1
+
+    if not wet.any() or wet.all():
+
+        out[r0:r0 + count] = -127 if wet.all() else 127
+        out.flush()
+
+        return
+
+    latitude = 90.0 - (r0 + 0.5 * count) / 240.0
+    across = PIXEL * max(math.cos(math.radians(latitude)), 0.01)
+    pad = min(int(math.ceil(COAST_REACH / across)) + 1, W * FINE // 2)
+    block = np.pad(wet, ((0, 0), (pad, pad)), mode="wrap")
+    half = 0.5 * math.sqrt(PIXEL * across)
+    posts = (slice(top, top + count * FINE, FINE), slice(pad + 1, pad + W * FINE, FINE))
+    inside = ndimage.distance_transform_edt(block, sampling=(PIXEL, across))[posts]
+    outside = ndimage.distance_transform_edt(~block, sampling=(PIXEL, across))[posts]
+    signed = np.where(block[posts], half - inside, outside - half)
+
+    out[r0:r0 + count] = np.clip(np.round(signed / COAST_UNIT), -127, 127).astype(np.int8)
+    out.flush()
+
+
+def coast_distance():
+
+    path = os.path.join(OUT, "coast.i8")
+
+    if os.path.exists(path):
+
+        return
+
+    decode_water5()
+    log("measuring distance to the coast at 5\"")
+    np.memmap(path + ".part", np.int8, "w+", shape=(H, W)).flush()
+    bands = list(range(0, H, COAST_BAND))
+
+    with Pool(10) as pool:
+
+        for done, _ in enumerate(pool.imap_unordered(_coast_band, bands)):
+
+            if done % 50 == 0:
+
+                log(f"  {done}/{len(bands)} bands")
+
     os.replace(path + ".part", path)
 
 
@@ -1175,6 +1343,7 @@ def main():
     cell_levels = water_levels(elevation, labels, body_levels, rivers)
     beds = lake_beds(labels, body_levels, body_depths)
     colour_mips()
+    coast_distance()
     carve(elevation, water15, labels, cell_levels, beds, body_depths)
     shore_distance(water15)
     fetch(water15)

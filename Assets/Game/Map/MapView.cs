@@ -35,10 +35,13 @@ namespace MaxQ.Game.Map {
         [SerializeField] private Shader _waterCopy;
         [SerializeField] private Material _skyMaterial;
 
+        private static readonly int GroundNoiseId = Shader.PropertyToID("_GroundNoise");
+
         private CelestialBody _terra;
         private double _time;
 
         private Survey _survey;
+        private Texture2D _groundNoise;
         private GroundView _ground;
         private WaterView _water;
         private Atmosphere _atmosphere;
@@ -64,7 +67,11 @@ namespace MaxQ.Game.Map {
             _freeCamera = new FreeCamera(_camera);
 
             _atmosphere = new Atmosphere(_terra, _atmosphereTables, _atmosphereSky, _exposure, MapSpace.Direction(Vector3d.UnitX), SunIlluminance);
-            Vegetation vegetation = new Vegetation(_grassMaterial, _treeMaterial, _vegetation, _groundMaterial.GetTexture("_GroundAlbedo"), (float)(_terra.Radius / MapSpace.MetresPerUnit));
+            _groundNoise = GroundNoise.Create();
+            Shader.SetGlobalTexture(GroundNoiseId, _groundNoise);
+
+            Vegetation vegetation = new Vegetation(_grassMaterial, _treeMaterial, _vegetation, _groundMaterial.GetTexture("_GroundAlbedo"), _groundNoise,
+                (float)(_terra.Radius / MapSpace.MetresPerUnit));
             _ground = new GroundView(_terra, _survey.SeaState, new ColourTiles(Path.Combine(data, "colour.tiles")), _groundMaterial, _waterMaterial, _rockMaterial, vegetation);
             _water = new WaterView(_terra, _survey.SeaState, _waves, _waterCopy);
             _seleneView = new BodyView(selene, _seleneFaces, _surfaceMaterial, 0.0f);
@@ -89,6 +96,7 @@ namespace MaxQ.Game.Map {
 
             _ground?.Dispose();
             _water?.Dispose();
+            Destroy(_groundNoise);
             _atmosphere?.Dispose();
             _survey?.Dispose();
 

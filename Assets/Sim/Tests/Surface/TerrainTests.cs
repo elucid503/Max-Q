@@ -202,6 +202,33 @@ public sealed class TerrainTests {
 
     }
 
+    // Walks the ground in half-metre steps across a shore or a river bank: no step may rise more than a cliff band's face
+    // would, so the mesh never samples a wall. Low shores, where the old clamp stood a ledge at the waterline.
+    [TestCase("Lake Geneva, Morges", 46.505, 6.49, 46.50, 6.50)]
+    [TestCase("Lake Balaton, Siofok", 46.915, 18.04, 46.895, 18.06)]
+    [TestCase("North Sea, Zandvoort", 52.37, 4.50, 52.37, 4.55)]
+    [TestCase("Rhine at Mainz", 49.995, 8.26, 50.005, 8.28)]
+    public void GroundIsContinuousAcrossShores(string place, double latitude0, double longitude0, double latitude1, double longitude1) {
+
+        Vector3d from = At(latitude0, longitude0);
+        Vector3d to = At(latitude1, longitude1);
+        int steps = (int)((to - from).Length * Terra.Radius / 0.5);
+        double previous = Terra.HeightAt(from, 0.0);
+        double worst = 0.0;
+
+        for (int i = 1; i <= steps; i++) {
+
+            double height = Terra.HeightAt((from + (to - from) * ((double)i / steps)).Normalized, 0.0);
+
+            worst = Math.Max(worst, Math.Abs(height - previous));
+            previous = height;
+
+        }
+
+        Assert.That(worst, Is.LessThan(0.25), place);
+
+    }
+
     [Test]
     public void GroundIsContinuousOnTheSmallestScale() {
 
