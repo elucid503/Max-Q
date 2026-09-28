@@ -7,13 +7,12 @@ using UnityEngine.Rendering;
 
 namespace MaxQ.Game.Planet.Ground.Plants;
 
-/// <summary>Grass and trees. Patches offer places where plants may stand; once a patch has its satellite tile, a compute
-/// pass keeps the places whose ground the materials call meadow or forest, with each plant's colour and size, so the
-/// plants grow exactly where the ground shows them, and sorts them by a random rank. Each patch then draws the first of
-/// its plants that its distance keeps: grass tufts of procedural blades near the camera, thinning with distance, and
-/// trees, conifers and broadleaves, of foliage cards and then of single painted cards. Past the trees, the coarser levels'
-/// patches draw groves, one card for the trees of each cell, their cells doubling in size as the distance doubles, so each
-/// level draws about as many as the last and the forest reaches ten kilometres for little more than the trees cost.</summary>
+/// <summary>Grass and trees. Each patch that strews plants (see PatchStrewJob) hands over the ones its ground's cover
+/// grows, sorted by a random rank, and draws the first of them that its distance keeps: grass tufts of procedural blades
+/// near the camera, thinning with distance, and trees, conifers and broadleaves, of foliage cards and then of single
+/// painted cards. Past the trees, the coarser levels' patches draw groves, one card for the trees of each cell, their
+/// cells doubling in size as the distance doubles, so each level draws about as many as the last and the forest reaches
+/// ten kilometres for little more than the trees cost.</summary>
 public sealed class Vegetation : IDisposable {
 
     // Metres: grass is drawn within GrassReach, every tuft within GrassDense and a share falling with the square of
@@ -28,7 +27,7 @@ public sealed class Vegetation : IDisposable {
     private const float Everywhere = 1e9f;
 
     // Metres over which each level hands over to the next coarser, tree by tree: the trees to the first groves, each level
-    // of groves to the next, and the last fading out at the reach. One per level from PatchJob.TreeDepth out.
+    // of groves to the next, and the last fading out at the reach. One per level from PatchStrewJob.TreeDepth out.
     private static readonly Vector2[] Handovers = { new Vector2(1_200.0f, 1_400.0f), new Vector2(2_500.0f, 2_800.0f), new Vector2(5_000.0f, 5_600.0f),
         new Vector2(8_500.0f, 10_000.0f) };
 
@@ -40,74 +39,36 @@ public sealed class Vegetation : IDisposable {
     private const int FarCards = 1 + 24;
     private const int StandCards = 1;
 
-    // Places a patch can offer, as the compute pass sorts them; must match SLOTS in Vegetation.compute.
-    private const int Slots = 4096;
-
-    private static readonly int CandidatesId = Shader.PropertyToID("_Candidates");
-    private static readonly int CandidateCountId = Shader.PropertyToID("_CandidateCount");
-    private static readonly int ScratchId = Shader.PropertyToID("_Scratch");
     private static readonly int PlantsId = Shader.PropertyToID("_Plants");
-    private static readonly int KeptId = Shader.PropertyToID("_Kept");
-    private static readonly int ColourId = Shader.PropertyToID("_Colour");
-    private static readonly int ColourRectId = Shader.PropertyToID("_ColourRect");
-    private static readonly int DetailId = Shader.PropertyToID("_Detail");
-    private static readonly int ParentDetailId = Shader.PropertyToID("_ParentDetail");
-    private static readonly int WaterDetailId = Shader.PropertyToID("_WaterDetail");
-    private static readonly int GroundNoiseId = Shader.PropertyToID("_GroundNoise");
-    private static readonly int ParentWaterDetailId = Shader.PropertyToID("_ParentWaterDetail");
-    private static readonly int ParentRectId = Shader.PropertyToID("_ParentRect");
-    private static readonly int TileOriginMacroId = Shader.PropertyToID("_TileOriginMacro");
-    private static readonly int TileOriginBroadId = Shader.PropertyToID("_TileOriginBroad");
-    private static readonly int GroundAlbedoId = Shader.PropertyToID("_GroundAlbedo");
-    private static readonly int PatchCentreId = Shader.PropertyToID("_PatchCentre");
     private static readonly int PatchPositionId = Shader.PropertyToID("_PatchPosition");
     private static readonly int PatchRotationId = Shader.PropertyToID("_PatchRotation");
     private static readonly int CardsId = Shader.PropertyToID("_Cards");
     private static readonly int BandId = Shader.PropertyToID("_Band");
     private static readonly int FadeId = Shader.PropertyToID("_Fade");
     private static readonly int GroveId = Shader.PropertyToID("_Grove");
-    private static readonly int PlanetRadiusId = Shader.PropertyToID("_PlanetRadius");
 
-    /// <summary>One patch's plants on the GPU: the places it offers and the plants kept, sorted by rank.</summary>
+    /// <summary>One patch's plants on the GPU, sorted by rank.</summary>
     public sealed class Plot : IDisposable {
 
-        public readonly GraphicsBuffer Candidates = new GraphicsBuffer(GraphicsBuffer.Target.Structured, PatchJob.PlantLength, 16);
-        public readonly GraphicsBuffer Plants = new GraphicsBuffer(GraphicsBuffer.Target.Structured, PatchJob.MaxTufts, 48);
+        public readonly GraphicsBuffer Plants = new GraphicsBuffer(GraphicsBuffer.Target.Structured, PatchStrewJob.PlantSlots, 48);
         public readonly MaterialPropertyBlock NearBlock = new MaterialPropertyBlock();
         public readonly MaterialPropertyBlock FarBlock = new MaterialPropertyBlock();
         public readonly MaterialPropertyBlock ShadowBlock = new MaterialPropertyBlock();
         public readonly MaterialPropertyBlock StandBlock = new MaterialPropertyBlock();
 
         public int Count;
-        public bool Trees;
 
-        // The quadtree level of the patch: trees on PatchJob.TreeDepth, groves on the coarser ones.
+        // The quadtree level of the patch: grass on PatchStrewJob.TuftDepth, trees on TreeDepth, groves on the coarser ones.
         public int Depth;
 
-        /// <summary>Plants kept, once the GPU has told; until then the plot draws nothing.</summary>
-        public int Kept = -1;
+        public bool Trees => Depth != PatchStrewJob.TuftDepth;
 
-        // Counts selections; a count read back for an older one is stale.
-        public int Selection;
-
-        public bool Ready => Kept > 0;
-
-        public void Dispose() {
-
-            Candidates.Release();
-            Plants.Release();
-
-        }
+        public void Dispose() => Plants.Release();
 
     }
 
     private readonly Material _grass;
     private readonly Material _tree;
-    private readonly ComputeShader _select;
-    private readonly int _selectTufts;
-    private readonly int _selectTrees;
-    private readonly GraphicsBuffer _scratch = new GraphicsBuffer(GraphicsBuffer.Target.Structured, Slots, 48);
-    private readonly GraphicsBuffer _kept = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 1, sizeof(uint));
     private readonly GraphicsBuffer _bladeIndices;
     private readonly GraphicsBuffer _nearIndices;
     private readonly GraphicsBuffer _farIndices;
@@ -115,26 +76,11 @@ public sealed class Vegetation : IDisposable {
     private readonly float _radiusMetres;
 
     /// <summary><paramref name="radius"/> is the planet's, in scene units.</summary>
-    public Vegetation(Material grass, Material tree, ComputeShader select, Texture groundAlbedo, Texture groundNoise, float radius) {
+    public Vegetation(Material grass, Material tree, float radius) {
 
         _grass = grass;
         _tree = tree;
-        _select = select;
-        _selectTufts = select.FindKernel("SelectTufts");
-        _selectTrees = select.FindKernel("SelectTrees");
-
-        foreach (int kernel in new[] { _selectTufts, _selectTrees }) {
-
-            _select.SetTexture(kernel, GroundAlbedoId, groundAlbedo);
-            _select.SetTexture(kernel, GroundNoiseId, groundNoise);
-            _select.SetBuffer(kernel, ScratchId, _scratch);
-            _select.SetBuffer(kernel, KeptId, _kept);
-
-        }
-
-        _select.SetFloat(PlanetRadiusId, radius);
         _radiusMetres = radius * 1_000.0f;
-
         _bladeIndices = Indices(BladeTriangles());
         _nearIndices = Indices(CardTriangles(NearCards));
         _farIndices = Indices(CardTriangles(FarCards));
@@ -142,50 +88,13 @@ public sealed class Vegetation : IDisposable {
 
     }
 
-    /// <summary>Takes the places of a freshly built patch at <paramref name="depth"/>; its plants wait for <see cref="Select"/>.</summary>
-    public void Load(Plot plot, NativeArray<float4> places, int count, bool trees, int depth) {
+    /// <summary>Takes the plants of a freshly built patch at <paramref name="depth"/>, three float4s each, as PatchJob
+    /// gathers them.</summary>
+    public void Load(Plot plot, NativeArray<float4> plants, int count, int depth) {
 
-        plot.Candidates.SetData(places, 0, 0, 2 * count);
+        plot.Plants.SetData(plants.Reinterpret<float4x3>(16), 0, 0, count);
         plot.Count = count;
-        plot.Trees = trees;
         plot.Depth = depth;
-        plot.Kept = -1;
-        plot.Selection++;
-
-    }
-
-    /// <summary>Keeps the places the ground under them suits, against the patch's satellite tile and detail.</summary>
-    public void Select(Plot plot, Texture colour, Vector4 rect, Texture detail, Texture waterDetail, Vector4 macroOrigin, Vector4 broadOrigin, Vector3 centre) {
-
-        int kernel = plot.Trees ? _selectTrees : _selectTufts;
-
-        _select.SetBuffer(kernel, CandidatesId, plot.Candidates);
-        _select.SetBuffer(kernel, PlantsId, plot.Plants);
-        _select.SetInt(CandidateCountId, plot.Count);
-        _select.SetTexture(kernel, ColourId, colour);
-        _select.SetTexture(kernel, DetailId, detail);
-        _select.SetTexture(kernel, ParentDetailId, detail);
-        _select.SetTexture(kernel, WaterDetailId, waterDetail);
-        _select.SetTexture(kernel, ParentWaterDetailId, waterDetail);
-        _select.SetVector(ColourRectId, rect);
-        _select.SetVector(ParentRectId, new Vector4(1.0f, 1.0f, 0.0f, 0.0f));
-        _select.SetVector(TileOriginMacroId, macroOrigin);
-        _select.SetVector(TileOriginBroadId, broadOrigin);
-        _select.SetVector(PatchCentreId, centre);
-        _select.Dispatch(kernel, 1, 1, 1);
-
-        // Until the new count arrives the old one stands: a better tile only recolours the same places.
-        int selection = ++plot.Selection;
-
-        AsyncGPUReadback.Request(_kept, request => {
-
-            if (!request.hasError && plot.Selection == selection) {
-
-                plot.Kept = (int)request.GetData<uint>()[0];
-
-            }
-
-        });
 
     }
 
@@ -203,7 +112,7 @@ public sealed class Vegetation : IDisposable {
 
             if (nearest < GrassReach) {
 
-                int tufts = Share(plot.Kept, GrassDense * GrassDense / (nearest * nearest));
+                int tufts = Share(plot.Count, GrassDense * GrassDense / (nearest * nearest));
 
                 Issue(plot.NearBlock, _grass, _bladeIndices, plot, position, rotation, bounds, tufts, Vector2.zero, Vector4.zero, 0.0f, ShadowCastingMode.Off, 0);
 
@@ -213,7 +122,7 @@ public sealed class Vegetation : IDisposable {
 
         }
 
-        int level = PatchJob.TreeDepth - plot.Depth;
+        int level = PatchStrewJob.TreeDepth - plot.Depth;
         Vector2 fadeIn = level == 0 ? new Vector2(-2.0f, -1.0f) : Handovers[level - 1];
         Vector4 fade = new Vector4(fadeIn.x, fadeIn.y, Handovers[level].x, Handovers[level].y);
 
@@ -225,7 +134,7 @@ public sealed class Vegetation : IDisposable {
 
         if (level > 0) {
 
-            Issue(plot.StandBlock, _tree, _standIndices, plot, position, rotation, bounds, plot.Kept, new Vector2(0.0f, Everywhere), fade, GroveCell(plot.Depth),
+            Issue(plot.StandBlock, _tree, _standIndices, plot, position, rotation, bounds, plot.Count, new Vector2(0.0f, Everywhere), fade, GroveCell(plot.Depth),
                 ShadowCastingMode.Off, StandCards);
 
             return;
@@ -235,23 +144,23 @@ public sealed class Vegetation : IDisposable {
         // A tree's jittered distance can move a detail's edge by Jitter either way.
         if (nearest < TreeNear / (1.0f - Jitter)) {
 
-            Issue(plot.NearBlock, _tree, _nearIndices, plot, position, rotation, bounds, plot.Kept, new Vector2(0.0f, TreeNear), fade, 0.0f, ShadowCastingMode.Off, NearCards);
+            Issue(plot.NearBlock, _tree, _nearIndices, plot, position, rotation, bounds, plot.Count, new Vector2(0.0f, TreeNear), fade, 0.0f, ShadowCastingMode.Off, NearCards);
 
             // Near trees cast their shadows from their far detail, which is all a shadow texel can tell apart.
-            Issue(plot.ShadowBlock, _tree, _farIndices, plot, position, rotation, bounds, plot.Kept, new Vector2(0.0f, TreeNear), fade, 0.0f, ShadowCastingMode.ShadowsOnly,
+            Issue(plot.ShadowBlock, _tree, _farIndices, plot, position, rotation, bounds, plot.Count, new Vector2(0.0f, TreeNear), fade, 0.0f, ShadowCastingMode.ShadowsOnly,
                 FarCards);
 
         }
 
         if (nearest < TreeFar / (1.0f - Jitter) && farthest > TreeNear / (1.0f + Jitter)) {
 
-            Issue(plot.FarBlock, _tree, _farIndices, plot, position, rotation, bounds, plot.Kept, new Vector2(TreeNear, TreeFar), fade, 0.0f, ShadowCastingMode.Off, FarCards);
+            Issue(plot.FarBlock, _tree, _farIndices, plot, position, rotation, bounds, plot.Count, new Vector2(TreeNear, TreeFar), fade, 0.0f, ShadowCastingMode.Off, FarCards);
 
         }
 
         if (farthest > TreeFar / (1.0f + Jitter)) {
 
-            Issue(plot.StandBlock, _tree, _standIndices, plot, position, rotation, bounds, plot.Kept, new Vector2(TreeFar, Everywhere), fade, 0.0f, ShadowCastingMode.Off,
+            Issue(plot.StandBlock, _tree, _standIndices, plot, position, rotation, bounds, plot.Count, new Vector2(TreeFar, Everywhere), fade, 0.0f, ShadowCastingMode.Off,
                 StandCards);
 
         }
@@ -259,10 +168,10 @@ public sealed class Vegetation : IDisposable {
     }
 
     // Metres across the cell each grove at depth stands for.
-    private float GroveCell(int depth) => _radiusMetres * 0.5f * Mathf.PI / (PatchJob.Quads * (float)(1L << depth)) / Mathf.Sqrt(PatchJob.GrovesPerQuad);
+    private float GroveCell(int depth) => _radiusMetres * 0.5f * Mathf.PI / (PatchJob.Quads * (float)(1L << depth)) / Mathf.Sqrt(PatchStrewJob.PlantsPerQuad(depth));
 
     // The first plants of a sorted plot whose rank is under keep, with a margin for ranks not quite even.
-    private static int Share(int kept, float keep) => Mathf.Min(kept, Mathf.CeilToInt(kept * Mathf.Min(keep, 1.0f) * 1.1f) + 8);
+    private static int Share(int count, float keep) => Mathf.Min(count, Mathf.CeilToInt(count * Mathf.Min(keep, 1.0f) * 1.1f) + 8);
 
     private static void Issue(MaterialPropertyBlock block, Material material, GraphicsBuffer indices, Plot plot, Vector3 position, Quaternion rotation, Bounds bounds,
         int instances, Vector2 band, Vector4 fade, float grove, ShadowCastingMode shadows, int cards) {
@@ -290,8 +199,6 @@ public sealed class Vegetation : IDisposable {
 
     public void Dispose() {
 
-        _scratch.Release();
-        _kept.Release();
         _bladeIndices.Release();
         _nearIndices.Release();
         _farIndices.Release();

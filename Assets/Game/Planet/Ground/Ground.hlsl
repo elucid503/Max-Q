@@ -1,11 +1,12 @@
-// Shared by the ground and water shaders: CDLOD geomorphing, the per-patch detail textures, and sunlight through the air.
+// Shared by the ground and water shaders: CDLOD geomorphing, the per-patch detail and cover textures, and sunlight
+// through the air.
 #ifndef MAXQ_GROUND_INCLUDED
 #define MAXQ_GROUND_INCLUDED
 
 #include "Sunlight.hlsl"
+#include "Biome.hlsl"
 
 CBUFFER_START(UnityPerMaterial)
-float4 _ColourRect;
 float4 _ParentRect;
 float4 _TileOriginNear;
 float4 _TileOriginFar;
@@ -14,12 +15,10 @@ float4 _TileOriginBroad;
 float _Level;
 CBUFFER_END
 
-TEXTURE2D(_Colour);
-SAMPLER(sampler_Colour);
 TEXTURE2D(_Detail);
 TEXTURE2D(_ParentDetail);
-TEXTURE2D(_WaterDetail);
-TEXTURE2D(_ParentWaterDetail);
+TEXTURE2D(_Cover);
+TEXTURE2D(_ParentCover);
 
 // Per level: morph start (km) and one over the morph band's width, measured from the camera the levels were chosen for.
 float4 _GroundMorph[17];
@@ -29,8 +28,6 @@ float3 _GroundCamera;
 float3 _LightDirection;
 
 #define DETAIL_TEXELS 129.0
-#define WATER_TEXELS 65.0
-#define FLOW_RANGE 8.0
 #define NO_LEVEL -1e5
 #define WATER_DEPTH_RANGE 16384.0
 #define VERTICAL_SCALE 0.2
@@ -160,34 +157,20 @@ GroundDetail SampleDetail(float2 uv, float morph) {
 
 }
 
-float2 WaterUv(float2 uv) {
+// What covers the ground (see Cover.cs), blended toward the parent's like the detail.
+GroundCover SampleCover(float2 uv, float morph) {
 
-    return (uv * (WATER_TEXELS - 1.0) + 0.5) / WATER_TEXELS;
-
-}
-
-struct WaterDetail {
-
-    float2 flow;
-    float seaShelter;
-    float swellShelter;
-
-};
-
-// The river's current (m/s, the ground's east and north) and the land's shelter, blended toward the parent's like the
-// detail.
-WaterDetail SampleWaterDetail(float2 uv, float morph) {
-
-    float4 own = SAMPLE_TEXTURE2D_LOD(_WaterDetail, sampler_linear_clamp, WaterUv(uv), 0.0);
-    float4 parent = morph > 0.0 ? SAMPLE_TEXTURE2D_LOD(_ParentWaterDetail, sampler_linear_clamp, WaterUv(uv * _ParentRect.xy + _ParentRect.zw), 0.0) : own;
+    float4 own = SAMPLE_TEXTURE2D_LOD(_Cover, sampler_linear_clamp, DetailUv(uv), 0.0);
+    float4 parent = morph > 0.0 ? SAMPLE_TEXTURE2D_LOD(_ParentCover, sampler_linear_clamp, DetailUv(uv * _ParentRect.xy + _ParentRect.zw), 0.0) : own;
     float4 blended = lerp(own, parent, morph);
 
-    WaterDetail detail;
-    detail.flow = (blended.xy * 2.0 - 1.0) * FLOW_RANGE;
-    detail.seaShelter = blended.z;
-    detail.swellShelter = blended.w;
+    GroundCover cover;
+    cover.vegetation = blended.r;
+    cover.forest = blended.g;
+    cover.arid = blended.b;
+    cover.snow = blended.a;
 
-    return detail;
+    return cover;
 
 }
 
@@ -198,23 +181,13 @@ float PixelFootprint(float3 positionWS) {
 
 }
 
-float3 SatelliteColour(float2 uv) {
+// The ground around a point on the patch, as the light it bounces sees it.
+float3 Surroundings(float2 uv, float3 positionWS) {
 
-    return SAMPLE_TEXTURE2D(_Colour, sampler_Colour, uv * _ColourRect.xy + _ColourRect.zw).rgb;
+    float3 fromCentre = positionWS - _PlanetCentre;
+    float altitude = (length(fromCentre) - _PlanetRadius) * 1000.0;
 
-}
-
-// The satellite pixel's colour without its finest texels, which would otherwise pick materials pixel by pixel.
-float3 SatelliteTone(float2 uv) {
-
-    return SAMPLE_TEXTURE2D_LOD(_Colour, sampler_Colour, uv * _ColourRect.xy + _ColourRect.zw, 2.0).rgb;
-
-}
-
-// The ground around a point, as the light it bounces sees it.
-float3 Surroundings(float2 uv) {
-
-    return SAMPLE_TEXTURE2D_LOD(_Colour, sampler_Colour, uv * _ColourRect.xy + _ColourRect.zw, 5.0).rgb;
+    return CoverColour(SampleCover(uv, 0.0), Warmth(normalize(fromCentre), altitude));
 
 }
 

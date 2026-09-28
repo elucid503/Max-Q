@@ -3,10 +3,8 @@ using System.Collections.Generic;
 
 using MaxQ.Game.Map;
 using MaxQ.Game.Planet.Ground.Plants;
-using MaxQ.Game.Planet.Water;
 using MaxQ.Sim.Bodies;
 using MaxQ.Sim.Numerics;
-using MaxQ.Sim.Ocean;
 using MaxQ.Sim.Surface;
 
 using Terrain = MaxQ.Sim.Surface.Terrain;
@@ -44,15 +42,10 @@ public sealed class GroundView : IDisposable {
     private static readonly int BuildSlots = Math.Clamp(JobsUtility.JobWorkerCount / 4, 2, 8);
     private const int Capacity = 2_400;
 
-    // Deepest trench on Terra, below which nothing can hide the horizon.
-    private const double LowestGround = -2_300.0;
-
-    private static readonly int ColourId = Shader.PropertyToID("_Colour");
-    private static readonly int ColourRectId = Shader.PropertyToID("_ColourRect");
     private static readonly int DetailId = Shader.PropertyToID("_Detail");
     private static readonly int ParentDetailId = Shader.PropertyToID("_ParentDetail");
-    private static readonly int WaterDetailId = Shader.PropertyToID("_WaterDetail");
-    private static readonly int ParentWaterDetailId = Shader.PropertyToID("_ParentWaterDetail");
+    private static readonly int CoverId = Shader.PropertyToID("_Cover");
+    private static readonly int ParentCoverId = Shader.PropertyToID("_ParentCover");
     private static readonly int ParentRectId = Shader.PropertyToID("_ParentRect");
     private static readonly int LevelId = Shader.PropertyToID("_Level");
     private static readonly int TileOriginNearId = Shader.PropertyToID("_TileOriginNear");
@@ -103,8 +96,8 @@ public sealed class GroundView : IDisposable {
             double b = y * span - 1.0;
 
             // Until built, a node borrows its parent's heights, padded for the finer relief it will show.
-            MinHeight = parent?.MinHeight - 50.0 ?? LowestGround;
-            MaxHeight = parent?.MaxHeight + 50.0 ?? 2_000.0;
+            MinHeight = parent?.MinHeight - 50.0 ?? Terrain.Lowest;
+            MaxHeight = parent?.MaxHeight + 50.0 ?? Terrain.Highest;
 
             double corner = 0.0;
 
@@ -129,13 +122,11 @@ public sealed class GroundView : IDisposable {
         public MeshRenderer Renderer;
         public Mesh Mesh;
         public Texture2D Detail;
-        public Texture2D WaterDetail;
+        public Texture2D Cover;
         public Material Ground;
         public Material Water;
         public Material[] GroundOnly;
         public Material[] Both;
-        public Texture2D Colour;
-        public Vector4 ColourRect;
         public Vector3d Centre;
         public NativeArray<byte> Horizons;
         public float4[] Rocks;
@@ -152,7 +143,7 @@ public sealed class GroundView : IDisposable {
         public JobHandle Handle;
         public Mesh.MeshDataArray Data;
         public NativeArray<ushort> Detail;
-        public NativeArray<ushort> WaterDetail;
+        public NativeArray<byte> Cover;
         public NativeArray<double> Info;
         public NativeArray<byte> Horizons;
         public NativeArray<float4> Rocks;
@@ -163,8 +154,6 @@ public sealed class GroundView : IDisposable {
 
     private readonly CelestialBody _body;
     private readonly Terrain _terrain;
-    private readonly SeaState _seaState;
-    private readonly ColourTiles _tiles;
     private readonly Material _groundTemplate;
     private readonly Material _waterTemplate;
     private readonly Transform _root;
@@ -197,8 +186,8 @@ public sealed class GroundView : IDisposable {
     /// <summary>Draws the ground but none of the rocks and plants strewn on it; the capture uses it to time them.</summary>
     public bool StrewHidden { get; set; }
 
-    /// <summary>Patches waiting to be built plus colour tiles still streaming; zero once the view has settled.</summary>
-    public int Pending => _requests.Count + InFlight + _tiles.Pending;
+    /// <summary>Patches waiting to be built; zero once the view has settled.</summary>
+    public int Pending => _requests.Count + InFlight;
 
     public int PatchCount => _patchCount;
 
@@ -227,14 +216,12 @@ public sealed class GroundView : IDisposable {
 
     }
 
-    public GroundView(CelestialBody body, SeaState seaState, ColourTiles tiles, Material ground, Material water, Material rock, Vegetation vegetation) {
+    public GroundView(CelestialBody body, Material ground, Material water, Material rock, Vegetation vegetation) {
 
         _body = body;
-        _seaState = seaState;
         _rocks = new Rocks(rock);
         _vegetation = vegetation;
         _terrain = body.Terrain ?? throw new ArgumentException($"{body.Name} has no terrain", nameof(body));
-        _tiles = tiles;
         _groundTemplate = ground;
         _waterTemplate = water;
         _root = new GameObject(body.Name).transform;
@@ -244,11 +231,11 @@ public sealed class GroundView : IDisposable {
             _builds[i] = new Build {
 
                 Detail = new NativeArray<ushort>(PatchJob.Texels * PatchJob.Texels * 4, Allocator.Persistent),
-                WaterDetail = new NativeArray<ushort>(PatchJob.WaterTexels * PatchJob.WaterTexels * 4, Allocator.Persistent),
+                Cover = new NativeArray<byte>(PatchJob.Texels * PatchJob.Texels * 4, Allocator.Persistent),
                 Info = new NativeArray<double>(PatchJob.InfoLength, Allocator.Persistent),
                 Horizons = new NativeArray<byte>(PatchJob.HorizonLength, Allocator.Persistent),
-                Rocks = new NativeArray<float4>(PatchJob.RockLength, Allocator.Persistent),
-                Plants = new NativeArray<float4>(PatchJob.PlantLength, Allocator.Persistent),
+                Rocks = new NativeArray<float4>(3 * PatchJob.MaxRocks, Allocator.Persistent),
+                Plants = new NativeArray<float4>(PatchStrewJob.PlantLength, Allocator.Persistent),
                 Samples = new PatchSamples(),
 
             };
@@ -278,7 +265,6 @@ public sealed class GroundView : IDisposable {
 
         }
 
-        _tiles.LoadPinned();
         JobHandle.ScheduleBatchedJobs();
         Collect(wait: true);
 
@@ -323,7 +309,6 @@ public sealed class GroundView : IDisposable {
         Show(time, bodyPosition);
         Strew(time, bodyPosition, cameraScene);
         ScheduleRequests();
-        _tiles.Update();
 
         if (_patchCount > Capacity) {
 
@@ -404,7 +389,7 @@ public sealed class GroundView : IDisposable {
     // Behind the horizon of the lowest possible ground, or outside the view frustum even with its shadow swept along.
     private bool Visible(Node node, double time, Vector3d bodyPosition) {
 
-        double occluder = _terrain.Radius + LowestGround;
+        double occluder = _terrain.Radius + Terrain.Lowest;
         double cameraDistance = _camera.Length;
 
         if (cameraDistance > occluder) {
@@ -461,8 +446,6 @@ public sealed class GroundView : IDisposable {
             ShapeWater(node);
             patch.Transform.SetPositionAndRotation(MapSpace.ToScene(bodyPosition + _body.FromBodyFixed(patch.Centre, time)), rotation);
 
-            Colour(node);
-
         }
 
         _shown.Clear();
@@ -494,47 +477,6 @@ public sealed class GroundView : IDisposable {
 
     }
 
-    // Gives a patch the best satellite tile streamed so far, and chooses its plants against it.
-    private void Colour(Node node) {
-
-        Patch patch = node.Patch;
-        Texture2D colour = _tiles.Resolve(node.Face, node.Depth, node.X, node.Y, out int level);
-
-        if (colour == null || colour == patch.Colour) {
-
-            return;
-
-        }
-
-        int shift = node.Depth - level;
-        double scale = 1.0 / (1L << shift);
-        double u = (node.X & ((1 << shift) - 1)) * scale;
-        double v = (node.Y & ((1 << shift) - 1)) * scale;
-        Vector4 rect = new Vector4(
-
-            (float)(ColourTiles.Core * scale / ColourTiles.Texels),
-            (float)(ColourTiles.Core * scale / ColourTiles.Texels),
-            (float)((ColourTiles.Border + ColourTiles.Core * u) / ColourTiles.Texels),
-            (float)((ColourTiles.Border + ColourTiles.Core * v) / ColourTiles.Texels)
-
-        );
-
-        patch.Colour = colour;
-        patch.ColourRect = rect;
-        patch.Ground.SetTexture(ColourId, colour);
-        patch.Ground.SetVector(ColourRectId, rect);
-        patch.Water.SetTexture(ColourId, colour);
-        patch.Water.SetVector(ColourRectId, rect);
-
-        if (patch.Plot?.Count > 0) {
-
-            _vegetation.Select(patch.Plot, colour, rect, patch.Detail, patch.WaterDetail, TileOrigin(patch.Centre, MacroTile), TileOrigin(patch.Centre, BroadTile),
-                MapSpace.Direction(patch.Centre / MapSpace.MetresPerUnit));
-
-        }
-
-    }
-
     // Rocks and plants of the strewing levels' visible patches, whether those patches are drawn or their finer children are.
     private void Strew(double time, Vector3d bodyPosition, Vector3 camera) {
 
@@ -551,15 +493,13 @@ public sealed class GroundView : IDisposable {
             Patch patch = node.Patch;
             Vector3 position = MapSpace.ToScene(bodyPosition + _body.FromBodyFixed(patch.Centre, time));
 
-            Colour(node);
+            if (patch.Rocks != null) {
 
-            if (patch.Colour != null && patch.Rocks != null) {
-
-                _rocks.Add(patch.Rocks, patch.Colour, patch.ColourRect, position, rotation, camera);
+                _rocks.Add(patch.Rocks, position, rotation, camera);
 
             }
 
-            if (patch.Plot?.Ready == true) {
+            if (patch.Plot?.Count > 0) {
 
                 Vector3 middle = MapSpace.ToScene(bodyPosition + _body.FromBodyFixed(node.Middle(_terrain.Radius), time));
 
@@ -622,15 +562,13 @@ public sealed class GroundView : IDisposable {
         slot.Handle = new PatchJob {
 
             Terrain = _terrain,
-            SeaState = _seaState,
-            Month = WaterView.Month,
             Face = node.Face,
             Depth = node.Depth,
             X = node.X,
             Y = node.Y,
             Mesh = slot.Data[0],
             Detail = slot.Detail,
-            WaterDetail = slot.WaterDetail,
+            Cover = slot.Cover,
             Info = slot.Info,
             Horizons = slot.Horizons,
             Rocks = slot.Rocks,
@@ -664,13 +602,12 @@ public sealed class GroundView : IDisposable {
             int rocks = (int)slot.Info[PatchJob.InfoRocks];
             patch.Rocks = rocks > 0 ? slot.Rocks.GetSubArray(0, 3 * rocks).ToArray() : null;
 
-            int tufts = (int)slot.Info[PatchJob.InfoTufts];
-            int trees = (int)slot.Info[PatchJob.InfoTrees];
+            int plants = (int)slot.Info[PatchJob.InfoPlants];
 
-            if (tufts + trees > 0) {
+            if (plants > 0) {
 
                 patch.Plot ??= new Vegetation.Plot();
-                _vegetation.Load(patch.Plot, slot.Plants, tufts + trees, trees > 0, node.Depth);
+                _vegetation.Load(patch.Plot, slot.Plants, plants, node.Depth);
 
             } else if (patch.Plot != null) {
 
@@ -680,8 +617,8 @@ public sealed class GroundView : IDisposable {
 
             patch.Detail.SetPixelData(slot.Detail, 0);
             patch.Detail.Apply(false, false);
-            patch.WaterDetail.SetPixelData(slot.WaterDetail, 0);
-            patch.WaterDetail.Apply(false, false);
+            patch.Cover.SetPixelData(slot.Cover, 0);
+            patch.Cover.Apply(false, false);
 
             node.MinHeight = slot.Info[PatchJob.InfoMinHeight];
             node.MaxHeight = slot.Info[PatchJob.InfoMaxHeight];
@@ -697,7 +634,6 @@ public sealed class GroundView : IDisposable {
             patch.CoarseWater.indexStart = patch.FineWater.indexStart + patch.FineWater.indexCount;
             patch.CoarseWater.indexCount = (int)slot.Info[PatchJob.InfoCoarseWaterIndices];
             patch.Coarse = false;
-            patch.Colour = null;
 
             Patch parent = node.Parent?.Patch ?? patch;
             Vector4 parentRect = node.Parent == null ? new Vector4(1.0f, 1.0f, 0.0f, 0.0f) : new Vector4(0.5f, 0.5f, 0.5f * (node.X & 1), 0.5f * (node.Y & 1));
@@ -715,8 +651,8 @@ public sealed class GroundView : IDisposable {
                 material.SetVector(TileOriginBroadId, broad);
                 material.SetTexture(DetailId, patch.Detail);
                 material.SetTexture(ParentDetailId, parent.Detail);
-                material.SetTexture(WaterDetailId, patch.WaterDetail);
-                material.SetTexture(ParentWaterDetailId, parent.WaterDetail);
+                material.SetTexture(CoverId, patch.Cover);
+                material.SetTexture(ParentCoverId, parent.Cover);
                 material.SetVector(ParentRectId, parentRect);
                 material.SetFloat(LevelId, node.Depth);
 
@@ -757,9 +693,9 @@ public sealed class GroundView : IDisposable {
                 filterMode = FilterMode.Bilinear,
 
             },
-            WaterDetail = new Texture2D(PatchJob.WaterTexels, PatchJob.WaterTexels, GraphicsFormat.R16G16B16A16_UNorm, TextureCreationFlags.None) {
+            Cover = new Texture2D(PatchJob.Texels, PatchJob.Texels, GraphicsFormat.R8G8B8A8_UNorm, TextureCreationFlags.None) {
 
-                name = "Water Detail",
+                name = "Ground Cover",
                 wrapMode = TextureWrapMode.Clamp,
                 filterMode = FilterMode.Bilinear,
 
@@ -885,7 +821,7 @@ public sealed class GroundView : IDisposable {
             }
 
             slot.Detail.Dispose();
-            slot.WaterDetail.Dispose();
+            slot.Cover.Dispose();
             slot.Info.Dispose();
             slot.Horizons.Dispose();
             slot.Rocks.Dispose();
@@ -904,8 +840,6 @@ public sealed class GroundView : IDisposable {
         _noHorizons.Dispose();
         _rocks.Dispose();
         _vegetation.Dispose();
-
-        _tiles.Dispose();
 
     }
 

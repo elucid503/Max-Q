@@ -1,8 +1,8 @@
 // Rocks strewn over the ground near the camera, drawn procedurally: each instance picks one of the shapes in a shared
 // vertex buffer. The ground's rock material, mapped triplanar in each rock's frame so it stays put on the stone, takes
-// on part of the colour of the satellite pixel it stands in; its base is dirtied with the ground's own colour, stone
-// facing the sky in green country gathers moss, and the ground around it bounces its colour back. Each rock sits partly
-// buried; its lower flanks see less sky.
+// the colour the climate gives the ground's own rock (see Biome.hlsl); its base is dirtied with the colour of the ground
+// it stands on, stone facing the sky in green country gathers moss, and the ground around it bounces its colour back.
+// Each rock sits partly buried; its lower flanks see less sky.
 Shader "MaxQ/Rock" {
 
     Properties {
@@ -19,17 +19,12 @@ Shader "MaxQ/Rock" {
         HLSLINCLUDE
 
         #include "Sunlight.hlsl"
+        #include "Biome.hlsl"
         #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Packing.hlsl"
-        #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Color.hlsl"
 
         TEXTURE2D_ARRAY(_GroundAlbedo);
         TEXTURE2D_ARRAY(_GroundNormal);
         SAMPLER(sampler_GroundAlbedo);
-
-        // The satellite tile of the patch these rocks belong to, and where the patch lies on it.
-        TEXTURE2D(_Colour);
-        SAMPLER(sampler_Colour);
-        float4 _ColourRect;
 
         struct RockVertex {
 
@@ -38,16 +33,15 @@ Shader "MaxQ/Rock" {
 
         };
 
-        // Per instance, as Rocks writes them: position (scene) and size (km); orientation; shape pick, place on the
-        // patch, and one for an outcrop.
+        // Per instance, as Rocks writes them: position (scene) and size (km); orientation; shape pick, the ground's
+        // vegetation and aridity, and one for an outcrop.
         StructuredBuffer<RockVertex> _RockVertices;
         StructuredBuffer<float4> _RockInstances;
         uint _RockShapeVertices;
         uint _RockInstanceOffset;
 
-        // Slice of the ground arrays holding rock, and its mean albedo; GroundMaterials.hlsl names the same.
+        // Slice of the ground arrays holding rock; GroundMaterials.hlsl names the same.
         #define ROCK_SLICE 4
-        #define ROCK_AVERAGE float3(0.0729, 0.0683, 0.0576)
         #define ROCK_SHAPES 12
 
         // Metres of stone per texture repeat.
@@ -65,6 +59,7 @@ Shader "MaxQ/Rock" {
             nointerpolation float4 turn : TEXCOORD3;
             nointerpolation float4 ground : TEXCOORD4;
             nointerpolation float scale : TEXCOORD5;
+            nointerpolation float4 stone : TEXCOORD6;
 
         };
 
@@ -90,8 +85,17 @@ Shader "MaxQ/Rock" {
             output.normalOS = v.normal;
             output.turn = turn;
 
-            // The ground's colour under the rock, and metres of stone per unit of mesh.
-            output.ground = float4(SAMPLE_TEXTURE2D_LOD(_Colour, sampler_Colour, pick.yz * _ColourRect.xy + _ColourRect.zw, 2.0).rgb, pick.w);
+            // The ground's colour under the rock and its vegetation, the stone's recolouring and whether it is bedrock,
+            // and metres of stone per unit of mesh.
+            GroundCover cover = (GroundCover)0;
+            cover.vegetation = pick.y;
+            cover.arid = pick.z;
+
+            float3 up = normalize(placed.xyz - _PlanetCentre);
+            float warmth = Warmth(up, (length(placed.xyz - _PlanetCentre) - _PlanetRadius) * 1000.0);
+
+            output.ground = float4(CoverColour(cover, warmth), pick.y);
+            output.stone = float4(Tint(ROCK, cover, warmth), pick.w);
             output.scale = placed.w * 1000.0;
 
             return output;
@@ -147,15 +151,11 @@ Shader "MaxQ/Rock" {
                 normal += float3(tz.xy + n.xy, abs(tz.z) * n.z) * weights.z;
 
                 float3 ground = input.ground.rgb;
-                float3 tone = LinearToSRGB(ground);
-                float green = saturate((tone.g / max(tone.r + tone.g + tone.b, 1e-4) - 0.36) / 0.08);
-
-                // The stone takes on part of the local colour: pale in snow country, red in the desert.
-                float3 stone = albedo.rgb * lerp(1.0, clamp(ground / ROCK_AVERAGE, 0.3, 3.0), 0.35);
+                float3 stone = albedo.rgb * input.stone.rgb;
 
                 // Moss on the tops of stones in green country; soil splashed up the base, deepest in the texture's pits.
                 // Outcrops are bedrock, bare but for their buried foot.
-                float moss = green * (1.0 - input.ground.a) * saturate((n.y - 0.35) / 0.3) * saturate(1.2 - 2.0 * albedo.a);
+                float moss = input.ground.a * (1.0 - input.stone.w) * saturate((n.y - 0.35) / 0.3) * saturate(1.2 - 2.0 * albedo.a);
                 float dirt = saturate((-0.1 - input.positionOS.y) / 0.2 + (0.5 - albedo.a) * 0.8);
 
                 stone = lerp(stone, ground * float3(0.8, 0.95, 0.7), moss);

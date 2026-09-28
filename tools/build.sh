@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Build the Windows player into Builds/Windows, run the sim tests with --tests [results.xml], or compress Terra's
-# colour tiles with --terra-tiles (tools/terra.sh does that for you).
+# Build the Windows player into Builds/Windows, or run the sim tests with --tests [results.xml].
 # Unity's output goes to Logs/unity.log. Override the engine with UNITY=/path/to/Unity.exe.
 
 set -euo pipefail
@@ -14,11 +13,6 @@ if [[ "${1:-}" == "--tests" ]]; then
 
     TASK="Testing"
     ARGS=(-runTests -testPlatform EditMode -testResults "$RESULTS")
-
-elif [[ "${1:-}" == "--terra-tiles" ]]; then
-
-    TASK="Compressing Terra tiles"
-    ARGS=(-quit -executeMethod MaxQ.Game.Editor.TerraTiles.Bake)
 
 else
 

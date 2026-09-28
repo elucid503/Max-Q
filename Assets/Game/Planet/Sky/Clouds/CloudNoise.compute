@@ -1,13 +1,43 @@
-// The tiling noise volumes clouds are carved from, after Schneider, "The Real-time Volumetric Cloudscapes of Horizon Zero
-// Dawn" (2015): Perlin-Worley billows for their shape, and Worley octaves for the detail that erodes their edges.
+// The clouds' noise and weather. The tiling volumes they are carved from follow Schneider, "The Real-time Volumetric
+// Cloudscapes of Horizon Zero Dawn" (2015): Perlin-Worley billows for their shape, and Worley octaves for the detail that
+// erodes their edges. The weather is a June climatology over the survey's land and sea, redrawn as it drifts and churns.
 #pragma kernel Shape
 #pragma kernel Detail
-#pragma kernel Highest
-#pragma kernel Spread
+#pragma kernel Bound
+#pragma kernel Weather
+
+#define PI 3.14159265
 
 RWTexture3D<float> _Volume;
+RWTexture3D<float> _Bound;
 Texture3D<float> _Source;
 uint _Size;
+uint _Scale;
+
+// Land share and ground height (over LAND_HEIGHT_RANGE km) per cell, laid out as the weather is.
+Texture2D<float2> _Land;
+SamplerState sampler_linear_repeatU_clampV;
+
+// Per cell: low cloud's cover, base (over WEATHER_BASE_RANGE km) and top (over WEATHER_TOP_RANGE km), and the anvils'
+// cover. Equirectangular, row 0 at the north pole and column 0 at 180 W.
+RWTexture2D<float4> _Weather;
+float4 _WeatherSize;
+
+// How far east the weather has drifted (radians), its offset through the noise as it churns, its cyclones' stage of life
+// (0 to 1 over a cycle), and the sun in the body's frame.
+float _WeatherDrift;
+float3 _WeatherChurn;
+float _WeatherPhase;
+float3 _WeatherSun;
+
+// Match CloudView.LandHeightRange, and CLOUD_BASE_RANGE and CLOUD_TOP in Clouds.hlsl.
+#define LAND_HEIGHT_RANGE 2.0
+#define WEATHER_BASE_RANGE 8.0
+#define WEATHER_TOP_RANGE 16.0
+
+// Storm cells across the tile (about 40 km apart), and the cyclones round each hemisphere.
+#define STORM_CELLS 64
+#define CYCLONES 8
 
 // PCG's 3D hash (Jarzynski and Olano, 2020); Unity's math.hash is linear, which lines features up.
 uint3 Pcg3(uint3 v) {
@@ -42,20 +72,11 @@ float Worley(float3 p, int period, uint seed) {
     float3 f = scaled - cell;
     float nearest = 1.0;
 
-    for (int z = -1; z <= 1; z++) {
+    for (int i = 0; i < 27; i++) {
 
-        for (int y = -1; y <= 1; y++) {
+        int3 offset = int3(i % 3, (i / 3) % 3, i / 9) - 1;
 
-            for (int x = -1; x <= 1; x++) {
-
-                int3 offset = int3(x, y, z);
-                float3 feature = offset + Random3(cell + offset, period, seed);
-
-                nearest = min(nearest, length(feature - f));
-
-            }
-
-        }
+        nearest = min(nearest, length(offset + Random3(cell + offset, period, seed) - f));
 
     }
 
@@ -88,6 +109,23 @@ float Perlin(float3 p, int period, uint seed) {
 
 }
 
+// Perlin octaves from period cells to the tile, roughly within -1 to 1.
+float Fbm(float3 p, int period, int octaves, uint seed) {
+
+    float sum = 0.0;
+    float amplitude = 0.5;
+
+    for (int i = 0; i < octaves; i++) {
+
+        sum += amplitude * Perlin(p, period << i, seed + i);
+        amplitude *= 0.5;
+
+    }
+
+    return sum;
+
+}
+
 float Remap(float value, float from, float to, float newFrom, float newTo) {
 
     return newFrom + (value - from) / (to - from) * (newTo - newFrom);
@@ -99,20 +137,7 @@ float Remap(float value, float from, float to, float newFrom, float newTo) {
 void Shape(uint3 id : SV_DispatchThreadID) {
 
     float3 p = (id + 0.5) / _Size;
-    float perlin = 0.0;
-    float amplitude = 1.0;
-    float total = 0.0;
-
-    for (int octave = 0; octave < 4; octave++) {
-
-        perlin += amplitude * Perlin(p, 4 << octave, octave);
-        total += amplitude;
-        amplitude *= 0.5;
-
-    }
-
-    perlin = saturate(perlin / total * 0.5 + 0.5);
-
+    float perlin = saturate(Fbm(p, 4, 4, 0u) / 0.9375 * 0.5 + 0.5);
     float cells = 0.625 * (1.0 - Worley(p, 4, 11u)) + 0.25 * (1.0 - Worley(p, 8, 12u)) + 0.125 * (1.0 - Worley(p, 16, 13u));
     float fine = 0.625 * (1.0 - Worley(p, 8, 14u)) + 0.25 * (1.0 - Worley(p, 16, 15u)) + 0.125 * (1.0 - Worley(p, 32, 16u));
     float billows = Remap(perlin, cells - 1.0, 1.0, 0.0, 1.0);
@@ -126,7 +151,6 @@ void Shape(uint3 id : SV_DispatchThreadID) {
 void Detail(uint3 id : SV_DispatchThreadID) {
 
     float3 p = (id + 0.5) / _Size;
-
     float cells = 0.625 * (1.0 - Worley(p, 2, 21u)) + 0.25 * (1.0 - Worley(p, 4, 22u)) + 0.125 * (1.0 - Worley(p, 8, 23u));
 
     // Likewise from about 0.12 to 0.67.
@@ -134,10 +158,11 @@ void Detail(uint3 id : SV_DispatchThreadID) {
 
 }
 
-// The shape's bounds, a level at a time: each cell's highest value from the level below (twice the size), then that
-// spread over each cell's neighbours, so a cell bounds everything within its own width of it. The tile wraps.
+// The shape's bounds, a level at a time: each cell's highest value within one cell's width of it. The finest level reads
+// the shape's texels round each (_Scale 1); each coarser one reads the four cells a side of the level below that span the
+// same reach (_Scale 2), as they already bound their own neighbours. The tile wraps.
 [numthreads(4, 4, 4)]
-void Highest(uint3 id : SV_DispatchThreadID) {
+void Bound(uint3 id : SV_DispatchThreadID) {
 
     if (any(id >= _Size)) {
 
@@ -145,43 +170,179 @@ void Highest(uint3 id : SV_DispatchThreadID) {
 
     }
 
+    int span = _Scale + 2;
+    int size = _Size * _Scale;
+    int3 first = int3(id * _Scale) - 1 + size;
     float highest = 0.0;
 
-    for (uint i = 0; i < 8; i++) {
+    for (int i = 0; i < span * span * span; i++) {
 
-        highest = max(highest, _Source.Load(int4(id * 2 + uint3(i & 1, (i >> 1) & 1, i >> 2), 0)));
+        int3 at = first + int3(i % span, (i / span) % span, i / (span * span));
+
+        highest = max(highest, _Source.Load(int4(at % size, 0)));
 
     }
 
     _Volume[id] = highest;
+    _Bound[id] = highest;
 
 }
 
-[numthreads(4, 4, 4)]
-void Spread(uint3 id : SV_DispatchThreadID) {
+float Band(float x, float centre, float width) {
 
-    if (any(id >= _Size)) {
+    return exp(-(x - centre) * (x - centre) / (width * width));
 
-        return;
+}
+
+// Height (km) of the tropopause, where storm towers stop and spread into anvils; matches Tropopause in Clouds.hlsl.
+float Tropopause(float sinLatitude) {
+
+    return lerp(15.0, 11.0, smoothstep(0.35, 0.7, abs(sinLatitude)));
+
+}
+
+float LandAt(float2 uv) {
+
+    return _Land.SampleLevel(sampler_linear_repeatU_clampV, uv, 0.0).x;
+
+}
+
+// Thunderstorms, one to a cell of a jittered lattice where the potential beats the cell's own draw: the tallest tower
+// (a dome over its core, 0 to 1) and the anvil spreading a cell's width round it.
+float2 Storms(float3 p, float potential) {
+
+    float3 scaled = p * STORM_CELLS;
+    int3 cell = int3(floor(scaled));
+    float3 f = scaled - cell;
+    float2 storm = 0.0;
+
+    for (int i = 0; i < 27; i++) {
+
+        int3 offset = int3(i % 3, (i / 3) % 3, i / 9) - 1;
+        float reach = length(offset + Random3(cell + offset, STORM_CELLS, 31u) - f);
+        float strength = saturate((0.5 * potential - Random3(cell + offset, STORM_CELLS, 32u).x) * 8.0);
+
+        storm = max(storm, strength * float2(sqrt(saturate(1.0 - reach * reach / 0.16)), saturate(1.0 - reach)));
 
     }
 
-    float highest = 0.0;
+    return storm;
 
-    for (int z = -1; z <= 1; z++) {
+}
 
-        for (int y = -1; y <= 1; y++) {
+// The comma clouds of the storm tracks' cyclones, spaced round each hemisphere in the drifting frame, each with its own
+// latitude, size and stage of life: a band that trails equatorward as the cold front and winds cyclonically (mirrored
+// south of the equator) into a head over the low. Latitude in degrees, longitude in radians; warp bends the bands.
+float Fronts(float latitude, float longitude, float warp) {
 
-            for (int x = -1; x <= 1; x++) {
+    int hemisphere = latitude >= 0.0 ? 1 : -1;
+    float spacing = 2.0 * PI / CYCLONES;
+    int nearest = (int)floor(longitude / spacing);
+    float front = 0.0;
 
-                highest = max(highest, _Source.Load(int4((int3(id) + int3(x, y, z) + _Size) % _Size, 0)));
+    for (int k = -1; k <= 1; k++) {
 
-            }
+        int index = nearest + k;
+        float3 random = Random3(int3(index, hemisphere, 0), CYCLONES, 41u);
+        float3 more = Random3(int3(index, hemisphere, 1), CYCLONES, 41u);
+        float centre = hemisphere * (44.0 + 14.0 * random.y);
+        float size = 6.0 + 4.0 * random.z;
+        float east = (longitude - (index + 0.25 + 0.5 * random.x) * spacing) * (180.0 / PI) * cos(radians(centre));
+        float2 offset = float2(east, (latitude - centre) * hemisphere) / size;
+        float r = length(offset);
 
-        }
+        // A logarithmic spiral: north-west of the low at half its size, swinging south as it reaches out.
+        float arm = 2.6 - 2.4 * log(max(r, 0.05) / 0.5);
+        float delta = atan2(offset.y, offset.x) + 0.6 * warp - arm;
+        float width = lerp(0.6, 0.2, saturate((r - 0.5) / 2.5));
+
+        delta -= 2.0 * PI * round(delta / (2.0 * PI));
+
+        float band = exp(-(delta * r / width) * (delta * r / width)) * saturate((3.3 - r) / 0.8);
+        float life = smoothstep(0.0, 0.5, sin(2.0 * PI * (_WeatherPhase + more.x)));
+
+        // June: the southern track, in its winter, is the stronger.
+        front = max(front, (hemisphere > 0 ? 0.7 : 1.0) * life * max(band, 0.8 * saturate(1.0 - r / 0.4)));
 
     }
 
-    _Volume[id] = highest;
+    return front;
+
+}
+
+// Each kind of cloud claims the cell by its cover; heights blend by the claims, so kinds meet without steps.
+void Claim(inout float4 claims, float cover, float base, float top) {
+
+    float claim = pow(cover, 4.0) + 1e-6;
+
+    claims += float4(claim * base, claim * top, claim, 0.0);
+    claims.w = max(claims.w, cover);
+
+}
+
+[numthreads(8, 8, 1)]
+void Weather(uint3 id : SV_DispatchThreadID) {
+
+    float2 uv = (id.xy + 0.5) * _WeatherSize.zw;
+    float latitude = PI * (0.5 - uv.y);
+    float longitude = PI * (2.0 * uv.x - 1.0);
+    float lat = latitude * (180.0 / PI);
+    float2 ground = _Land.SampleLevel(sampler_linear_repeatU_clampV, uv, 0.0);
+    float land = ground.x;
+    float height = ground.y * LAND_HEIGHT_RANGE;
+    float3 up = float3(cos(latitude) * cos(longitude), sin(latitude), cos(latitude) * sin(longitude));
+    float day = smoothstep(0.0, 0.5, dot(up, _WeatherSun));
+
+    // The weather's own pattern drifts east, as the shape noise does; land and sea hold still under it.
+    float drifted = longitude - _WeatherDrift;
+
+    drifted -= 2.0 * PI * round(drifted / (2.0 * PI));
+
+    float3 p = float3(cos(latitude) * cos(drifted), sin(latitude), cos(latitude) * sin(drifted)) * 0.5 + 0.5;
+    float synoptic = Fbm(p + _WeatherChurn, 6, 4, 1u);
+    float meso = Fbm(p + 3.0 * _WeatherChurn, 48, 3, 5u);
+
+    // June: the ITCZ north of the equator, drawn farther north over land by the monsoon, subsiding air under the
+    // subtropical highs, the storm tracks, and afternoon storms over summer land, most of all over high ground.
+    float itcz = Band(lat, lerp(7.0, 15.0, land), 7.0);
+    float highs = saturate(Band(lat, 30.0, 8.0) + Band(lat, -25.0, 9.0));
+    float tracks = 0.7 * Band(lat, 52.0, 12.0) + Band(lat, -50.0, 12.0);
+    float summer = land * day * Band(lat, 42.0, 12.0);
+    float potential = saturate(itcz * (0.8 + 0.5 * synoptic) + summer * (0.35 + 0.5 * synoptic + 0.4 * height) - 0.6 * highs);
+
+    // Marine stratocumulus over the cool water off the subtropical continents' west coasts: open ocean to the west, land
+    // within some thirty degrees to the east.
+    float east = 0.0;
+    float west = 0.0;
+
+    for (int k = 1; k <= 6; k++) {
+
+        east = max(east, LandAt(uv + float2(k * 5.0 / 360.0, 0.0)) * (1.0 - k / 7.0));
+        west = max(west, k <= 4 ? LandAt(uv - float2(k * 5.0 / 360.0, 0.0)) : 0.0);
+
+    }
+
+    float deck = saturate(1.5 * east * (1.0 - west) * (1.0 - land) * (Band(lat, 27.0, 10.0) + Band(lat, -18.0, 12.0)));
+
+    // Cumulus: fair-weather heaps over land by day and trade cumulus at sea, sparse under the highs (and gone over the
+    // deserts), swelling toward congestus where the air is unstable.
+    float calm = saturate(1.0 - highs * lerp(0.6, 1.4, land));
+    float cumulus = saturate((0.3 + 0.3 * potential + 0.15 * meso) * lerp(1.0, 0.2 + 0.8 * day, land) * calm);
+    float cumulusBase = lerp(0.7, 1.4, land);
+    float stratocumulus = saturate(smoothstep(55.0, 70.0, abs(lat)) + 0.6 * tracks) * saturate(0.6 + 0.6 * synoptic);
+    float front = Fronts(lat, drifted, synoptic);
+    float2 storm = Storms(p + 2.0 * _WeatherChurn, potential);
+    float4 claims = 0.0;
+
+    Claim(claims, cumulus, cumulusBase, cumulusBase + 1.0 + 3.0 * potential);
+    Claim(claims, 0.92 * deck, 0.4, 1.1 + 0.6 * (1.0 - east));
+    Claim(claims, stratocumulus, 0.4, 1.4);
+    Claim(claims, front, 0.6, 2.5 + 3.0 * front);
+    Claim(claims, saturate(3.0 * storm.x) * (0.6 + 0.35 * storm.x), 1.0, lerp(4.0, Tropopause(sin(latitude)) - height, storm.x));
+
+    float base = height + claims.x / claims.z;
+    float top = height + claims.y / claims.z;
+
+    _Weather[id.xy] = float4(saturate(claims.w * (0.85 + 0.3 * meso)), base / WEATHER_BASE_RANGE, top / WEATHER_TOP_RANGE, storm.y);
 
 }

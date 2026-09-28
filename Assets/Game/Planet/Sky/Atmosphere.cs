@@ -6,6 +6,7 @@ using MaxQ.Sim.Bodies;
 using MaxQ.Sim.Numerics;
 
 using UnityEngine;
+using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
 
@@ -24,13 +25,18 @@ public sealed class Atmosphere : IDisposable {
     private static readonly int IrradianceId = Shader.PropertyToID("_IrradianceLut");
     private static readonly int FogTopId = Shader.PropertyToID("_FogTop");
     private static readonly int FogDensityId = Shader.PropertyToID("_FogDensity");
+    private static readonly int SkyViewId = Shader.PropertyToID("_SkyViewLut");
+
+    // The composite shader's pass that renders the sky-view table, and the table's size; matches SKY_VIEW_SIZE in Atmosphere.hlsl.
+    private const int SkyViewPass = 1;
+    private const int SkyViewWidth = 192;
+    private const int SkyViewHeight = 108;
 
     // Height of the air's top above the ground, metres; matches ATMOSPHERE_HEIGHT in Atmosphere.hlsl.
     private const double AirThickness = 100_000.0;
 
-    // The low haze fills the ground around the camera, averaged over this many metres, to a little above its mean, so
-    // valleys fill and ridges stand clear. It is thickest while the sun is low and burns off as it climbs, and it fades
-    // from view as the camera climbs away from it, since one layer stands in for every region's.
+    // Valley haze tops out a little above the ground's mean round the camera, burns off as the sun climbs, and fades as
+    // the camera climbs away, since one layer stands in for every region's.
     private const double FogRegion = 20_000.0;
     private const double FogAboveMean = 40.0;
     private const float FogExtinction = 0.25f;
@@ -47,7 +53,7 @@ public sealed class Atmosphere : IDisposable {
     private readonly RenderTexture _irradiance;
     private readonly Material _composite;
     private readonly AtmospherePass _pass;
-    private readonly SkyViewPass _skyView;
+    private readonly TablePass _skyView;
     private readonly GraphicsBuffer _exposure;
     private readonly GraphicsBuffer _histogram;
 
@@ -87,7 +93,7 @@ public sealed class Atmosphere : IDisposable {
 
         _composite = new Material(sky);
         _pass = new AtmospherePass(_composite, exposure, _exposure, _histogram, clouds);
-        _skyView = new SkyViewPass(_composite);
+        _skyView = new TablePass(_composite, ("Sky View", SkyViewWidth, SkyViewHeight, GraphicsFormat.R16G16B16A16_SFloat, SkyViewPass, SkyViewId));
         RenderPipelineManager.beginCameraRendering += Enqueue;
 
     }
@@ -105,7 +111,7 @@ public sealed class Atmosphere : IDisposable {
         // The clouds' shadow falls on the ground whether or not the air is drawn.
         if (_clouds.Enabled) {
 
-            renderer.EnqueuePass(_clouds.SkyPass);
+            renderer.EnqueuePass(_clouds.Maps);
 
         }
 

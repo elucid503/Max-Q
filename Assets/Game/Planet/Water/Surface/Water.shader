@@ -1,17 +1,13 @@
-// The water sheet of seas, lakes and rivers, laid on the same patches as the ground and morphing with them, displaced by
-// the waves and shaded as a statistical surface. Drawn by WaterPass after the opaque scene and before the air, into
-// the camera's colour and depth, over copies of both taken first: the bed shows through by refraction, nearby scenery
-// in screen-space reflections, and the air's haze then lies over the water as over the ground.
+// The water sheet of seas and lakes, laid on the same patches as the ground and morphing with them, displaced by the
+// waves and shaded as a statistical surface. Drawn by WaterPass after the opaque scene and before the air, into the
+// camera's colour and depth, over copies of both taken first: the bed shows through by refraction, nearby scenery in
+// screen-space reflections, and the air's haze then lies over the water as over the ground.
 Shader "MaxQ/Water" {
 
     Properties {
 
-        _Colour ("Satellite Colour", 2D) = "black" {}
-        _ColourRect ("Colour Rect", Vector) = (1, 1, 0, 0)
         _Detail ("Detail", 2D) = "gray" {}
         _ParentDetail ("Parent Detail", 2D) = "gray" {}
-        _WaterDetail ("Water Detail", 2D) = "gray" {}
-        _ParentWaterDetail ("Parent Water Detail", 2D) = "gray" {}
         _ParentRect ("Parent Rect", Vector) = (1, 1, 0, 0)
         _Level ("Level", Float) = 0
         _TileOriginNear ("Near Tile Origin", Vector) = (0, 0, 0, 0)
@@ -50,6 +46,9 @@ Shader "MaxQ/Water" {
             // Under this depth (m) the water thins to a film the bed shows straight through.
             #define WATER_FILM 0.03
 
+            // Lakes stand at least this far (m on Terra) over or under the sea, and no swell reaches them.
+            #define LAKE_LEVEL 2.0
+
             struct WaterVaryings {
 
                 float4 positionCS : SV_POSITION;
@@ -58,31 +57,17 @@ Shader "MaxQ/Water" {
                 float2 coords : TEXCOORD2;
                 float4 weights : TEXCOORD3;
 
-                // The sea where the vertex lies: wind (m/s), ice, latitude (radians) and significant height (m).
-                float4 sea : TEXCOORD4;
-
-                // Shore distance (m), crest height (m), how much of the water is in rapids, and the morph.
-                float4 water : TEXCOORD5;
+                // Wind (m/s), ice, crest height (m) and the morph.
+                float4 state : TEXCOORD4;
 
                 // Sunlight and skylight arriving through the air, and the water's optics (attenuation and deep
                 // reflectance), which change slowly enough across a triangle to be found at its corners.
-                float3 sun : TEXCOORD6;
-                float3 sky : TEXCOORD7;
-                float3 attenuation : TEXCOORD8;
-                float3 reflectance : TEXCOORD9;
-
-                // A river's current, m/s along the wave frame's axes.
-                float2 flow : TEXCOORD10;
+                float3 sun : TEXCOORD5;
+                float3 sky : TEXCOORD6;
+                float3 attenuation : TEXCOORD7;
+                float3 reflectance : TEXCOORD8;
 
             };
-
-            // The sea's local significant height (m): the wind's sea and swell, as far as the land lets them in and
-            // the ice lets them stand.
-            float LocalHeight(SeaState sea, WaterDetail water) {
-
-                return length(float2(sea.seaHeight * water.seaShelter, sea.swellHeight * water.swellShelter)) * (1.0 - sea.ice);
-
-            }
 
             struct WavePoint {
 
@@ -90,9 +75,7 @@ Shader "MaxQ/Water" {
                 float4 weights;
                 float depth;
                 float height;
-                float rapids;
                 SeaState sea;
-                WaterDetail water;
 
             };
 
@@ -105,20 +88,18 @@ Shader "MaxQ/Water" {
             }
 
             // The surface at a point of the sheet: the open sea's cascades as strongly as the local sea stands against
-            // the camera's, or rapids raise them, as deep as the bottom lets them. Displacement in the scene (km).
+            // the camera's, as deep as the bottom lets them. Displacement in the scene (km).
             WavePoint Surface(float3 positionWS, float2 uv, float morph, float shoreDistance) {
 
-                GroundDetail detail = SampleDetail(uv, morph);
-
                 WavePoint wave;
-                wave.depth = detail.waterDepth;
-                wave.water = SampleWaterDetail(uv, morph);
-                wave.sea = SeaStateAt(positionWS);
-                wave.height = LocalHeight(wave.sea, wave.water);
-                wave.weights = CascadeWeights(wave.sea, wave.water.seaShelter, wave.water.swellShelter) * WaveVariation(FrameCoords(positionWS));
-                wave.rapids = Rapids(length(wave.water.flow), detail.waterDepth / TERRA_SCALE);
-                wave.weights = RapidsWeights(wave.weights, wave.rapids);
-                wave.displacement = WaveDisplacementWS(positionWS, Strength(wave.weights, detail.waterDepth, shoreDistance, wave.height));
+                wave.depth = SampleDetail(uv, morph).waterDepth;
+                wave.sea = SeaStateAt(positionWS, shoreDistance);
+
+                // The sheet stands at its water's level, which tells a lake from the sea.
+                wave.sea.swellHeight *= abs(length(positionWS - _PlanetCentre) - _PlanetRadius) * 1000.0 < LAKE_LEVEL ? 1.0 : 0.0;
+                wave.height = length(float2(wave.sea.seaHeight, wave.sea.swellHeight)) * (1.0 - wave.sea.ice);
+                wave.weights = CascadeWeights(wave.sea) * WaveVariation(FrameCoords(positionWS));
+                wave.displacement = WaveDisplacementWS(positionWS, Strength(wave.weights, wave.depth, shoreDistance, wave.height));
 
                 return wave;
 
@@ -165,11 +146,9 @@ Shader "MaxQ/Water" {
                     if (wave.depth < 2.0 * max(0.5 * _WaterWavelength.x, wave.height)) {
 
                         float2 step = ParentStep(uv);
-                        float depthA = SampleDetail(uv + step, morph).waterDepth;
-                        float depthB = SampleDetail(uv - step, morph).waterDepth;
 
-                        strengthA = Strength(wave.weights, depthA, input.water.y, wave.height);
-                        strengthB = Strength(wave.weights, depthB, input.water.y, wave.height);
+                        strengthA = Strength(wave.weights, SampleDetail(uv + step, morph).waterDepth, input.water.y, wave.height);
+                        strengthB = Strength(wave.weights, SampleDetail(uv - step, morph).waterDepth, input.water.y, wave.height);
 
                     }
 
@@ -185,14 +164,12 @@ Shader "MaxQ/Water" {
                 output.uv = uv;
                 output.coords = FrameCoords(restWS);
                 output.weights = wave.weights;
-                output.sea = float4(wave.sea.wind, wave.sea.ice, wave.sea.latitude, wave.height);
-                output.water = float4(input.water.y, dot(displacement, up) * 1000.0, wave.rapids, morph);
-                output.flow = FlowToFrame(restWS, wave.water.flow);
+                output.state = float4(wave.sea.wind, wave.sea.ice, dot(displacement, up) * 1000.0, morph);
 
                 float3 fromCentre = output.positionWS - _PlanetCentre;
                 float r = max(length(fromCentre), _PlanetRadius + 1e-3);
                 float3 surfaceUp = fromCentre / length(fromCentre);
-                WaterOptics optics = OpticsOf(WaterTypeAt(wave.sea.latitude, input.water.y / TERRA_SCALE, wave.depth / TERRA_SCALE, saturate(length(wave.water.flow))));
+                WaterOptics optics = OpticsOf(WaterTypeAt(input.water.y / TERRA_SCALE, wave.depth / TERRA_SCALE));
 
                 output.sun = _SunIlluminance * SunTransmittance(surfaceUp * r, _SunDirection) * FogSunTransmittance(fromCentre, _SunDirection);
                 output.sky = _SunIlluminance * SkyIrradiance(r, dot(surfaceUp, _SunDirection));
@@ -208,11 +185,15 @@ Shader "MaxQ/Water" {
             [earlydepthstencil]
             float4 WaterFragment(WaterVaryings input) : SV_Target {
 
-                float morph = input.water.w;
                 float2 coordsDx = ddx(input.coords);
                 float2 coordsDy = ddy(input.coords);
-                GroundDetail detail = SampleDetail(input.uv, morph);
-                WaveSurface waves = SampleWaves(input.coords, coordsDx, coordsDy, input.weights, input.flow, WhitecapCoverage(input.sea.x) > 1e-5);
+                GroundDetail detail = SampleDetail(input.uv, input.state.w);
+
+                SeaState sea = (SeaState)0;
+                sea.wind = input.state.x;
+                sea.ice = input.state.y;
+
+                WaveSurface waves = SampleWaves(input.coords, coordsDx, coordsDy, input.weights, WhitecapCoverage(sea.wind) > 1e-5);
 
                 // Where the detail finds the ground above the water, the ground shows: coasts as crisp as the detail.
                 clip(detail.waterDepth);
@@ -223,18 +204,12 @@ Shader "MaxQ/Water" {
                 light.sky = input.sky;
                 light.shadow = SunShadow(input.positionWS);
 
-                SeaState sea = (SeaState)0;
-                sea.wind = input.sea.x;
-                sea.ice = input.sea.y;
-                sea.latitude = input.sea.z;
-
                 WaterLook look = LookAtWater(input.positionWS, waves, light.up);
                 float3 reflected = reflect(-look.view, look.normal);
                 float3 sky = SkyReflection(reflected, look.up, look.variance, light);
                 float4 scenery = ScreenReflection(input.positionWS, reflected, look.up, look.variance, sky);
                 float3 reflection = lerp(sky, scenery.rgb, scenery.a);
 
-                float depth = detail.waterDepth / TERRA_SCALE;
                 WaterOptics optics;
                 optics.attenuation = input.attenuation;
                 optics.reflectance = input.reflectance;
@@ -249,17 +224,16 @@ Shader "MaxQ/Water" {
 
                 }
 
-                float3 body = WaterBody(optics, bed.colour, bed.path / TERRA_SCALE, depth, Underwater(light, look.up, look.variance));
+                float3 body = WaterBody(optics, bed.colour, bed.path / TERRA_SCALE, detail.waterDepth / TERRA_SCALE, Underwater(light, look.up, look.variance));
 
                 // Crests thin toward the sun glow with the light passing through them.
-                float crest = saturate(input.water.y / max(0.25 * _WaterWavelength.x, 0.1));
-                float surf = RAPIDS_FOAM * input.water.z;
-                float3 structure = 0.0;
+                float crest = saturate(input.state.z / max(0.25 * _WaterWavelength.x, 0.1));
+                float structure = 0.0;
 
                 UNITY_BRANCH
-                if (max(waves.foam * WhitecapCoverage(sea.wind) / max(_WaterCoverage, 1e-4), surf) > 0.01) {
+                if (waves.foam * WhitecapCoverage(sea.wind) / max(_WaterCoverage, 1e-4) > 0.01) {
 
-                    structure = FoamStructures(input.coords, input.flow);
+                    structure = FoamStructure(input.coords);
 
                 }
 
@@ -268,13 +242,13 @@ Shader "MaxQ/Water" {
                 UNITY_BRANCH
                 if (sea.ice > 0.0) {
 
-                    ice = GroundRadiance(SeaIceAlbedo(SatelliteColour(input.uv)), look.up, light, Surroundings(input.uv), 1.0);
+                    ice = GroundRadiance(SEA_ICE_ALBEDO, look.up, light, Surroundings(input.uv, input.positionWS), 1.0);
 
                 }
 
                 float4 film = float4(bed.colour, 1.0 - saturate(detail.waterDepth / WATER_FILM));
 
-                return float4(WaterColour(look, light, reflection, body, crest, optics, sea, surf, structure, ice, film), 1.0);
+                return float4(WaterColour(look, light, reflection, body, crest, optics, sea, structure, ice, film), 1.0);
 
             }
 

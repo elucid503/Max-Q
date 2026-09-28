@@ -16,8 +16,7 @@ struct ViewRay {
 
 };
 
-// Directions come from the near plane and distances from linear depth: with a near plane of centimetres and a far plane
-// past Selene, unprojecting the far depth loses all precision.
+// Directions from the near plane and distances from linear depth: unprojecting far depths loses all precision.
 ViewRay ViewRayThrough(float2 uv, float depth) {
 
     #if UNITY_REVERSED_Z

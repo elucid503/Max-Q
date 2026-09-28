@@ -38,28 +38,23 @@
 #define STATISTICS_FROM (1.0 / 24.0)
 #define STATISTICS_BY (1.0 / 6.0)
 
-// A river carries its short waves and foam downstream in two phases of this many seconds, half a period apart, each
-// fading out as it slips too far and starting again (Vlachos's flow maps); a whole division of the waves' loop.
-#define FLOW_PERIOD 2.0
-
-// The phases start their cycles at times spread over this many metres of river; a whole division of PATTERN_PERIOD.
-#define FLOW_SPREAD 7425.0
-
-// Rapids: past this Froude number a river's surface starts to stand in steep broken waves, wholly so by the second. There
-// its three shorter cascades stand at least this high (rms, m), and white water covers this share of it.
-#define RAPIDS_FROM 0.6
-#define RAPIDS_BY 1.0
-#define RAPIDS_HEIGHT float3(0.12, 0.05, 0.008)
-#define RAPIDS_FOAM 0.6
-
-// River foam gathers into clumps repeating over this many metres; a whole division of PATTERN_PERIOD.
-#define RAPIDS_PATCHES 45.0
-
 // Ripples too fine for any cascade still leave the surface this rough, so the sun's glint stays a finite disc.
 #define BASE_SLOPE_VARIANCE 2e-5
 
+// Rows of the sea state map, pole to pole (WaterView.SeaStateRows).
+#define SEA_STATE_ROWS 181.0
+
+// The land's shelter. The wind blows over open water some FETCH_PER_SHORE times as far as the nearest shore, raising
+// the sea Hasselmann's growth law gives (Spectrum.WindSea), fully developed at DEVELOPED_FETCH (g x / U^2). Swell
+// reaches none of the water within SWELL_SHELTERED metres of the shore and all of it past SWELL_EXPOSED (real metres).
+#define FETCH_PER_SHORE 3.0
+#define DEVELOPED_FETCH 15785.0
+#define SWELL_SHELTERED 2000.0
+#define SWELL_EXPOSED 200000.0
+
 // The wave frame and cascades (WaterView): origin in the scene (km) and axes; each cascade's tile coordinates of the
-// origin, size (m), turn from the frame, the camera sea's variance in its band and that band's mean wavelength (m).
+// origin, size (m), turn from the frame, the camera sea's variance in its band, that band's mean wavelength (m) and
+// the frequency of its shortest waves (rad/s; the last's unbounded).
 float3 _WaterOrigin;
 float3 _WaterEast;
 float3 _WaterNorth;
@@ -70,9 +65,7 @@ float4 _WaterCos;
 float4 _WaterSin;
 float4 _WaterBandEnergy;
 float4 _WaterWavelength;
-
-// Sim time (s), wrapped to the waves' loop.
-float _WaterTime;
+float4 _WaterBandEdges;
 
 // Where the frame's origin lies on the sea's patterns (m along the frame's axes, within PATTERN_PERIOD).
 float2 _WaterPattern;
@@ -85,12 +78,8 @@ TEXTURE2D_ARRAY(_WaterDerivatives);
 TEXTURE2D_ARRAY(_WaterMoments);
 TEXTURE2D_ARRAY(_WaterFoam);
 
-// The month's sea state (equirectangular, 0.5 degree cells): wind speed, wind-sea height and period, ice; swell height
-// and period. The share of each system's variance the four cascades hold, by peak period (1 to 25 s, log steps): the
-// wind's sea in the first row, swell in the second.
+// The month's open sea (equirectangular, a texel a degree): wind speed, swell height and period, and ice.
 TEXTURE2D(_WaterSeaState);
-TEXTURE2D(_WaterSwell);
-TEXTURE2D(_WaterBands);
 
 // Foam's structure (red) and smooth noise (green, blue, alpha), tiling (FoamTexture).
 TEXTURE2D(_WaterFoamTexture);
@@ -148,55 +137,55 @@ struct SeaState {
     float wind;
     float seaHeight;
     float seaPeriod;
-    float ice;
     float swellHeight;
     float swellPeriod;
-    float latitude;
+    float ice;
 
 };
 
-// The month's sea where a point on the patch lies; the patch's transform turns the scene into the body's frame.
-SeaState SeaStateAt(float3 positionWS) {
+// The month's sea where a point on the patch lies, shoreDistance metres on Terra from the nearest shore (negative over
+// water): the open sea's wind and swell, as far as the land lets them in. The patch's transform turns the scene into
+// the body's frame.
+SeaState SeaStateAt(float3 positionWS, float shoreDistance) {
 
     float3 body = normalize(mul((float3x3)UNITY_MATRIX_I_M, positionWS - _PlanetCentre));
     float latitude = asin(clamp(body.y, -1.0, 1.0));
-    float longitude = atan2(body.z, body.x);
-    float2 uv = float2(longitude / (2.0 * PI) + 0.5, ((0.5 * PI - latitude) / PI * 360.0 + 0.5) / 361.0);
-    float4 sea = SAMPLE_TEXTURE2D_LOD(_WaterSeaState, sampler_linear_repeatU_clampV, uv, 0.0);
-    float2 swell = SAMPLE_TEXTURE2D_LOD(_WaterSwell, sampler_linear_repeatU_clampV, uv, 0.0).xy;
+    float2 uv = float2(atan2(body.z, body.x) / (2.0 * PI) + 0.5, ((0.5 * PI - latitude) / PI * (SEA_STATE_ROWS - 1.0) + 0.5) / SEA_STATE_ROWS);
+    float4 open = SAMPLE_TEXTURE2D_LOD(_WaterSeaState, sampler_linear_repeatU_clampV, uv, 0.0);
+    float offshore = max(-shoreDistance, 1.0) / TERRA_SCALE;
+    float wind = max(open.x, 0.5);
+    float fetch = min(9.81 * FETCH_PER_SHORE * offshore / (wind * wind), DEVELOPED_FETCH);
 
-    SeaState state;
-    state.wind = sea.x;
-    state.seaHeight = sea.y;
-    state.seaPeriod = sea.z;
-    state.ice = saturate(sea.w);
-    state.swellHeight = swell.x;
-    state.swellPeriod = swell.y;
-    state.latitude = latitude;
+    SeaState sea;
+    sea.wind = open.x;
+    sea.seaHeight = 0.0016 * sqrt(fetch) * wind * wind / 9.81;
+    sea.seaPeriod = 2.0 * PI * wind * pow(fetch, 1.0 / 3.0) / (22.0 * 9.81);
+    sea.swellHeight = open.y * saturate(log(offshore / SWELL_SHELTERED) / log(SWELL_EXPOSED / SWELL_SHELTERED));
+    sea.swellPeriod = open.z;
+    sea.ice = saturate(open.w);
 
-    return state;
-
-}
-
-// Shares of a system's variance the four cascades hold, for its peak period.
-float4 BandShares(float period, bool swell) {
-
-    float u = saturate(log(max(period, 1.0)) / log(25.0)) * (63.0 / 64.0) + 0.5 / 64.0;
-
-    return SAMPLE_TEXTURE2D_LOD(_WaterBands, sampler_linear_clamp, float2(u, swell ? 0.75 : 0.25), 0.0);
+    return sea;
 
 }
 
-// How strongly each cascade's waves stand here, against the camera's sea they were drawn for: the square root of the
-// ratio of the variance each band holds. The land's shelter holds the wind's sea down to what its fetch can raise (its
-// period shortening as Hasselmann's growth law has it) and keeps swell out; ice damps both.
-float4 CascadeWeights(SeaState sea, float seaShelter, float swellShelter) {
+// Shares of a system's variance the four cascades hold, for its peak period: in Pierson and Moskowitz's spectrum the
+// share below a frequency has a closed form (WaterView.BandShare).
+float4 BandShares(float period) {
+
+    float3 ratio = 2.0 * PI / max(period, 0.5) / _WaterBandEdges.xyz;
+    float3 below = exp(-1.25 * ratio * ratio * ratio * ratio);
+
+    return float4(below, 1.0) - float4(0.0, below);
+
+}
+
+// How strongly each cascade's waves stand here, against the camera's open sea they were drawn for: the square root of
+// the ratio of the variance each band holds. Ice damps both systems.
+float4 CascadeWeights(SeaState sea) {
 
     float damping = (1.0 - sea.ice) * (1.0 - sea.ice);
-    float seaHeight = sea.seaHeight * seaShelter * damping;
-    float seaPeriod = sea.seaPeriod * pow(max(seaShelter, 1e-3), 2.0 / 3.0);
-    float swellHeight = sea.swellHeight * swellShelter * damping;
-    float4 energy = (seaHeight * seaHeight * BandShares(seaPeriod, false) + swellHeight * swellHeight * BandShares(sea.swellPeriod, true)) / 16.0;
+    float4 energy = (sea.seaHeight * sea.seaHeight * BandShares(sea.seaPeriod) + sea.swellHeight * sea.swellHeight * BandShares(sea.swellPeriod)) *
+        damping * damping / 16.0;
 
     return _WaterBandEnergy > 1e-12 ? min(sqrt(energy / max(_WaterBandEnergy, 1e-12)), 2.0) : 0.0;
 
@@ -295,78 +284,19 @@ struct WaveSurface {
 
 };
 
-// A cascade's mean slope and slope moments over a pixel's footprint (dx, dy in tile units), weighted, handing over to
-// its whole band's statistics as the tile shrinks toward the pixel.
-void CascadeSlopes(int i, float2 uv, float2 dx, float2 dy, float statistics, float weight, inout float2 mean, inout float3 moments) {
-
-    UNITY_BRANCH
-    if (statistics < 1.0) {
-
-        mean += SAMPLE_TEXTURE2D_ARRAY_GRAD(_WaterDerivatives, sampler_WaterTrilinearRepeat, uv, i, dx, dy).xy * (1.0 - statistics) * weight;
-        moments += SAMPLE_TEXTURE2D_ARRAY_GRAD(_WaterMoments, sampler_WaterTrilinearRepeat, uv, i, dx, dy).xyz * (1.0 - statistics) * weight;
-
-    }
-
-    UNITY_BRANCH
-    if (statistics > 0.0) {
-
-        moments += SAMPLE_TEXTURE2D_ARRAY_LOD(_WaterMoments, sampler_WaterTrilinearRepeat, uv, i, WAVE_MIPS).xyz * statistics * weight;
-
-    }
-
-}
-
-struct FlowPhases {
-
-    float2 shift0;
-    float2 shift1;
-    float weight0;
-
-};
-
-// The two phases a river's current (m/s along the frame's axes) carries its short waves and foam in: how far each has
-// slipped downstream (m) and how much the first shows. Each place starts its cycle at its own time, so the river never
-// pulses as one; the start drifts slowly enough over the river that it barely warps what the current carries.
-FlowPhases FlowPhasesAt(float2 coords, float2 flow) {
-
-    float offset = SAMPLE_TEXTURE2D_LOD(_WaterFoamTexture, sampler_WaterLinearRepeat, (coords + _WaterPattern) / FLOW_SPREAD, 0.0).g;
-    float phase0 = frac(_WaterTime / FLOW_PERIOD + offset);
-    float phase1 = frac(phase0 + 0.5);
-
-    FlowPhases phases;
-    phases.shift0 = flow * (phase0 - 0.5) * FLOW_PERIOD;
-    phases.shift1 = flow * (phase1 - 0.5) * FLOW_PERIOD;
-    phases.weight0 = 1.0 - abs(2.0 * phase0 - 1.0);
-
-    return phases;
-
-}
-
 // The surface's mean slope (along the frame's axes) and the spread of slopes about it over the pixel, as the mipmaps
 // of each cascade filter them, and the foam on it. The pixel's footprint is the frame coordinates' screen derivatives,
 // taken before any branch, where they are still defined. Trilinear filtering blurs the slopes more than the pixel needs
 // along its narrow axis, and the moments carry what it blurs away as spread, so the glint keeps its energy. A cascade
 // whose tile shrinks toward the pixel hands over to its last mip, one texel holding its whole band's statistics,
-// rather than repeat the tile. A river's current (m/s along the frame's axes) carries the two short cascades with it;
-// blending its two phases blurs their slopes, and the moments keep the blur as spread. Foam is looked up only where
-// the wind is strong enough to raise it.
-WaveSurface SampleWaves(float2 coords, float2 coordsDx, float2 coordsDy, float4 weights, float2 flow, bool foamy) {
+// rather than repeat the tile. Foam is looked up only where the wind is strong enough to raise it.
+WaveSurface SampleWaves(float2 coords, float2 coordsDx, float2 coordsDy, float4 weights, bool foamy) {
 
     WaveSurface surface;
     surface.slope = 0.0;
     surface.covariance = float3(BASE_SLOPE_VARIANCE, BASE_SLOPE_VARIANCE, 0.0);
     surface.foam = 0.0;
     surface.fresh = 0.0;
-
-    bool flowing = dot(flow, flow) > 1e-4;
-    FlowPhases phases = (FlowPhases)0;
-
-    UNITY_BRANCH
-    if (flowing) {
-
-        phases = FlowPhasesAt(coords, flow);
-
-    }
 
     [unroll]
     for (int i = 0; i < CASCADES; i++) {
@@ -379,14 +309,17 @@ WaveSurface SampleWaves(float2 coords, float2 coordsDx, float2 coordsDy, float4 
         float3 moments = 0.0;
 
         UNITY_BRANCH
-        if (i >= 2 && flowing) {
+        if (statistics < 1.0) {
 
-            CascadeSlopes(i, TileUv(i, coords - phases.shift0), dx, dy, statistics, phases.weight0, mean, moments);
-            CascadeSlopes(i, TileUv(i, coords - phases.shift1), dx, dy, statistics, 1.0 - phases.weight0, mean, moments);
+            mean = SAMPLE_TEXTURE2D_ARRAY_GRAD(_WaterDerivatives, sampler_WaterTrilinearRepeat, uv, i, dx, dy).xy * (1.0 - statistics);
+            moments = SAMPLE_TEXTURE2D_ARRAY_GRAD(_WaterMoments, sampler_WaterTrilinearRepeat, uv, i, dx, dy).xyz * (1.0 - statistics);
 
-        } else {
+        }
 
-            CascadeSlopes(i, uv, dx, dy, statistics, 1.0, mean, moments);
+        UNITY_BRANCH
+        if (statistics > 0.0) {
+
+            moments += SAMPLE_TEXTURE2D_ARRAY_LOD(_WaterMoments, sampler_WaterTrilinearRepeat, uv, i, WAVE_MIPS).xyz * statistics;
 
         }
 
@@ -408,63 +341,6 @@ WaveSurface SampleWaves(float2 coords, float2 coordsDx, float2 coordsDy, float4 
     }
 
     return surface;
-
-}
-
-// How much of a river is in rapids: where its current (m/s) outruns the waves its depth (real metres) lets travel.
-float Rapids(float speed, float depth) {
-
-    return smoothstep(RAPIDS_FROM, RAPIDS_BY, speed / sqrt(9.81 * max(depth, 0.1)));
-
-}
-
-// Cascade weights where rapids stand: the three shorter bands at least the rapids' height.
-float4 RapidsWeights(float4 weights, float rapids) {
-
-    float3 standing = min(RAPIDS_HEIGHT / sqrt(max(_WaterBandEnergy.yzw, 1e-10)), 16.0) * rapids;
-
-    return float4(weights.x, max(weights.yzw, standing));
-
-}
-
-// White water in a river: patches of it a few metres across and clumps of them some tens, as the current breaks it up.
-float RiverFoamStructure(float2 coords) {
-
-    float2 sea = (coords + _WaterPattern) / RAPIDS_PATCHES;
-    float clumps = SAMPLE_TEXTURE2D(_WaterFoamTexture, sampler_WaterTrilinearRepeat, sea).g;
-    float patches = SAMPLE_TEXTURE2D(_WaterFoamTexture, sampler_WaterTrilinearRepeat, sea * 4.0 + 0.5).g;
-
-    return 0.6 * clumps + 0.4 * patches;
-
-}
-
-// Foam's structure at a point, as the two phases a river's current (m/s along the frame's axes) carries it in and how
-// much the first shows; still water holds one phase.
-float3 FoamStructures(float2 coords, float2 flow) {
-
-    UNITY_BRANCH
-    if (dot(flow, flow) <= 1e-4) {
-
-        return float3(FoamStructure(coords).xx, 1.0);
-
-    }
-
-    FlowPhases phases = FlowPhasesAt(coords, flow);
-
-    return float3(RiverFoamStructure(coords - phases.shift0), RiverFoamStructure(coords - phases.shift1), phases.weight0);
-
-}
-
-// A current along the ground's east and north (m/s) as a velocity along the wave frame's axes; the patch's transform
-// turns the body's frame, its axis up, into the scene.
-float2 FlowToFrame(float3 positionWS, float2 flow) {
-
-    float3 up = normalize(mul((float3x3)UNITY_MATRIX_I_M, positionWS - _PlanetCentre));
-    float3 east = normalize(cross(up, float3(0.0, 1.0, 0.0)));
-    float3 north = cross(east, up);
-    float3 velocity = TransformObjectToWorldDir(east * flow.x + north * flow.y, false);
-
-    return float2(dot(velocity, _WaterEast), dot(velocity, _WaterNorth));
 
 }
 
@@ -579,15 +455,8 @@ float3 Underwater(Sunlight light, float3 up, float variance) {
 
 }
 
-// Sea ice's albedo: the satellite's where it saw the ice, otherwise snow-covered pack ice's (Perovich); Blue Marble fills
-// the polar night with open ocean.
+// Snow-covered pack ice's albedo (Perovich).
 #define SEA_ICE_ALBEDO float3(0.72, 0.76, 0.8)
-
-float3 SeaIceAlbedo(float3 satellite) {
-
-    return lerp(SEA_ICE_ALBEDO, satellite, saturate(dot(satellite, float3(0.2126, 0.7152, 0.0722)) / 0.3));
-
-}
 
 // Whitecap coverage for a wind of speed metres per second (Monahan and O'Muircheartaigh 1980).
 float WhitecapCoverage(float wind) {
@@ -640,20 +509,17 @@ WaterLook LookAtWater(float3 positionWS, WaveSurface waves, float3 up) {
 }
 
 // The water's radiance toward the eye: the mirrored sky or scenery, the light from its body and crests, the sun's
-// glint, whitecaps where the sea breaks (as much of it as Monahan's law gives the local wind), white water where a river
-// runs in rapids (surf), and ice lying on it. Where the water thins to nothing at the
-// waterline, the bed seen straight through it (film, its share in alpha) takes over, so the edge has no seam. Foam's
-// structure comes in two phases (FoamStructures), each feathered before they blend, so moving foam keeps its bubbles crisp.
-float3 WaterColour(WaterLook look, Sunlight light, float3 reflection, float3 body, float crest, WaterOptics optics, SeaState sea, float surf, float3 structure, float3 ice, float4 film) {
+// glint, whitecaps where the sea breaks (as much of it as Monahan's law gives the local wind, feathered over foam's
+// structure), and ice lying on it. Where the water thins to nothing at the waterline, the bed seen straight through it
+// (film, its share in alpha) takes over, so the edge has no seam.
+float3 WaterColour(WaterLook look, Sunlight light, float3 reflection, float3 body, float crest, WaterOptics optics, SeaState sea, float structure, float3 ice, float4 film) {
 
     float3 glow = optics.reflectance * light.direct * light.shadow * crest * pow(saturate(dot(-look.view, _SunDirection) + 0.2), 4.0);
     float3 glint = SunGlint(look.view, _SunDirection, look.up, look.east, look.north, look.waves) * light.direct * light.shadow;
-    float coverage = max(saturate(look.waves.foam * WhitecapCoverage(sea.wind) / max(_WaterCoverage, 1e-4)), saturate(surf));
-    float whitecaps = lerp(FeatherFoam(coverage, structure.y), FeatherFoam(coverage, structure.x), structure.z);
+    float coverage = saturate(look.waves.foam * WhitecapCoverage(sea.wind) / max(_WaterCoverage, 1e-4));
     float3 colour = lerp(look.fresnel * reflection + (1.0 - look.fresnel) * (body + glow) + glint, film.rgb, film.a);
 
-    // White water in the surf and in rapids is foam still breaking.
-    colour = lerp(colour, FoamRadiance(max(look.waves.fresh, saturate(2.0 * surf)), look.normal, light), whitecaps);
+    colour = lerp(colour, FoamRadiance(look.waves.fresh, look.normal, light), FeatherFoam(coverage, structure));
 
     return lerp(colour, ice, sea.ice);
 

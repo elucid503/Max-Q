@@ -8,8 +8,7 @@ namespace MaxQ.Game.Planet.Water.Surface;
 /// <summary>A tileable texture the water draws foam and slow variation from. Red is foam's structure: packed bubbles
 /// (cellular noise, bright at the cell walls where bubbles crowd) over a fine fractal grain, which foam of a given
 /// coverage eats into from its brightest texels down. Green, blue and alpha are smooth fractal noise, each on its own
-/// lattice: read at kilometre scales they vary the waves' strength so no cascade's repeat lines up across a view, and
-/// green gathers a river's white water into clumps.</summary>
+/// lattice: read at kilometre scales they vary the waves' strength so no cascade's repeat lines up across a view.</summary>
 internal static class FoamTexture {
 
     private const int Size = 256;

@@ -216,7 +216,6 @@ public static class ProjectSetup {
         view.FindProperty("_rockMaterial").objectReferenceValue = rock;
         view.FindProperty("_grassMaterial").objectReferenceValue = grass;
         view.FindProperty("_treeMaterial").objectReferenceValue = tree;
-        view.FindProperty("_vegetation").objectReferenceValue = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Game/Planet/Ground/Plants/Vegetation.compute");
         view.FindProperty("_atmosphereTables").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>($"{Sky}/AtmosphereLuts.shader");
         view.FindProperty("_atmosphereSky").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>($"{Sky}/AtmosphereSky.shader");
         view.FindProperty("_exposure").objectReferenceValue = AssetDatabase.LoadAssetAtPath<ComputeShader>($"{Sky}/Exposure.compute");

@@ -9,10 +9,9 @@ using UnityEngine.Rendering.Universal;
 
 namespace MaxQ.Game.Planet.Sky;
 
-/// <summary>URP has no planetary sky, so this pass composites the atmosphere after the opaque scene and before
-/// transparents, which keeps orbit lines crisp on top: it traces the clouds, marches the air through them at half
-/// resolution, then redraws the colour target through both at full resolution. URP has no eye adaptation either; the composite applies the exposure, and a
-/// histogram of its result adapts the exposure for the next frame.</summary>
+/// <summary>URP has no planetary sky or eye adaptation, so this pass composites the atmosphere between the opaque scene and
+/// transparents (keeping orbit lines crisp): it traces the clouds, marches the air through them at half resolution, redraws
+/// the colour through both at full resolution with the exposure, and adapts the exposure to the result.</summary>
 internal sealed class AtmospherePass : ScriptableRenderPass {
 
     private static readonly int SceneDepthId = Shader.PropertyToID("_SceneDepth");
@@ -48,28 +47,14 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
     /// <summary>Whether the eye adapts to the view; above the air it keeps to daylight exposure.</summary>
     public bool Adapting { get; set; } = true;
 
-    private sealed class MarchData {
+    private sealed class PassData {
 
         public Material Material;
         public TextureHandle Source;
         public TextureHandle Depth;
-        public Vector4 SceneSize;
-        public TextureHandle CloudLight;
-        public TextureHandle CloudDepth;
-        public Vector4 CloudSize;
-
-    }
-
-    private sealed class CompositeData {
-
-        public Material Material;
-        public TextureHandle Source;
-        public TextureHandle Depth;
-        public TextureHandle Inscatter;
-        public TextureHandle Transmittance;
-        public BufferHandle Exposure;
-        public Vector4 Size;
-        public Vector4 SceneSize;
+        public TextureHandle First;
+        public TextureHandle Second;
+        public int Pass;
 
     }
 
@@ -97,6 +82,9 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
         _adaptKernel = exposure.FindKernel("Adapt");
         renderPassEvent = RenderPassEvent.AfterRenderingSkybox;
         ConfigureInput(ScriptableRenderPassInput.Depth);
+
+        // The exposure lives across frames, outside the render graph.
+        material.SetBuffer(ExposureId, exposureValue);
 
     }
 
@@ -135,22 +123,22 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
         TextureHandle cloudLight = TextureHandle.nullHandle;
         TextureHandle cloudDepth = TextureHandle.nullHandle;
         Vector4 cloudSize = Vector4.zero;
+        bool clouds = _clouds.Enabled && _clouds.Trace.Record(renderGraph, frameData, depth, sceneSize, _clouds.Centre, _clouds.Rotation, out cloudLight, out cloudDepth,
+            out cloudSize);
 
-        if (_clouds.Enabled) {
+        // Each camera's graph runs as soon as it is recorded, so the material's values can be set now.
+        _material.SetVector(SceneSizeId, sceneSize);
+        _material.SetVector(SizeId, new Vector4(half.width, half.height, 1.0f / half.width, 1.0f / half.height));
+        _material.SetVector(CloudSizeId, cloudSize);
 
-            _clouds.Trace.Record(renderGraph, frameData, depth, sceneSize, _clouds.Centre, _clouds.Rotation, out cloudLight, out cloudDepth, out cloudSize);
-
-        }
-
-        using (IRasterRenderGraphBuilder builder = renderGraph.AddRasterRenderPass("Atmosphere March", out MarchData data)) {
+        using (IRasterRenderGraphBuilder builder = renderGraph.AddRasterRenderPass("Atmosphere March", out PassData data)) {
 
             data.Material = _material;
             data.Source = source;
             data.Depth = depth;
-            data.SceneSize = sceneSize;
-            data.CloudLight = cloudLight;
-            data.CloudDepth = cloudDepth;
-            data.CloudSize = cloudSize;
+            data.First = cloudLight;
+            data.Second = cloudDepth;
+            data.Pass = MarchPass;
 
             builder.UseTexture(source);
             builder.UseTexture(depth);
@@ -164,7 +152,7 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
 
             }
 
-            if (cloudLight.IsValid()) {
+            if (clouds) {
 
                 builder.UseTexture(cloudLight);
                 builder.UseTexture(cloudDepth);
@@ -173,29 +161,24 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
 
             builder.SetRenderAttachment(inscatter, 0);
             builder.SetRenderAttachment(transmittance, 1);
-            builder.SetRenderFunc((MarchData pass, RasterGraphContext context) => {
+            builder.SetRenderFunc(static (PassData pass, RasterGraphContext context) => {
 
-                pass.Material.SetTexture(SceneDepthId, pass.Depth);
-                pass.Material.SetVector(SceneSizeId, pass.SceneSize);
-                pass.Material.SetVector(CloudSizeId, pass.CloudSize);
-                pass.Material.SetTexture(CloudLightId, pass.CloudLight.IsValid() ? pass.CloudLight : Texture2D.blackTexture);
-                pass.Material.SetTexture(CloudDepthId, pass.CloudDepth.IsValid() ? pass.CloudDepth : Texture2D.blackTexture);
-                Blitter.BlitTexture(context.cmd, pass.Source, new Vector4(1.0f, 1.0f, 0.0f, 0.0f), pass.Material, MarchPass);
+                pass.Material.SetTexture(CloudLightId, pass.First.IsValid() ? pass.First : Texture2D.blackTexture);
+                pass.Material.SetTexture(CloudDepthId, pass.Second.IsValid() ? pass.Second : Texture2D.blackTexture);
+                Draw(pass, context);
 
             });
 
         }
 
-        using (IRasterRenderGraphBuilder builder = renderGraph.AddRasterRenderPass("Atmosphere Composite", out CompositeData data)) {
+        using (IRasterRenderGraphBuilder builder = renderGraph.AddRasterRenderPass("Atmosphere Composite", out PassData data)) {
 
             data.Material = _material;
             data.Source = source;
             data.Depth = depth;
-            data.Inscatter = inscatter;
-            data.Transmittance = transmittance;
-            data.Exposure = exposure;
-            data.Size = new Vector4(half.width, half.height, 1.0f / half.width, 1.0f / half.height);
-            data.SceneSize = sceneSize;
+            data.First = inscatter;
+            data.Second = transmittance;
+            data.Pass = CompositePass;
 
             builder.UseTexture(source);
             builder.UseTexture(depth);
@@ -203,15 +186,11 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
             builder.UseTexture(transmittance);
             builder.UseBuffer(exposure);
             builder.SetRenderAttachment(target, 0);
-            builder.SetRenderFunc((CompositeData pass, RasterGraphContext context) => {
+            builder.SetRenderFunc(static (PassData pass, RasterGraphContext context) => {
 
-                pass.Material.SetTexture(SceneDepthId, pass.Depth);
-                pass.Material.SetTexture(InscatterId, pass.Inscatter);
-                pass.Material.SetTexture(TransmittanceId, pass.Transmittance);
-                pass.Material.SetBuffer(ExposureId, pass.Exposure);
-                pass.Material.SetVector(SizeId, pass.Size);
-                pass.Material.SetVector(SceneSizeId, pass.SceneSize);
-                Blitter.BlitTexture(context.cmd, pass.Source, new Vector4(1.0f, 1.0f, 0.0f, 0.0f), pass.Material, CompositePass);
+                pass.Material.SetTexture(InscatterId, pass.First);
+                pass.Material.SetTexture(TransmittanceId, pass.Second);
+                Draw(pass, context);
 
             });
 
@@ -230,27 +209,24 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
             data.HistogramKernel = _histogramKernel;
             data.AdaptKernel = _adaptKernel;
             data.Source = target;
-            data.Adapting = Adapting;
             data.Histogram = renderGraph.ImportBuffer(_histogram);
             data.Exposure = exposure;
             data.Size = new Vector4(full.width, full.height, 0.0f, 0.0f);
+            data.Adapting = Adapting;
 
             builder.UseTexture(target);
             builder.UseBuffer(data.Histogram, AccessFlags.ReadWrite);
             builder.UseBuffer(exposure, AccessFlags.ReadWrite);
-            builder.SetRenderFunc((ExposureData pass, ComputeGraphContext context) => {
+            builder.SetRenderFunc(static (ExposureData pass, ComputeGraphContext context) => {
 
-                int groupsX = Mathf.CeilToInt(pass.Size.x / (ExposureStride * ExposureGroup));
-                int groupsY = Mathf.CeilToInt(pass.Size.y / (ExposureStride * ExposureGroup));
-
-                context.cmd.SetComputeTextureParam(pass.Shader, pass.HistogramKernel, SourceId, pass.Source);
                 context.cmd.SetComputeBufferParam(pass.Shader, pass.HistogramKernel, HistogramId, pass.Histogram);
                 context.cmd.SetComputeBufferParam(pass.Shader, pass.HistogramKernel, ExposureId, pass.Exposure);
-                context.cmd.SetComputeVectorParam(pass.Shader, SourceSizeId, pass.Size);
-                context.cmd.DispatchCompute(pass.Shader, pass.HistogramKernel, groupsX, groupsY, 1);
-
                 context.cmd.SetComputeBufferParam(pass.Shader, pass.AdaptKernel, HistogramId, pass.Histogram);
                 context.cmd.SetComputeBufferParam(pass.Shader, pass.AdaptKernel, ExposureId, pass.Exposure);
+                context.cmd.SetComputeTextureParam(pass.Shader, pass.HistogramKernel, SourceId, pass.Source);
+                context.cmd.SetComputeVectorParam(pass.Shader, SourceSizeId, pass.Size);
+                context.cmd.DispatchCompute(pass.Shader, pass.HistogramKernel, Mathf.CeilToInt(pass.Size.x / (ExposureStride * ExposureGroup)),
+                    Mathf.CeilToInt(pass.Size.y / (ExposureStride * ExposureGroup)), 1);
                 context.cmd.SetComputeFloatParam(pass.Shader, DeltaTimeId, Time.unscaledDeltaTime);
                 context.cmd.SetComputeFloatParam(pass.Shader, AdaptingId, pass.Adapting ? 1.0f : 0.0f);
                 context.cmd.DispatchCompute(pass.Shader, pass.AdaptKernel, 1, 1, 1);
@@ -258,6 +234,13 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
             });
 
         }
+
+    }
+
+    private static void Draw(PassData pass, RasterGraphContext context) {
+
+        pass.Material.SetTexture(SceneDepthId, pass.Depth);
+        Blitter.BlitTexture(context.cmd, pass.Source, new Vector4(1.0f, 1.0f, 0.0f, 0.0f), pass.Material, pass.Pass);
 
     }
 

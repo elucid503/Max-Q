@@ -2,21 +2,17 @@ using System;
 using System.IO;
 using System.IO.MemoryMappedFiles;
 
-using MaxQ.Sim.Ocean;
-
 namespace MaxQ.Sim.Surface;
 
-/// <summary>Owns the baked survey files, mapped into memory so only the pages the ground and sea touch are read.</summary>
+/// <summary>Owns the baked survey files, mapped into memory so only the pages the ground touches are read.</summary>
 public sealed unsafe class Survey : IDisposable {
 
-    private static readonly string[] Files = { "elevation.i16", "levels.i16", "shore.i16", "fetch.u8", "coast.i8", "rivers.bin", "sea_state.bin" };
+    private static readonly string[] Files = { "height.i16", "water.i16", "shore_distance.i16", "moisture.i16" };
 
     private readonly MemoryMappedFile[] _files = new MemoryMappedFile[Files.Length];
     private readonly MemoryMappedViewAccessor[] _views = new MemoryMappedViewAccessor[Files.Length];
 
     public Terrain Terrain { get; }
-
-    public SeaState SeaState { get; }
 
     private Survey(string directory, double radius) {
 
@@ -34,8 +30,7 @@ public sealed unsafe class Survey : IDisposable {
 
         }
 
-        Terrain = new Terrain(data[0], data[1], data[2], data[3], data[4], new Rivers(data[5]), radius);
-        SeaState = new SeaState(data[6]);
+        Terrain = new Terrain(data[0], data[1], data[2], data[3], radius);
 
     }
 

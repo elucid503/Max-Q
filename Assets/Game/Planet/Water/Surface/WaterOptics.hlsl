@@ -1,6 +1,6 @@
 // Light in water, shared by the water surface and the seabed under it. Depths and paths here are real-world metres:
 // Terra's water is a fifth as deep as the Earth's it stands for, and absorbs as the Earth's does, so shelves and lagoons
-// read as the real places do and agree with the satellite colour the seabed is recovered from.
+// read as the real places do.
 #ifndef MAXQ_WATER_OPTICS_INCLUDED
 #define MAXQ_WATER_OPTICS_INCLUDED
 
@@ -25,12 +25,6 @@ static const float JerlovParticles[WATER_TYPES] = { 0.0002, 0.0008, 0.002, 0.004
 
 #define WATER_BACKSCATTER float3(0.0004, 0.0008, 0.0016)
 #define PARTICLE_SPECTRUM float3(540.0 / 620.0, 1.0, 540.0 / 460.0)
-
-// Blue Marble paints every deep ocean one colour (linear); the seabed's colour is what the water adds to it undone.
-#define SATELLITE_DEEP float3(0.0006, 0.0015, 0.007)
-
-// Sand and silt, where too much water lies over the bed for the satellite to have seen it.
-#define DEFAULT_BED float3(0.18, 0.16, 0.12)
 
 struct WaterOptics {
 
@@ -58,32 +52,15 @@ WaterOptics OpticsOf(float type) {
 
 }
 
-// Which water a place holds: the open ocean clearest in the tropical gyres and more productive toward the poles; toward
-// the coast it clouds as the shore nears and the water shallows, the more so the higher the latitude (reefs and
-// lagoons in the tropics stay clear, shelf seas at higher latitudes are green); rivers are murkiest of all. Distances
-// and depths in real metres, latitude in radians.
-float WaterTypeAt(float latitude, float shoreDistance, float depth, float river) {
+// Which water a place holds: the open ocean clear, clouding toward the coast as the shore nears and the water shallows,
+// so shelf seas, bays and lakes are greener. Distances and depths in real metres.
+float WaterTypeAt(float shoreDistance, float depth) {
 
-    float temperate = smoothstep(0.35, 0.9, abs(latitude));
-    float open = 2.0 * temperate;
     float coast = 1.0 - smoothstep(2e3, 80e3, -shoreDistance);
     float shallow = 1.0 - smoothstep(5.0, 60.0, depth);
     float near = max(1.0 - smoothstep(0.0, 8e3, -shoreDistance), shallow * coast);
-    float coastal = lerp(lerp(1.0, 3.0, temperate), lerp(2.5, 5.0, temperate), near);
-    float type = lerp(open, max(coastal, open), max(coast, shallow * 0.5));
 
-    return lerp(type, 6.5, river);
-
-}
-
-// The bed under depth metres of water, from the satellite's colour there: the satellite saw the deep colour where
-// the water swallowed the bed and the bed where it did not, mixed by the light's round trip.
-float3 InvertBed(float3 observed, WaterOptics optics, float depth) {
-
-    float3 trip = exp(-2.0 * optics.attenuation * max(depth, 0.0));
-    float3 bed = (observed - SATELLITE_DEEP * (1.0 - trip)) / max(trip, 0.1);
-
-    return lerp(DEFAULT_BED, saturate(bed), saturate((trip - 0.1) / 0.2));
+    return lerp(0.5, lerp(1.5, 4.0, near), max(coast, shallow * 0.5));
 
 }
 

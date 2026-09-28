@@ -2,11 +2,12 @@
 // and a crown. A conifer's crown is whorls of branch sprays reaching out from the trunk, drooping low down and shortening
 // up to a spire; a broadleaf's is clumps of leaves spread over a lumpy dome. Branch sprays roll about their own length to
 // face halfway between the sky and the viewer and clumps face the viewer, so no card is ever seen edge-on; the shadow
-// pass turns them to the sun instead. Each tree Vegetation keeps has its own size, colour and turn; a far detail takes
+// pass turns them to the sun instead. Each tree a patch strews has its own size, climate and turn; a far detail takes
 // every third card of the same layout, grown to fill in. Further out a tree is a single card cut from its painted
 // picture, and further still each grove card stands for the trees of its cell; Vegetation sets the distances. Foliage
-// takes the tree's colour shaded by the atlas, with normals rounded over the whole crown and bent by each leaf, or
-// painted into the picture, darkening into the crown, and light through the leaves from behind; bark is dark.
+// takes the colour its climate gives it (see Biome.hlsl) shaded by the atlas, with normals rounded over the whole crown
+// and bent by each leaf, or painted into the picture, darkening into the crown, and light through the leaves from
+// behind; bark is dark.
 Shader "MaxQ/Tree" {
 
     Properties {
@@ -23,16 +24,19 @@ Shader "MaxQ/Tree" {
         HLSLINCLUDE
 
         #include "../Sunlight.hlsl"
+        #include "../Biome.hlsl"
 
         TEXTURE2D_ARRAY(_Foliage);
         SAMPLER(sampler_Foliage);
         TEXTURE2D_ARRAY(_GroundAlbedo);
         SAMPLER(sampler_GroundAlbedo);
 
+        // As PatchStrewJob writes them: position (km from the patch origin) and a random number; aridity, warmth, another
+        // random number and one for needles; height and crown width (m), and under a grove the ground's normal.
         struct Plant {
 
             float4 position;
-            float4 colour;
+            float4 climate;
             float4 shape;
 
         };
@@ -141,7 +145,7 @@ Shader "MaxQ/Tree" {
         Card Trunk(Plant plant, float2 uv, float3 root, float3x3 frame, bool shadow) {
 
             float height = plant.shape.x;
-            bool needles = plant.colour.w > 0.5;
+            bool needles = plant.climate.w > 0.5;
             float top = (needles ? 0.8 : 0.62) * height;
             float radius = (0.05 + 0.006 * height) * lerp(1.2, 0.45, uv.y);
             float3 toward = Toward(float3(0.0, 0.5 * top, 0.0), root, frame, shadow);
@@ -269,7 +273,7 @@ Shader "MaxQ/Tree" {
         // upright card.
         Card Stand(Plant plant, float2 uv, float3 root, float3x3 frame) {
 
-            bool needles = plant.colour.w > 0.5;
+            bool needles = plant.climate.w > 0.5;
             bool grove = _Grove > 0.0;
             float height = plant.shape.x * (grove ? GROVE_HEIGHT : 1.0);
             float width = grove ? GROVE_SPREAD * _Grove : 2.2 * plant.shape.y;
@@ -333,7 +337,7 @@ Shader "MaxQ/Tree" {
                 output.tangentWS = mul(stand.across, frame);
                 output.bitangentWS = mul(stand.along, frame);
                 output.uv = stand.uv;
-                output.colour = plant.colour.rgb;
+                output.colour = FoliageColour(plant.climate.x, plant.climate.y, plant.climate.w > 0.5, float2(Random(plant, 0u, 12u), plant.climate.z));
                 output.occlusion = stand.occlusion;
 
                 return output;
@@ -344,7 +348,7 @@ Shader "MaxQ/Tree" {
             uint index = (card - 1u) * stride;
             // Fewer cards grow to cover as much: clumps both ways, branch sprays across only, as they cannot outreach the crown.
             float fill = sqrt((float)stride);
-            bool needles = plant.colour.w > 0.5;
+            bool needles = plant.climate.w > 0.5;
 
             Card c = (Card)0;
 
@@ -375,7 +379,7 @@ Shader "MaxQ/Tree" {
             output.tangentWS = mul(c.across, frame);
             output.bitangentWS = mul(c.along, frame);
             output.uv = c.uv;
-            output.colour = plant.colour.rgb;
+            output.colour = FoliageColour(plant.climate.x, plant.climate.y, plant.climate.w > 0.5, float2(Random(plant, 0u, 12u), plant.climate.z));
             output.occlusion = c.occlusion;
 
             return output;

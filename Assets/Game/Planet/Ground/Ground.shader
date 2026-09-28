@@ -1,22 +1,20 @@
-// Terra's ground: satellite colour lit through the atmosphere with the per-patch detail normals, handing over to tiled
-// materials near the camera. Under the water sheet it is the bed, its colour recovered from the satellite's and lit
-// through the water; where the detail finds water the mesh is too coarse to hold a sheet for, it shades as that water.
+// Terra's ground: its materials, placed by the climate and the lie of the land, lit through the atmosphere with the
+// per-patch detail normals. Under the water sheet it is the bed, lit through the water; where the detail finds water the
+// mesh is too coarse to hold a sheet for, it shades as that water.
 Shader "MaxQ/Ground" {
 
     Properties {
 
-        _Colour ("Satellite Colour", 2D) = "black" {}
-        _ColourRect ("Colour Rect", Vector) = (1, 1, 0, 0)
         _Detail ("Detail", 2D) = "gray" {}
         _ParentDetail ("Parent Detail", 2D) = "gray" {}
+        _Cover ("Cover", 2D) = "black" {}
+        _ParentCover ("Parent Cover", 2D) = "black" {}
         _ParentRect ("Parent Rect", Vector) = (1, 1, 0, 0)
         _Level ("Level", Float) = 0
         _TileOriginNear ("Near Tile Origin", Vector) = (0, 0, 0, 0)
         _TileOriginFar ("Far Tile Origin", Vector) = (0, 0, 0, 0)
         _TileOriginMacro ("Macro Tile Origin", Vector) = (0, 0, 0, 0)
         _TileOriginBroad ("Broad Tile Origin", Vector) = (0, 0, 0, 0)
-        _WaterDetail ("Water Detail", 2D) = "gray" {}
-        _ParentWaterDetail ("Parent Water Detail", 2D) = "gray" {}
         _GroundAlbedo ("Ground Albedo", 2DArray) = "" {}
         _GroundNormal ("Ground Normals", 2DArray) = "" {}
 
@@ -42,14 +40,10 @@ Shader "MaxQ/Ground" {
             #include "GroundMaterials.hlsl"
             #include "../Water/Surface/WaterSurface.hlsl"
 
-            // The land's own ground runs on under water shallower than this (m), handing over to the bed the
-            // satellite saw, whose coastal pixels are mostly water; the waterline then shows no seam.
-            #define SHALLOWS 0.15
-
             // The water's optics where the ground lies under it.
-            WaterOptics OpticsHere(GroundVaryings input, GroundDetail detail, SeaState sea, WaterDetail water) {
+            WaterOptics OpticsHere(GroundVaryings input, GroundDetail detail) {
 
-                return OpticsOf(WaterTypeAt(sea.latitude, input.water.y / TERRA_SCALE, detail.waterDepth / TERRA_SCALE, saturate(length(water.flow))));
+                return OpticsOf(WaterTypeAt(input.water.y / TERRA_SCALE, detail.waterDepth / TERRA_SCALE));
 
             }
 
@@ -73,34 +67,32 @@ Shader "MaxQ/Ground" {
 
             }
 
-            // Water too narrow or far for the sheet, or where the coarse mesh rises through it at the coast: the same
+            // Water too small or far for the sheet, or where the coarse mesh rises through it at the coast: the same
             // surface with the waves' slopes filtered to the pixel, over the bed where light could return from it.
-            float3 DistantWater(GroundVaryings input, GroundDetail detail, Sunlight light, float2 coords, float2 coordsDx, float2 coordsDy) {
+            float3 DistantWater(GroundVaryings input, GroundDetail detail, Sunlight light, GroundSurface surface, float2 coords, float2 coordsDx, float2 coordsDy) {
 
-                SeaState sea = SeaStateAt(input.positionWS);
-                WaterDetail water = SampleWaterDetail(input.uv, input.morph);
-                float depth = detail.waterDepth / TERRA_SCALE;
-                float rapids = Rapids(length(water.flow), depth);
-                float4 weights = RapidsWeights(CascadeWeights(sea, water.seaShelter, water.swellShelter) * WaveVariation(coords), rapids);
-                WaveSurface waves = SampleWaves(coords, coordsDx, coordsDy, weights, 0.0, WhitecapCoverage(sea.wind) > 1e-5);
+                SeaState sea = SeaStateAt(input.positionWS, input.water.y);
+                float4 weights = CascadeWeights(sea) * WaveVariation(coords);
+                WaveSurface waves = SampleWaves(coords, coordsDx, coordsDy, weights, WhitecapCoverage(sea.wind) > 1e-5);
                 WaterLook look = LookAtWater(input.positionWS, waves, light.up);
-                WaterOptics optics = OpticsHere(input, detail, sea, water);
+                WaterOptics optics = OpticsHere(input, detail);
                 float3 reflection = SkyReflection(reflect(-look.view, look.normal), look.up, look.variance, light);
+                float depth = detail.waterDepth / TERRA_SCALE;
                 float3 bed = 0.0;
                 float path = 1e5;
 
                 UNITY_BRANCH
                 if (detail.waterDepth < BED_REACH) {
 
-                    bed = BedRadiance(detail, light, optics, InvertBed(SatelliteColour(input.uv), optics, depth));
+                    bed = BedRadiance(detail, light, optics, surface.albedo);
                     path = depth / max(dot(look.view, look.up), 0.05);
 
                 }
 
                 float3 body = WaterBody(optics, bed, path, depth, Underwater(light, look.up, look.variance));
-                float3 ice = GroundRadiance(SeaIceAlbedo(SatelliteColour(input.uv)), look.up, light, Surroundings(input.uv), 1.0);
+                float3 ice = GroundRadiance(SEA_ICE_ALBEDO, look.up, light, surface.surroundings, 1.0);
 
-                return WaterColour(look, light, reflection, body, 0.0, optics, sea, RAPIDS_FOAM * rapids, float3(FoamStructure(coords).xx, 1.0), ice, 0.0);
+                return WaterColour(look, light, reflection, body, 0.0, optics, sea, FoamStructure(coords), ice, 0.0);
 
             }
 
@@ -115,27 +107,17 @@ Shader "MaxQ/Ground" {
                 GroundDetail detail = SampleDetail(input.uv, input.morph);
                 Sunlight light = SunlightAt(input.positionWS);
 
+                GroundSurface surface = GroundMaterial(input, detail, light.up, footprint, metresDx, metresDy);
+
                 // Under the sheet, the bed; the sheet covers it where its level stands over the mesh.
                 UNITY_BRANCH
                 if (detail.waterDepth > 0.0 && input.water.x > 0.0) {
 
-                    WaterOptics optics = OpticsHere(input, detail, SeaStateAt(input.positionWS), SampleWaterDetail(input.uv, input.morph));
-                    float3 albedo = InvertBed(SatelliteColour(input.uv), optics, detail.waterDepth / TERRA_SCALE);
-
-                    UNITY_BRANCH
-                    if (detail.waterDepth < SHALLOWS) {
-
-                        albedo = lerp(GroundMaterial(input, detail, light.up, footprint, metresDx, metresDy).albedo, albedo, detail.waterDepth / SHALLOWS);
-
-                    }
-
-                    return float4(BedRadiance(detail, light, optics, albedo), 1.0);
+                    return float4(BedRadiance(detail, light, OpticsHere(input, detail), surface.albedo), 1.0);
 
                 }
 
-                GroundSurface surface = GroundMaterial(input, detail, light.up, footprint, metresDx, metresDy);
-
-                float3 ground = GroundRadiance(surface.albedo, surface.normalWS, light, Surroundings(input.uv), detail.occlusion);
+                float3 ground = GroundRadiance(surface.albedo, surface.normalWS, light, surface.surroundings, detail.occlusion);
 
                 UNITY_BRANCH
                 if (surface.snow > 0.01) {
@@ -143,7 +125,7 @@ Shader "MaxQ/Ground" {
                     float3 toCamera = normalize(_WorldSpaceCameraPos - input.positionWS);
                     float glitter = Glitter(input.positionOS * 1000.0, surface.normalWS, toCamera, footprint);
 
-                    ground = lerp(ground, SnowRadiance(surface.albedo, surface.normalWS, toCamera, light, Surroundings(input.uv), detail.occlusion, glitter), surface.snow);
+                    ground = lerp(ground, SnowRadiance(surface.albedo, surface.normalWS, toCamera, light, surface.surroundings, detail.occlusion, glitter), surface.snow);
 
                 }
 
@@ -154,7 +136,7 @@ Shader "MaxQ/Ground" {
 
                 }
 
-                return float4(lerp(ground, DistantWater(input, detail, light, coords, coordsDx, coordsDy), saturate(detail.waterDepth / 0.1)), 1.0);
+                return float4(lerp(ground, DistantWater(input, detail, light, surface, coords, coordsDx, coordsDy), saturate(detail.waterDepth / 0.1)), 1.0);
 
             }
 

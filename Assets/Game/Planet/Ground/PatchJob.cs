@@ -2,7 +2,6 @@ using System;
 using System.Runtime.InteropServices;
 
 using MaxQ.Sim.Numerics;
-using MaxQ.Sim.Ocean;
 using MaxQ.Sim.Surface;
 
 using Terrain = MaxQ.Sim.Surface.Terrain;
@@ -17,10 +16,10 @@ using UnityEngine.Rendering;
 
 namespace MaxQ.Game.Planet.Ground;
 
-/// <summary>Builds one quadtree node's ground and water mesh plus its detail texture from the sim's terrain function, and
-/// the horizon around each vertex, which gives the ground its ambient occlusion. <see cref="ScheduleStages"/> runs it as
-/// the last of three stages: the terrain samples and the rocks and trees are spread across the workers first, so no one
-/// job holds a worker, or a main thread waiting on one, for long.</summary>
+/// <summary>Builds one quadtree node's ground and water mesh plus its detail texture from the sim's terrain function, the
+/// horizon around each vertex, which gives the ground its ambient occlusion, and the rocks and plants strewn on it.
+/// <see cref="ScheduleStages"/> runs it as the last of three stages: the terrain samples and the strewing are spread across
+/// the workers first, so no one job holds a worker, or a main thread waiting on one, for long.</summary>
 [BurstCompile]
 internal struct PatchJob : IJob {
 
@@ -37,11 +36,6 @@ internal struct PatchJob : IJob {
     // square root: fine near the shore, and it never saturates, so coarse patches keep smooth coastlines.
     public const double WaterDepthRange = 16_384.0;
 
-    // The water detail: two texels to a quad, holding the river's current (m/s, either way up to FlowRange) and the
-    // land's shelter from the wind's sea and from swell; must match WaterSurface.hlsl.
-    public const int WaterTexels = 2 * Quads + 1;
-    public const double FlowRange = 8.0;
-
     // Ground lies under water deeper than this (m) only where no light it returns could reach the eye: the clearest
     // ocean swallows the round trip through a hundred real metres.
     private const double SeabedDepth = 20.0;
@@ -55,48 +49,17 @@ internal struct PatchJob : IJob {
     public const int InfoMinHeight = 0;
     public const int InfoMaxHeight = 1;
     public const int InfoRadius = 2;
-    public const int InfoGroundIndices = 3;
-    public const int InfoWaterIndices = 4;
-    public const int InfoRocks = 5;
-    public const int InfoTufts = 6;
-    public const int InfoTrees = 7;
-    public const int InfoCoarseWaterIndices = 8;
+    public const int InfoWaterIndices = 3;
+    public const int InfoCoarseWaterIndices = 4;
+    public const int InfoPlants = 5;
+    public const int InfoRocks = 6;
+    public const int InfoLength = 7;
+
+    // Most rocks a patch keeps.
+    public const int MaxRocks = 512;
 
     // Added to a skirt vertex's first texture coordinate; must match SKIRT_FLAG in Ground.hlsl.
     private const float SkirtFlag = 2.0f;
-    public const int InfoLength = 9;
-
-    // Places where grass or trees may grow; the ground's materials decide which do, on the GPU (see Vegetation). Each is
-    // two float4s in the patch's scene axes: position in kilometres from the patch centre and a random number; the place
-    // on the patch (0 to 1 each way). Tufts cover the finest patches, three to a quad, on the mesh's own triangles so
-    // they stand on exactly the ground drawn. Trees stand on patches of the boulder level, two chances to a quad.
-    public const int TuftDepth = GroundView.MaxDepth;
-    public const int TreeDepth = RockDepth;
-    private const int TuftsPerQuad = 3;
-    public const int TreesPerQuad = 2;
-    public const int MaxTufts = Quads * Quads * TuftsPerQuad;
-    public const int MaxTrees = Quads * Quads * TreesPerQuad;
-    public const int PlantLength = 2 * Quads * Quads * TuftsPerQuad;
-
-    // Past the trees, forest is groves: two places to a quad on the coarser levels' patches, each standing for the trees
-    // of its cell, on the mesh's own triangles so a grove stands on exactly the ground drawn. A grove's second float4
-    // carries the ground's normal there, octahedral in the patch's scene axes, after its place on the patch.
-    public const int FarthestGroveDepth = 10;
-    public const int GrovesPerQuad = 2;
-
-    // Plants and rocks stand only on ground at least this far (m) over any water sheet: the shores hold dry land just
-    // clear of the water, and grass, trees and stones reach down to it.
-    public const double DryClearance = 0.05;
-
-    // Boulders are strewn by the patches of one level, a few hundred metres across, and outcrops of bedrock by a coarser
-    // one, a few kilometres across: chances per quad, each taken more often the steeper the ground (see PatchStrewJob).
-    // Each rock is three float4s in the patch's scene axes: position in kilometres from the patch centre and size in
-    // metres; orientation as a quaternion; and a random number that picks its shape, its place on the patch (0 to 1 each
-    // way, for its colour), and one for an outcrop.
-    public const int RockDepth = 13;
-    public const int OutcropDepth = 11;
-    public const int MaxRocks = 512;
-    public const int RockLength = 3 * MaxRocks;
 
     // Each vertex's horizon in eight directions, as the sine of its elevation in bytes. A patch searches out to
     // HorizonReach of its own vertices and takes its parent's horizon where that is higher, so every level adds the
@@ -134,12 +97,6 @@ internal struct PatchJob : IJob {
     [NativeDisableUnsafePtrRestriction]
     public Terrain Terrain;
 
-    [NativeDisableUnsafePtrRestriction]
-    public SeaState SeaState;
-
-    // Month of the sea-state climatology the shelter is measured against.
-    public int Month;
-
     public int Face;
     public int Depth;
     public int X;
@@ -147,7 +104,7 @@ internal struct PatchJob : IJob {
 
     public Mesh.MeshData Mesh;
     public NativeArray<ushort> Detail;
-    public NativeArray<ushort> WaterDetail;
+    public NativeArray<byte> Cover;
     public NativeArray<double> Info;
     public NativeArray<byte> Horizons;
     public NativeArray<float4> Rocks;
@@ -182,10 +139,10 @@ internal struct PatchJob : IJob {
     public NativeArray<double> Depths;
 
     [ReadOnly]
-    public NativeArray<float4> PlacedRocks;
+    public NativeArray<float4> PlacedPlants;
 
     [ReadOnly]
-    public NativeArray<float4> PlacedTrees;
+    public NativeArray<float4> PlacedRocks;
 
     /// <summary>Sizes the mesh buffers on the main thread; the job fills them.</summary>
     public static void Prepare(Mesh.MeshData mesh) {
@@ -207,7 +164,7 @@ internal struct PatchJob : IJob {
     }
 
     /// <summary>Schedules the build with <paramref name="samples"/> as its scratch: the terrain sampled across the workers,
-    /// then the rocks and trees placed, then this job assembling the patch.</summary>
+    /// then the rocks and plants strewn, then this job assembling the patch.</summary>
     public JobHandle ScheduleStages(PatchSamples samples) {
 
         Grid = samples.Grid;
@@ -218,14 +175,12 @@ internal struct PatchJob : IJob {
         Coarse = samples.Coarse;
         Fine = samples.Fine;
         Depths = samples.Depths;
+        PlacedPlants = samples.Plants;
         PlacedRocks = samples.Rocks;
-        PlacedTrees = samples.Trees;
 
         JobHandle sampled = new PatchSampleJob {
 
             Terrain = Terrain,
-            SeaState = SeaState,
-            Month = Month,
             Face = Face,
             Depth = Depth,
             X = X,
@@ -238,7 +193,7 @@ internal struct PatchJob : IJob {
             Coarse = samples.Coarse,
             Fine = samples.Fine,
             Depths = samples.Depths,
-            WaterDetail = WaterDetail,
+            CoverTexels = Cover,
 
         }.Schedule(PatchSampleJob.Rows, 1);
 
@@ -250,8 +205,8 @@ internal struct PatchJob : IJob {
             X = X,
             Y = Y,
             Grid = samples.Grid,
+            Plants = samples.Plants,
             Rocks = samples.Rocks,
-            Trees = samples.Trees,
 
         }.Schedule(Quads, 1, sampled);
 
@@ -325,146 +280,74 @@ internal struct PatchJob : IJob {
         Info[InfoMinHeight] = minHeight;
         Info[InfoMaxHeight] = maxHeight;
         Info[InfoRadius] = reach + 0.5 * (maxHeight - minHeight);
-        Info[InfoTufts] = Depth == TuftDepth ? ScatterTufts(ground, Heights, Levels, centre) : 0;
-        Info[InfoTrees] = Depth == TreeDepth ? GatherTrees() : Depth >= FarthestGroveDepth && Depth < TreeDepth ? ScatterGroves(ground, Heights, Levels, centre) : 0;
-        Info[InfoRocks] = GatherRocks();
+        Info[InfoPlants] = PatchStrewJob.Strews(Depth) ? GatherPlants() : 0;
+        Info[InfoRocks] = PatchStrewJob.Strews(Depth) ? GatherRocks() : 0;
+
+    }
+
+    // The plants the strewing placed, sorted by their random rank, so the first n of them are an even thinning that a
+    // draw can take by count alone.
+    private int GatherPlants() {
+
+        NativeArray<ulong> keys = new NativeArray<ulong>(PatchStrewJob.PlantSlots, Allocator.Temp);
+        int count = 0;
+
+        for (int quad = 0; quad < Quads * Quads; quad++) {
+
+            for (int c = 0; c < PatchStrewJob.PlantsPerQuad(Depth); c++) {
+
+                int slot = quad * PatchStrewJob.PlantChances + c;
+                float rank = PlacedPlants[3 * slot].w;
+
+                if (rank >= 0.0f) {
+
+                    keys[count++] = ((ulong)(rank * 16_777_216.0f) << 32) | (uint)slot;
+
+                }
+
+            }
+
+        }
+
+        NativeArray<ulong> sorted = keys.GetSubArray(0, count);
+
+        sorted.Sort();
+
+        for (int k = 0; k < count; k++) {
+
+            int slot = (int)(sorted[k] & 0xFFFF_FFFFu);
+
+            Plants[3 * k] = PlacedPlants[3 * slot];
+            Plants[3 * k + 1] = PlacedPlants[3 * slot + 1];
+            Plants[3 * k + 2] = PlacedPlants[3 * slot + 2];
+
+        }
+
+        return count;
 
     }
 
     // The rocks the strewing placed, in the order of their chances, up to as many as a patch holds.
     private int GatherRocks() {
 
-        int slots = PatchStrewJob.RockSlots(Depth);
         int count = 0;
 
-        for (int slot = 0; slot < slots && count < MaxRocks; slot++) {
+        for (int quad = 0; quad < Quads * Quads && count < MaxRocks; quad++) {
 
-            if (PlacedRocks[3 * slot].w <= 0.0f) {
+            for (int c = 0; c < PatchStrewJob.RocksPerQuad(Depth) && count < MaxRocks; c++) {
 
-                continue;
+                int slot = quad * PatchStrewJob.RockChances + c;
 
-            }
-
-            Rocks[3 * count] = PlacedRocks[3 * slot];
-            Rocks[3 * count + 1] = PlacedRocks[3 * slot + 1];
-            Rocks[3 * count + 2] = PlacedRocks[3 * slot + 2];
-            count++;
-
-        }
-
-        return count;
-
-    }
-
-    private int GatherTrees() {
-
-        int count = 0;
-
-        for (int slot = 0; slot < MaxTrees; slot++) {
-
-            if (PlacedTrees[2 * slot].w < 0.0f) {
-
-                continue;
-
-            }
-
-            Plants[2 * count] = PlacedTrees[2 * slot];
-            Plants[2 * count + 1] = PlacedTrees[2 * slot + 1];
-            count++;
-
-        }
-
-        return count;
-
-    }
-
-    private int ScatterTufts(NativeArray<Vector3d> ground, NativeArray<double> heights, NativeArray<double> levels, Vector3d centre) {
-
-        int count = 0;
-
-        for (int j = 0; j < Quads; j++) {
-
-            for (int i = 0; i < Quads; i++) {
-
-                int a = j * Vertices + i;
-                int b = a + 1;
-                int c = a + Vertices;
-                int d = c + 1;
-
-                if (Below(heights, levels, a, -DryClearance) || Below(heights, levels, b, -DryClearance) || Below(heights, levels, c, -DryClearance) || Below(heights, levels, d, -DryClearance)) {
+                if (PlacedRocks[3 * slot].w <= 0.0f) {
 
                     continue;
 
                 }
 
-                for (int t = 0; t < TuftsPerQuad; t++) {
-
-                    uint hash = math.hash(new int4(Face, X * Quads + i, Y * Quads + j, t + 32));
-                    float s = (hash & 0xFFFFu) / 65_536.0f;
-                    float u = (hash >> 16) / 65_536.0f;
-
-                    // The mesh splits each quad into (a, b, c) and (b, d, c).
-                    Vector3d p = s + u < 1.0f
-                        ? ground[a] + (ground[b] - ground[a]) * s + (ground[c] - ground[a]) * u
-                        : ground[d] + (ground[c] - ground[d]) * (1.0f - s) + (ground[b] - ground[d]) * (1.0f - u);
-
-                    Plants[2 * count] = new float4(Scene(p - centre), math.hash(new uint2(hash, 7u)) / 4_294_967_296.0f);
-                    Plants[2 * count + 1] = new float4((i + s) / Quads, (j + u) / Quads, 0.0f, 0.0f);
-                    count++;
-
-                }
-
-            }
-
-        }
-
-        return count;
-
-    }
-
-    private int ScatterGroves(NativeArray<Vector3d> ground, NativeArray<double> heights, NativeArray<double> levels, Vector3d centre) {
-
-        int count = 0;
-
-        for (int j = 0; j < Quads; j++) {
-
-            for (int i = 0; i < Quads; i++) {
-
-                int a = j * Vertices + i;
-                int b = a + 1;
-                int c = a + Vertices;
-                int d = c + 1;
-
-                if (Below(heights, levels, a, -DryClearance) || Below(heights, levels, b, -DryClearance) || Below(heights, levels, c, -DryClearance) || Below(heights, levels, d, -DryClearance)) {
-
-                    continue;
-
-                }
-
-                for (int t = 0; t < GrovesPerQuad; t++) {
-
-                    uint hash = math.hash(new int4(Face, X * Quads + i, Y * Quads + j, t + 64 + 4 * Depth));
-                    float s = (hash & 0xFFFFu) / 65_536.0f;
-                    float u = (hash >> 16) / 65_536.0f;
-                    bool first = s + u < 1.0f;
-
-                    // The mesh splits each quad into (a, b, c) and (b, d, c).
-                    Vector3d p = first
-                        ? ground[a] + (ground[b] - ground[a]) * s + (ground[c] - ground[a]) * u
-                        : ground[d] + (ground[c] - ground[d]) * (1.0f - s) + (ground[b] - ground[d]) * (1.0f - u);
-                    Vector3d normal = first
-                        ? Vector3d.Cross(ground[b] - ground[a], ground[c] - ground[a]).Normalized
-                        : Vector3d.Cross(ground[c] - ground[d], ground[b] - ground[d]).Normalized;
-
-                    normal = Vector3d.Dot(normal, p) < 0.0 ? -normal : normal;
-
-                    float2 octahedral = Octahedral(new float3((float)normal.X, (float)normal.Z, (float)normal.Y));
-
-                    Plants[2 * count] = new float4(Scene(p - centre), math.hash(new uint2(hash, 13u)) / 4_294_967_296.0f);
-                    Plants[2 * count + 1] = new float4((i + s) / Quads, (j + u) / Quads, octahedral.x, octahedral.y);
-                    count++;
-
-                }
+                Rocks[3 * count] = PlacedRocks[3 * slot];
+                Rocks[3 * count + 1] = PlacedRocks[3 * slot + 1];
+                Rocks[3 * count + 2] = PlacedRocks[3 * slot + 2];
+                count++;
 
             }
 
@@ -720,7 +603,6 @@ internal struct PatchJob : IJob {
         Mesh.SetSubMesh(0, new SubMeshDescriptor(0, groundCount) { bounds = bounds, vertexCount = GroundVertices }, Flags);
         Mesh.SetSubMesh(1, new SubMeshDescriptor(groundCount, fineCount - groundCount) { bounds = bounds, firstVertex = GroundVertices, vertexCount = WaterVertices }, Flags);
 
-        Info[InfoGroundIndices] = groundCount;
         Info[InfoWaterIndices] = fineCount - groundCount;
         Info[InfoCoarseWaterIndices] = count - fineCount;
 
@@ -791,12 +673,6 @@ internal struct PatchJob : IJob {
         return oddJ ? (j - 1) * Vertices + i : j * Vertices + i;
 
     }
-
-    /// <summary>A current (m/s) as a water-detail channel.</summary>
-    public static ushort EncodeFlow(double speed) => Unorm((float)(0.5 + 0.5 * speed / FlowRange));
-
-    /// <summary>A share, 0 to 1, as a water-detail channel.</summary>
-    public static ushort EncodeUnit(double share) => Unorm((float)share);
 
     // Sim frame (Z up, metres) to the patch's object space: kilometres, Y up, as MapSpace.
     public static float3 Scene(Vector3d v) => new float3((float)(v.X / 1_000.0), (float)(v.Z / 1_000.0), (float)(v.Y / 1_000.0));
@@ -1041,7 +917,8 @@ internal struct PatchJob : IJob {
 
     private static ushort Unorm(float x) => (ushort)math.round(math.saturate(x) * 65_535.0f);
 
-    private static float2 Octahedral(float3 n) {
+    /// <summary>A direction folded onto the octahedron, as Ground.hlsl and Tree.shader unfold it.</summary>
+    public static float2 Octahedral(float3 n) {
 
         n /= math.abs(n.x) + math.abs(n.y) + math.abs(n.z);
 

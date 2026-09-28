@@ -1,5 +1,4 @@
-// Earth's atmosphere wrapped around Terra, after Hillaire, "A Scalable and Production Ready Sky and Atmosphere
-// Rendering Technique" (2020). Scene units are kilometres, so the coefficients are per kilometre.
+// Earth's atmosphere round Terra, after Hillaire (2020); scene units are kilometres, so coefficients are per kilometre.
 #ifndef MAXQ_ATMOSPHERE_INCLUDED
 #define MAXQ_ATMOSPHERE_INCLUDED
 
@@ -27,8 +26,7 @@ float _PlanetRadius;
 float3 _SunDirection;
 float3 _SunIlluminance;
 
-// Low haze that pools in the valleys around the camera, below a flat top _FogTop (km above the reference radius), with
-// extinction _FogDensity per kilometre; its droplets scatter like the aerosol and absorb nothing.
+// Valley haze below a flat top (km above the reference radius), scattering like the aerosol without absorbing.
 float _FogTop;
 float _FogDensity;
 
@@ -38,9 +36,7 @@ TEXTURE2D(_IrradianceLut);
 TEXTURE2D(_SkyViewLut);
 SAMPLER(sampler_linear_clamp);
 
-// The clouds' shadow along the sun, mapped around the camera over 1 / _CloudShadowOrigin.w kilometres (zero when there
-// are no clouds): per texel the share of sunlight the clouds let through, and how far toward the sun from the origin
-// their shade starts.
+// Clouds' shadow over 1 / _CloudShadowOrigin.w km round the camera: sunlight let through, and how far sunward it starts.
 TEXTURE2D(_CloudShadow);
 float4 _CloudShadowOrigin;
 float3 _CloudShadowRight;
@@ -49,8 +45,7 @@ float3 _CloudShadowUp;
 #define CLOUD_SHADOW_SOFTNESS 0.4
 #define CLOUD_SHADOW_TEXELS 512.0
 
-// The clouds round the camera, which the sky-view table lacks: what they add over the sky behind and how much of it they
-// let through, by azimuth from the sun and elevation, when _CloudsOn.
+// The clouds round the camera by azimuth from the sun and elevation: what they add to the sky, and how much they let through.
 TEXTURE2D(_CloudSky);
 float _CloudsOn;
 
@@ -202,8 +197,7 @@ float FogSunTransmittance(float3 position, float3 sun) {
 
 }
 
-// Sunlight the clouds let through to a point: all of it sunward of their shade and off the map, which fades out at its
-// edges; lod blurs the map, as for a march step that spans many texels.
+// Sunlight the clouds let through to a point, all of it sunward of their shade and off the map; lod blurs the map.
 float CloudShadow(float3 positionWS, float lod = 0.0) {
 
     if (_CloudShadowOrigin.w <= 0.0) {
@@ -222,9 +216,7 @@ float CloudShadow(float3 positionWS, float lod = 0.0) {
 
 }
 
-// Sun visibility past the ground's cascaded shadows and the clouds; the cascades count only where they reach. For the
-// air, cloudLod blurs the clouds' shadow over a march step, whose one jittered sample would otherwise print the jitter's
-// pattern wherever the shadow changes along the ray.
+// Sun visibility past the cascades (where they reach) and the clouds; cloudLod blurs the clouds' shadow over a march step.
 float SunShadow(float3 positionWS, float cloudLod = 0.0) {
 
     #if defined(_MAIN_LIGHT_SHADOWS_CASCADE)
@@ -272,12 +264,8 @@ struct Scattering {
 
 };
 
-// Light scattered toward the origin along a ray, per unit of sun illuminance, and the ray's transmittance. Steps
-// crowd toward the origin when it is inside the air, where the air is densest, and sample the air at their middles. With
-// shadows, the ground's cascaded shadows carve the sunlight, so mountains cast shafts into the haze; those are looked up
-// at jitter (0 to 1) of each step, which neighbouring rays vary so shafts blend instead of banding.
-// With fog, each step also takes the stretch of it that lies inside the low haze, which is uniform, so a thin layer
-// counts in full however long the step.
+// Light scattered toward origin per unit of sun illuminance, and transmittance, over steps crowding toward an origin
+// inside the air. Shadows (looked up at jitter of each step) cast shafts; fog adds each step's exact stretch of haze.
 Scattering Integrate(float3 origin, float3 direction, float tMax, float3 sun, int steps, bool multiScatter, float jitter = 0.3, bool shadows = false, bool fog = false,
     float split = 1e9) {
 
@@ -288,22 +276,9 @@ Scattering Integrate(float3 origin, float3 direction, float tMax, float3 sun, in
     result.frontTransmittance = 1.0;
 
     float2 top = RaySphere(origin, direction, TopRadius());
-
-    if (top.y <= 0.0) {
-
-        return result;
-
-    }
-
-    float2 ground = RaySphere(origin, direction, _PlanetRadius);
+    float ground = RaySphere(origin, direction, _PlanetRadius).x;
     float start = max(top.x, 0.0);
-    float end = min(top.y, tMax);
-
-    if (ground.x > 0.0) {
-
-        end = min(end, ground.x);
-
-    }
+    float end = min(top.y, ground > 0.0 ? min(tMax, ground) : tMax);
 
     if (end <= start) {
 
@@ -385,8 +360,7 @@ Scattering Integrate(float3 origin, float3 direction, float tMax, float3 sun, in
 
 }
 
-// Hillaire's sky-view parameterisation around the camera: latitude crowds toward the horizon, where the sky changes
-// fastest, and azimuth is measured from the sun, crowding toward it.
+// Hillaire's sky-view parameterisation: latitude crowds toward the horizon, azimuth from the sun toward it.
 float SkyViewZenithHorizon(float viewHeight, out float beta) {
 
     float horizon = sqrt(max(viewHeight * viewHeight - _PlanetRadius * _PlanetRadius, 0.0));
@@ -445,8 +419,18 @@ float2 SkyViewUv(float viewHeight, float cosZenith, float cosLight) {
 
 }
 
-// The clear-sky table's radiance in a direction from the camera, with the clouds; lod picks the blur of the cloud map for
-// a table read lod mips down.
+// The sky tables' frame round the camera: forward toward the sun's azimuth (any level direction with the sun overhead).
+void SkyFrame(float3 up, out float3 forward, out float3 side) {
+
+    float3 flatSun = _SunDirection - up * dot(_SunDirection, up);
+    float3 anyFlat = normalize(cross(up, abs(up.y) < 0.99 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0)));
+
+    forward = length(flatSun) > 1e-4 ? normalize(flatSun) : anyFlat;
+    side = cross(up, forward);
+
+}
+
+// The clear-sky table's radiance in a direction, with the clouds blurred to match a table read lod mips down.
 float3 CloudySky(float3 direction, float3 sky, float lod) {
 
     if (_CloudsOn <= 0.0) {
@@ -456,29 +440,16 @@ float3 CloudySky(float3 direction, float3 sky, float lod) {
     }
 
     float3 up = normalize(_WorldSpaceCameraPos - _PlanetCentre);
-    float3 flatSun = _SunDirection - up * dot(_SunDirection, up);
-    float3 anyFlat = normalize(cross(up, abs(up.y) < 0.99 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0)));
-    float3 forward = length(flatSun) > 1e-4 ? normalize(flatSun) : anyFlat;
-    float3 side = cross(up, forward);
+    float3 forward;
+    float3 side;
+
+    SkyFrame(up, forward, side);
+
     float sinElevation = dot(direction, up);
     float2 uv = float2(atan2(dot(direction, side), dot(direction, forward)) / (2.0 * PI) + 0.5, sqrt(saturate((sinElevation + CLOUD_SKY_BELOW) / (1.0 + CLOUD_SKY_BELOW))));
     float4 clouds = SAMPLE_TEXTURE2D_LOD(_CloudSky, sampler_linear_clamp, uv, lod + log2(CLOUD_SKY_WIDTH / SKY_VIEW_SIZE.x));
 
     return clouds.rgb + clouds.a * sky;
-
-}
-
-// Sky radiance seen from the camera in a direction, from the per-frame sky-view table; only valid inside the air.
-float3 SkyRadiance(float3 direction) {
-
-    float3 fromCentre = _WorldSpaceCameraPos - _PlanetCentre;
-    float viewHeight = max(length(fromCentre), _PlanetRadius + 1e-3);
-    float3 up = fromCentre / length(fromCentre);
-    float3 flatView = direction - up * dot(direction, up);
-    float3 flatSun = _SunDirection - up * dot(_SunDirection, up);
-    float cosLight = dot(flatView, flatSun) / max(length(flatView) * length(flatSun), 1e-5);
-
-    return CloudySky(direction, SAMPLE_TEXTURE2D_LOD(_SkyViewLut, sampler_linear_clamp, SkyViewUv(viewHeight, dot(direction, up), cosLight), 0).rgb, 0.0);
 
 }
 

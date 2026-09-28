@@ -1,7 +1,5 @@
-// Composites the atmosphere and the clouds over the opaque scene. The air varies slowly, so each view ray is marched at
-// half resolution to the depth buffer (or out of the air), splitting the air at the clouds, so those far off fade into
-// the air before them; the full-resolution pass then upsamples by depth, so silhouettes stay sharp, dims what lies behind,
-// adds the scattered light, and gives sky pixels the sun's disk.
+// The air and clouds over the opaque scene: marched at half resolution, split at the clouds so far ones fade into the air
+// before them, then upsampled by depth so silhouettes stay sharp; sky pixels get the sun's disk.
 Shader "Hidden/MaxQ/AtmosphereSky" {
 
     SubShader {
@@ -22,8 +20,7 @@ Shader "Hidden/MaxQ/AtmosphereSky" {
         float4 _AtmosphereSize;
         StructuredBuffer<float> _Exposure;
 
-        // The clouds' light and transmittance, and their distance and the ground's behind them, at half resolution;
-        // _CloudSize is zero without clouds.
+        // The clouds' light and transmittance, and their distance and the ground's; _CloudSize is zero without clouds.
         TEXTURE2D(_CloudLight);
         TEXTURE2D(_CloudDepth);
         float4 _CloudSize;
@@ -49,9 +46,7 @@ Shader "Hidden/MaxQ/AtmosphereSky" {
 
             Output Frag(Varyings input) {
 
-                // Each ray is exactly the top-left pixel of its block. A half-resolution texel's centre falls between
-                // full-resolution pixels, and rounding picks which one's depth it gets, differently row to row and
-                // column to column, which draws a lattice across the ground.
+                // Exactly the block's top-left pixel: a texel centre between pixels rounds differently by row and draws a lattice.
                 int2 pixel = int2(input.positionCS.xy) * 2;
                 ViewRay ray = ViewRayThrough((pixel + 0.5) * _SceneSize.zw, LOAD_TEXTURE2D_X(_SceneDepth, pixel).r);
 
@@ -101,13 +96,12 @@ Shader "Hidden/MaxQ/AtmosphereSky" {
                 float3 fromCentre = _WorldSpaceCameraPos - _PlanetCentre;
                 float viewHeight = max(length(fromCentre), _PlanetRadius + 1e-3);
                 float3 up = fromCentre / length(fromCentre);
-                float3 flatSun = _SunDirection - up * dot(_SunDirection, up);
-                float3 anyFlat = normalize(cross(up, abs(up.y) < 0.99 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0)));
-                float3 forward = length(flatSun) > 1e-4 ? normalize(flatSun) : anyFlat;
-                float3 side = cross(up, forward);
-
+                float3 forward;
+                float3 side;
                 float cosZenith;
                 float cosLight;
+
+                SkyFrame(up, forward, side);
                 SkyViewDirection(float2(TexelToUnit(input.texcoord.x, SKY_VIEW_SIZE.x), TexelToUnit(input.texcoord.y, SKY_VIEW_SIZE.y)), viewHeight, cosZenith, cosLight);
 
                 float sinZenith = sqrt(saturate(1.0 - cosZenith * cosZenith));
@@ -140,16 +134,14 @@ Shader "Hidden/MaxQ/AtmosphereSky" {
                 float3 scene = SAMPLE_TEXTURE2D_X_LOD(_BlitTexture, sampler_PointClamp, uv, 0).rgb;
                 ViewRay ray = ViewRayAt(uv);
 
-                // How fast distance changes across the pixels of this surface: the gentler side along each axis, as
-                // the steep side of a silhouette belongs to whatever lies behind it.
+                // The surface's own slope in distance: the gentler side, as a silhouette's steep side belongs behind it.
                 float2 pixel = _SceneSize.zw;
                 float slopeX = min(abs(ViewRayAt(uv + float2(pixel.x, 0.0)).distance - ray.distance), abs(ViewRayAt(uv - float2(pixel.x, 0.0)).distance - ray.distance));
                 float slopeY = min(abs(ViewRayAt(uv + float2(0.0, pixel.y)).distance - ray.distance), abs(ViewRayAt(uv - float2(0.0, pixel.y)).distance - ray.distance));
                 float tolerance = 1e-3 * ray.distance + 3.0 * max(slopeX, slopeY);
 
-                // Bilinear over the four nearest half-resolution samples, each weighed down by how far its distance
-                // strays from this pixel's beyond what the surface's own slope explains, so air from behind a ridge
-                // never bleeds onto it. Sample i was marched through pixel 2i.
+                // Bilinear over the nearest samples (sample i marched through pixel 2i), weighed down where their
+                // distance strays beyond the slope, so air from behind a ridge never bleeds onto it.
                 float2 texel = (uv * _SceneSize.xy - 0.5) * 0.5;
                 int2 base = int2(floor(texel));
                 float2 f = texel - base;

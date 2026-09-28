@@ -1,7 +1,7 @@
-// Grass tufts near the camera, drawn procedurally: every tuft Vegetation keeps is a dozen curved blades, each five
-// vertices, leaning and swaying about the local vertical. Tufts thin out with distance, the survivors spreading wider
-// to keep the cover, and sink into the ground texture short of GRASS_REACH. Blades are lit as the ground is, darkening
-// toward their roots, with sunlight glowing through them from behind.
+// Grass tufts near the camera, drawn procedurally: every tuft a patch strews is a dozen curved blades, each five
+// vertices, leaning and swaying about the local vertical, coloured by its climate (see Biome.hlsl). Tufts thin out with
+// distance, the survivors spreading wider to keep the cover, and sink into the ground texture short of GRASS_REACH.
+// Blades are lit as the ground is, darkening toward their roots, with sunlight glowing through them from behind.
 Shader "MaxQ/Grass" {
 
     SubShader {
@@ -11,11 +11,14 @@ Shader "MaxQ/Grass" {
         HLSLINCLUDE
 
         #include "../Sunlight.hlsl"
+        #include "../Biome.hlsl"
 
+        // As PatchStrewJob writes them: position (km from the patch origin) and rank; aridity, warmth and a random
+        // number; height as a share of full.
         struct Plant {
 
             float4 position;
-            float4 colour;
+            float4 climate;
             float4 shape;
 
         };
@@ -93,7 +96,7 @@ Shader "MaxQ/Grass" {
             float3 facing = side * cos(angle) + ahead * sin(angle);
             float3 across = cross(up, facing);
             float3 offset = (side * cos(angle * 1.7 + 1.0) + ahead * sin(angle * 1.7 + 1.0)) * radius;
-            float tall = BLADE_LENGTH * plant.colour.w * (0.55 + 0.45 * Hash(seed, blade + 67u)) * grow;
+            float tall = BLADE_LENGTH * plant.shape.x * (0.55 + 0.45 * Hash(seed, blade + 67u)) * grow;
             float width = BLADE_WIDTH * sqrt(spread) * (0.7 + 0.6 * Hash(seed, blade + 97u));
 
             // Blades lean out from the tuft and bow under their own weight; the wind rocks them in gusts.
@@ -108,7 +111,8 @@ Shader "MaxQ/Grass" {
             output.positionWS = root + metres / 1000.0;
             output.positionCS = TransformWorldToHClip(output.positionWS);
             output.normalWS = normalize(lerp(normalize(cross(across, tangent)), up, 0.7));
-            output.colour = plant.colour.rgb * lerp(0.75, 1.2, Hash(seed, blade + 173u)) * lerp(float3(1.0, 1.0, 1.0), float3(1.25, 1.1, 0.6), t * t * plant.shape.x);
+            output.colour = BladeColour(plant.climate.x, plant.climate.y) * lerp(0.75, 1.2, Hash(seed, blade + 173u)) *
+                lerp(float3(1.0, 1.0, 1.0), float3(1.25, 1.1, 0.6), t * t * plant.climate.z);
             output.along = t;
 
             return output;

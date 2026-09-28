@@ -39,11 +39,6 @@ public readonly struct Spectrum {
     // fetch, where the peak reaches Pierson and Moskowitz's 0.877 g/U.
     private const double DevelopedFetch = 15_785.0;
 
-    // Swell reaches a coast in full from open water this far upwave, and not at all through gaps narrower than the
-    // shorter one (real metres).
-    private const double ShelteredFetch = 2_000.0;
-    private const double ExposedFetch = 500_000.0;
-
     private const double SwellSpread = 75.0;
 
     public WaveSystem Sea { get; init; }
@@ -53,54 +48,30 @@ public readonly struct Spectrum {
     /// <summary>Angular frequency of waves of wavenumber <paramref name="k"/> (rad/m) on deep water, capillarity included.</summary>
     public static double Frequency(double k) => Math.Sqrt(Gravity * k + Tension * k * k * k);
 
-    /// <summary>The frequency nearest <see cref="Frequency"/> that repeats in <see cref="LoopSeconds"/>, never zero.</summary>
-    public static double LoopFrequency(double k) {
-
-        double quantum = 2.0 * Math.PI / LoopSeconds;
-
-        return Math.Max(Math.Round(Frequency(k) / quantum), 1.0) * quantum;
-
-    }
-
     /// <summary>The spectrum of a sea in <paramref name="conditions"/>, with each system's heading given in the caller's
-    /// frame. Ice damps both systems.</summary>
-    public static Spectrum For(SeaConditions conditions, double seaHeading, double swellHeading) {
+    /// frame.</summary>
+    public static Spectrum For(SeaConditions conditions, double seaHeading, double swellHeading) => new Spectrum {
 
-        double damping = (1.0 - conditions.Ice) * (1.0 - conditions.Ice);
+        Sea = System(conditions.SeaHeight, conditions.SeaPeriod, 3.3, seaHeading),
+        Swell = System(conditions.SwellHeight, conditions.SwellPeriod, 6.0, swellHeading),
 
-        return new Spectrum {
+    };
 
-            Sea = System(conditions.SeaHeight * damping, conditions.SeaPeriod, 3.3, seaHeading),
-            Swell = System(conditions.SwellHeight * damping, conditions.SwellPeriod, 6.0, swellHeading),
+    /// <summary>Significant height (m) of the sea a wind of <paramref name="wind"/> m/s raises over <paramref name="fetch"/>
+    /// real metres of open water, and its peak <paramref name="period"/> (s); WaterSurface.hlsl's SeaStateAt matches.</summary>
+    public static double WindSea(double wind, double fetch, out double period) {
 
-        };
+        double speed = Math.Max(wind, 0.5);
+        double reach = Math.Min(Gravity * Math.Max(fetch, 1.0) / (speed * speed), DevelopedFetch);
 
-    }
+        period = 2.0 * Math.PI * speed * Math.Pow(reach, 1.0 / 3.0) / (22.0 * Gravity);
 
-    /// <summary>The open sea's <paramref name="conditions"/> where land shelters the water: the local sea is held to
-    /// what the wind can raise over <paramref name="windFetch"/> (real metres of open water upwind), and swell reaches
-    /// in as far as <paramref name="swellFetch"/> (open water back toward where it comes from) exposes the water.</summary>
-    public static SeaConditions Sheltered(SeaConditions conditions, double windFetch, double swellFetch) {
-
-        double wind = Math.Max(conditions.WindSpeed, 0.5);
-        double fetch = Math.Min(Gravity * Math.Max(windFetch, 1.0) / (wind * wind), DevelopedFetch);
-        double limitedHeight = 0.0016 * Math.Sqrt(fetch) * wind * wind / Gravity;
-        double limitedPeriod = 2.0 * Math.PI / (22.0 * Gravity / wind * Math.Pow(fetch, -1.0 / 3.0));
-        double exposure = Math.Log(Math.Max(swellFetch, 1.0) / ShelteredFetch) / Math.Log(ExposedFetch / ShelteredFetch);
-        bool limited = limitedHeight < conditions.SeaHeight;
-
-        return conditions with {
-
-            SeaHeight = limited ? limitedHeight : conditions.SeaHeight,
-            SeaPeriod = limited ? limitedPeriod : conditions.SeaPeriod,
-            SwellHeight = conditions.SwellHeight * Math.Min(Math.Max(exposure, 0.0), 1.0),
-
-        };
+        return 0.0016 * Math.Sqrt(reach) * speed * speed / Gravity;
 
     }
 
-    /// <summary>A system of significant height <paramref name="height"/> (m) peaking at <paramref name="period"/> (s).</summary>
-    public static WaveSystem System(double height, double period, double gamma, double heading) {
+    // A system of significant height (m) peaking at period (s).
+    private static WaveSystem System(double height, double period, double gamma, double heading) {
 
         double peak = 2.0 * Math.PI / Math.Max(period, 0.5);
         WaveSystem unit = new WaveSystem { Alpha = 1.0, PeakFrequency = peak, Gamma = gamma, Heading = heading };
@@ -136,8 +107,8 @@ public readonly struct Spectrum {
     /// <summary>Significant height of the whole sea, m.</summary>
     public double SignificantHeight => 4.0 * Math.Sqrt(Variance(Sea) + Variance(Swell));
 
-    /// <summary>JONSWAP energy per unit angular frequency, m^2 s.</summary>
-    public static double Energy(WaveSystem system, double omega) {
+    // JONSWAP energy per unit angular frequency, m^2 s.
+    private static double Energy(WaveSystem system, double omega) {
 
         if (system.Alpha <= 0.0 || omega <= 0.0) {
 

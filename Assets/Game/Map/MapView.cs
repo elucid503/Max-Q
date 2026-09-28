@@ -1,5 +1,4 @@
 using System;
-using System.IO;
 
 using MaxQ.Game.Map.Rendering;
 using MaxQ.Game.Planet;
@@ -10,6 +9,7 @@ using MaxQ.Game.Planet.Sky.Clouds;
 using MaxQ.Game.Planet.Water;
 using MaxQ.Sim.Bodies;
 using MaxQ.Sim.Numerics;
+using MaxQ.Sim.Ocean;
 using MaxQ.Sim.Surface;
 
 using UnityEngine;
@@ -28,7 +28,6 @@ namespace MaxQ.Game.Map {
         [SerializeField] private Material _rockMaterial;
         [SerializeField] private Material _grassMaterial;
         [SerializeField] private Material _treeMaterial;
-        [SerializeField] private ComputeShader _vegetation;
         [SerializeField] private Shader _atmosphereTables;
         [SerializeField] private Shader _atmosphereSky;
         [SerializeField] private ComputeShader _exposure;
@@ -70,15 +69,14 @@ namespace MaxQ.Game.Map {
             _camera = Camera.main;
             _freeCamera = new FreeCamera(_camera);
 
-            _clouds = new CloudView(_terra, data, _cloudShader, _cloudNoise, MapSpace.Direction(Vector3d.UnitX));
+            _clouds = new CloudView(_terra, _cloudShader, _cloudNoise, MapSpace.Direction(Vector3d.UnitX));
             _atmosphere = new Atmosphere(_terra, _clouds, _atmosphereTables, _atmosphereSky, _exposure, MapSpace.Direction(Vector3d.UnitX), SunIlluminance);
             _groundNoise = GroundNoise.Create();
             Shader.SetGlobalTexture(GroundNoiseId, _groundNoise);
 
-            Vegetation vegetation = new Vegetation(_grassMaterial, _treeMaterial, _vegetation, _groundMaterial.GetTexture("_GroundAlbedo"), _groundNoise,
-                (float)(_terra.Radius / MapSpace.MetresPerUnit));
-            _ground = new GroundView(_terra, _survey.SeaState, new ColourTiles(Path.Combine(data, "colour.tiles")), _groundMaterial, _waterMaterial, _rockMaterial, vegetation);
-            _water = new WaterView(_terra, _survey.SeaState, _waves, _waterCopy);
+            Vegetation vegetation = new Vegetation(_grassMaterial, _treeMaterial, (float)(_terra.Radius / MapSpace.MetresPerUnit));
+            _ground = new GroundView(_terra, _groundMaterial, _waterMaterial, _rockMaterial, vegetation);
+            _water = new WaterView(_terra, new SeaState(), _waves, _waterCopy);
             _seleneView = new BodyView(selene, _seleneFaces, _surfaceMaterial, 0.0f);
 
             RenderSettings.skybox = _skyMaterial;

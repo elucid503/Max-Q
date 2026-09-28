@@ -1,8 +1,5 @@
-// Renders the clouds. Each frame marches one ray per 4x4 block of pixels, with its samples staggered anew; the ray goes
-// through one of the block's four half-resolution pixels, a different one each frame, and the resolve blends it into a
-// half-resolution history it reprojects from the last frame, so every pixel of the history is fresh every four frames.
-// Before the opaque scene, their shadow is mapped along the sun and the sky they fill is mapped around the camera for
-// water to mirror.
+// The clouds: a ray per 4x4 block each frame, resolved into a reprojected half-resolution history; and the shadow and sky
+// maps drawn before the opaque scene.
 Shader "Hidden/MaxQ/Clouds" {
 
     SubShader {
@@ -31,6 +28,13 @@ Shader "Hidden/MaxQ/Clouds" {
         float _CloudPixelAngle;
         float _CloudHistoryValid;
 
+        struct Output {
+
+            float4 light : SV_Target0;
+            float2 depth : SV_Target1;
+
+        };
+
         ENDHLSL
 
         Pass {
@@ -41,13 +45,6 @@ Shader "Hidden/MaxQ/Clouds" {
 
             #pragma vertex Vert
             #pragma fragment Frag
-
-            struct Output {
-
-                float4 light : SV_Target0;
-                float2 depth : SV_Target1;
-
-            };
 
             Output Frag(Varyings input) {
 
@@ -81,13 +78,6 @@ Shader "Hidden/MaxQ/Clouds" {
             // Share of each fresh sample in the history.
             #define CLOUD_BLEND 0.15
 
-            struct Output {
-
-                float4 light : SV_Target0;
-                float2 depth : SV_Target1;
-
-            };
-
             Output Frag(Varyings input) {
 
                 int2 pixel = int2(input.positionCS.xy);
@@ -96,8 +86,7 @@ Shader "Hidden/MaxQ/Clouds" {
                 int2 block = min(pixel >> 1, last);
                 bool fresh = all((pixel & 1) == traced);
 
-                // The fresh samples round this pixel bound its history; on the three frames in four it gets none of its
-                // own, their bilinear blend stands in for one.
+                // Fresh samples round the pixel bound its history, and their blend stands in on frames it is not traced.
                 float4 lowest = 1e9;
                 float4 highest = -1e9;
 
@@ -151,8 +140,7 @@ Shader "Hidden/MaxQ/Clouds" {
                 float4 history = SAMPLE_TEXTURE2D_LOD(_CloudHistory, sampler_LinearClamp, historyUv, 0);
                 float2 historyDepth = SAMPLE_TEXTURE2D_LOD(_CloudHistoryDepth, sampler_LinearClamp, historyUv, 0).rg;
 
-                // The history's distance was measured from last frame's camera: carried to this one's, it keeps up with
-                // a moving camera instead of trailing it, which would split the air short of the clouds.
+                // Carried to this frame's camera, the history's distance keeps up instead of splitting the air short.
                 historyDepth.x += depth.x - length(position - _CloudPreviousCamera);
 
                 // History is dropped off screen, and where the ground behind the pixel has changed, as at a ridge line.
@@ -184,8 +172,7 @@ Shader "Hidden/MaxQ/Clouds" {
             #pragma vertex Vert
             #pragma fragment Frag
 
-            // Each texel's sun line, from where it meets the ground (the map's plane stands in for it); the shade's start
-            // is measured along the sun from the plane.
+            // Each texel's sun line through the map's plane, which stands in for the ground.
             float4 Frag(Varyings input) : SV_Target {
 
                 float2 plane = (input.texcoord - 0.5) / _CloudShadowOrigin.w;
@@ -210,16 +197,16 @@ Shader "Hidden/MaxQ/Clouds" {
             #pragma vertex Vert
             #pragma fragment Frag
 
-            // The clouds around the camera, seen through the air in front of them: what they add to the sky behind
-            // (which the air past them lights), and how much of that sky they let through.
+            // The clouds round the camera through the air before them: what they add to the sky, and how much they let through.
             float4 Frag(Varyings input) : SV_Target {
 
                 float3 origin = _WorldSpaceCameraPos - _PlanetCentre;
                 float3 up = normalize(origin);
-                float3 flatSun = _SunDirection - up * dot(_SunDirection, up);
-                float3 anyFlat = normalize(cross(up, abs(up.y) < 0.99 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0)));
-                float3 forward = length(flatSun) > 1e-4 ? normalize(flatSun) : anyFlat;
-                float3 side = cross(up, forward);
+                float3 forward;
+                float3 side;
+
+                SkyFrame(up, forward, side);
+
                 // The map keeps CLOUD_SKY_BELOW of the sine of elevation below the horizon, as CloudySky reads it.
                 float azimuth = (input.texcoord.x - 0.5) * 2.0 * PI;
                 float sinElevation = input.texcoord.y * input.texcoord.y * (1.0 + CLOUD_SKY_BELOW) - CLOUD_SKY_BELOW;

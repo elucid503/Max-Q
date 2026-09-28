@@ -4,7 +4,7 @@ using UnityEngine;
 
 namespace MaxQ.Game.Planet;
 
-/// <summary>Where tools/terra.sh baked Terra's survey and colour: Data/Terra at the project root, found by walking up
+/// <summary>Where tools/terra.sh baked Terra's survey: Data/Terra at the project root, found by walking up
 /// from the editor's Assets folder or the player's data folder.</summary>
 public static class TerraData {
 

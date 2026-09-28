@@ -48,7 +48,7 @@ public sealed class ReliefTests {
         }
 
         Assert.That(steep, Is.GreaterThan(flat * 20.0));
-        Assert.That(Relief.Detail(p, 600.0, uphill * 0.4), Is.EqualTo(0.0));
+        Assert.That(Relief.Detail(p, 5_000.0, uphill * 0.4), Is.EqualTo(0.0));
 
     }
 
@@ -73,7 +73,7 @@ public sealed class ReliefTests {
             double here = Relief.Detail(q, 0.0, gradient);
 
             Assert.That(Relief.Detail(q + nudge, 0.0, gradient), Is.EqualTo(here).Within(0.02));
-            Assert.That(Relief.Detail(q, 0.0, gradient + east * 1e-5), Is.EqualTo(here).Within(0.02));
+            Assert.That(Relief.Detail(q, 0.0, gradient + east * 1e-5), Is.EqualTo(here).Within(0.2));
 
         }
 

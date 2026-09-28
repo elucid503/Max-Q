@@ -91,9 +91,6 @@ internal sealed class WaveFrame {
 
     }
 
-    /// <summary>Radians clockwise from geographic north to a heading given as east and north components.</summary>
-    public static double Bearing(double east, double north) => Math.Atan2(east, north);
-
     private static Vector3d GeographicEast(Vector3d direction) {
 
         double across = Math.Sqrt(direction.X * direction.X + direction.Y * direction.Y);

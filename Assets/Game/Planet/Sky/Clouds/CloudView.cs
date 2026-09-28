@@ -1,8 +1,9 @@
 using System;
-using System.IO;
+using System.Threading.Tasks;
 
 using MaxQ.Game.Map;
 using MaxQ.Sim.Bodies;
+using MaxQ.Sim.Numerics;
 
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
@@ -10,16 +11,11 @@ using UnityEngine.Rendering;
 
 namespace MaxQ.Game.Planet.Sky.Clouds;
 
-/// <summary>Terra's clouds: the weather ERA5 saw at one hour (clouds.bin), carved from tiling noise that drifts east with
-/// the wind and churns as it goes. Keeps the shader globals current; the atmosphere records the passes that draw them.</summary>
+/// <summary>Terra's clouds: a June climatology over its land and sea, redrawn on the GPU as the weather drifts east and
+/// churns, carved from tiling noise that drifts with it. Keeps the shader globals current; the atmosphere records the
+/// passes that draw them.</summary>
 public sealed class CloudView : IDisposable {
 
-    private static readonly int WeatherId = Shader.PropertyToID("_CloudWeather");
-    private static readonly int AnvilsId = Shader.PropertyToID("_CloudAnvils");
-    private static readonly int ShapeId = Shader.PropertyToID("_CloudShape");
-    private static readonly int DetailId = Shader.PropertyToID("_CloudDetail");
-    private static readonly int BoundId = Shader.PropertyToID("_CloudShapeBound");
-    private static readonly int SourceId = Shader.PropertyToID("_Source");
     private static readonly int BodyFromSceneId = Shader.PropertyToID("_CloudBodyFromScene");
     private static readonly int NoiseFromSceneId = Shader.PropertyToID("_CloudNoiseFromScene");
     private static readonly int ShapeOffsetId = Shader.PropertyToID("_CloudShapeOffset");
@@ -30,45 +26,66 @@ public sealed class CloudView : IDisposable {
     private static readonly int ShadowOriginId = Shader.PropertyToID("_CloudShadowOrigin");
     private static readonly int ShadowRightId = Shader.PropertyToID("_CloudShadowRight");
     private static readonly int ShadowUpId = Shader.PropertyToID("_CloudShadowUp");
-    private static readonly int VolumeId = Shader.PropertyToID("_Volume");
-    private static readonly int SizeId = Shader.PropertyToID("_Size");
 
-    private const int Magic = 0x4443514D;
-    private const int Channels = 8;
     private const int ShapeTexels = 128;
     private const int DetailTexels = 32;
+
+    // The weather's cells (about 8 km at the equator), and the survey's land and heights it is drawn over.
+    private const int WeatherWidth = 1024;
+    private const int WeatherHeight = 512;
+    private const int LandWidth = 512;
+    private const int LandHeight = 256;
+
+    // Metres of ground height over the land map's range; matches LAND_HEIGHT_RANGE in CloudNoise.compute.
+    private const double LandHeightRange = 2_000.0;
 
     // Tile sizes (km) of the heaps and of the detail; match CLOUD_SHAPE_SIZE and CLOUD_DETAIL_SIZE in Clouds.hlsl.
     private const double ShapeTile = 5.0;
     private const double DetailTile = 0.7;
 
-    // The noise drifts east at DriftSpeed (m/s) on the equator, while the heaps churn at ShapeChurn and their edges at DetailChurn.
+    // Drift east (m/s at the equator), churn of heaps and edges (m/s), of the weather (tiles/s: storms change over hours,
+    // fronts over days), the cyclones' lives (s), and the redraw interval (s), too short for its steps to show.
     private const double DriftSpeed = 8.0;
     private const double ShapeChurn = 0.5;
     private const double DetailChurn = 2.0;
+    private const double ChurnRate = 1.3e-6;
+    private const double CycloneCycle = 4.0 * 86_400.0;
+    private const double WeatherInterval = 1.0;
 
     // The shadow map spans ShadowSpan km round the camera on the ground, doubling as it climbs, up to ShadowMaxSpan.
-    internal const int ShadowTexels = 512;
+    private const int ShadowTexels = 512;
     private const double ShadowSpan = 60.0;
     private const double ShadowMaxSpan = 3_840.0;
     private const double ShadowSpanPerAltitude = 8.0;
+
+    // The shader's shadow and sky map passes; the sky map's width matches CLOUD_SKY_WIDTH in Atmosphere.hlsl.
+    private const int ShadowPass = 2;
+    private const int SkyPass = 3;
+    private const int SkyWidth = 256;
+    private const int SkyHeight = 96;
 
     private readonly CelestialBody _body;
     private readonly float _radius;
     private readonly Vector3 _sun;
     private readonly Vector3 _shadowRight;
     private readonly Vector3 _shadowUp;
-    private readonly Texture2D _weather;
-    private readonly Texture2D _anvils;
+    private readonly ComputeShader _noise;
+    private readonly int _weatherKernel;
+    private readonly Texture2D _land;
+    private readonly RenderTexture _weather;
     private readonly RenderTexture _shape;
     private readonly RenderTexture _detail;
     private readonly RenderTexture _bound;
     private readonly Material _material;
 
+    private double _forecast = double.NaN;
+
     /// <summary>Whether the clouds draw and cast shadows; the capture turns them off to time them.</summary>
     public bool Enabled { get; set; } = true;
 
-    internal CloudSkyPass SkyPass { get; }
+    /// <summary>Maps the clouds' shadow along the sun, which the ground, water, plants and haze read, and the clouds round
+    /// the camera, which water mirrors over the clear sky's table.</summary>
+    internal TablePass Maps { get; }
 
     internal CloudTrace Trace { get; }
 
@@ -77,39 +94,54 @@ public sealed class CloudView : IDisposable {
 
     internal double Rotation { get; private set; }
 
-    public CloudView(CelestialBody body, string data, Shader shader, ComputeShader noise, Vector3 sunDirection) {
+    public CloudView(CelestialBody body, Shader shader, ComputeShader noise, Vector3 sunDirection) {
 
         _body = body;
         _radius = (float)(body.Radius / MapSpace.MetresPerUnit);
         _sun = sunDirection.normalized;
         _shadowRight = Vector3.Cross(Mathf.Abs(_sun.y) < 0.99f ? Vector3.up : Vector3.right, _sun).normalized;
         _shadowUp = Vector3.Cross(_sun, _shadowRight);
+        _noise = noise;
+        _weatherKernel = noise.FindKernel("Weather");
 
-        (_weather, _anvils) = Load(Path.Combine(data, "clouds.bin"));
-        _shape = Volume("Cloud Shape", ShapeTexels);
-        _detail = Volume("Cloud Detail", DetailTexels);
-        Generate(noise, "Shape", _shape, ShapeTexels);
-        Generate(noise, "Detail", _detail, DetailTexels);
-        _bound = Volume("Cloud Shape Bound", ShapeTexels);
-        Bound(noise, _shape, _bound);
+        _shape = Generate(noise, "Shape", ShapeTexels);
+        _detail = Generate(noise, "Detail", DetailTexels);
+        _bound = Bound(noise, _shape);
+        _land = Land(body);
+        _weather = new RenderTexture(WeatherWidth, WeatherHeight, 0, GraphicsFormat.R8G8B8A8_UNorm) {
 
-        Shader.SetGlobalTexture(WeatherId, _weather);
-        Shader.SetGlobalTexture(AnvilsId, _anvils);
-        Shader.SetGlobalTexture(ShapeId, _shape);
-        Shader.SetGlobalTexture(DetailId, _detail);
-        Shader.SetGlobalTexture(BoundId, _bound);
+            name = "Cloud Weather",
+            enableRandomWrite = true,
+            wrapModeU = TextureWrapMode.Repeat,
+            wrapModeV = TextureWrapMode.Clamp,
+            filterMode = FilterMode.Bilinear,
+
+        };
+
+        _weather.Create();
+        noise.SetTexture(_weatherKernel, "_Land", _land);
+        noise.SetTexture(_weatherKernel, "_Weather", _weather);
+        noise.SetVector("_WeatherSize", new Vector4(WeatherWidth, WeatherHeight, 1.0f / WeatherWidth, 1.0f / WeatherHeight));
+
+        Shader.SetGlobalTexture("_CloudWeather", _weather);
+        Shader.SetGlobalTexture("_CloudShape", _shape);
+        Shader.SetGlobalTexture("_CloudDetail", _detail);
+        Shader.SetGlobalTexture("_CloudShapeBound", _bound);
         Shader.SetGlobalTexture(SkyId, Texture2D.blackTexture);
         Shader.SetGlobalTexture(ShadowId, Texture2D.whiteTexture);
         Shader.SetGlobalFloat(CloudsOnId, 0.0f);
         Shader.SetGlobalVector(ShadowOriginId, Vector4.zero);
 
         _material = new Material(shader);
-        SkyPass = new CloudSkyPass(_material);
         Trace = new CloudTrace(_material, _radius);
+        Maps = new TablePass(_material,
+            ("Cloud Shadow", ShadowTexels, ShadowTexels, GraphicsFormat.R16G16_SFloat, ShadowPass, ShadowId),
+            ("Cloud Sky", SkyWidth, SkyHeight, GraphicsFormat.R16G16B16A16_SFloat, SkyPass, SkyId));
 
     }
 
-    /// <summary>Turns the clouds with the planet, drifts and churns their noise, and fits their shadow map round <paramref name="camera"/>.</summary>
+    /// <summary>Turns the clouds with the planet, drifts and churns their weather and noise, and fits their shadow map round
+    /// <paramref name="camera"/>.</summary>
     public void Update(double time, Vector3 camera) {
 
         Centre = MapSpace.ToScene(_body.PositionAt(time));
@@ -120,11 +152,29 @@ public sealed class CloudView : IDisposable {
 
         Shader.SetGlobalMatrix(BodyFromSceneId, Matrix4x4.Rotate(toBody));
         Shader.SetGlobalMatrix(NoiseFromSceneId, Matrix4x4.Rotate(Quaternion.AngleAxis((float)(drift * 180.0 / Math.PI), Vector3.up) * toBody));
-        Shader.SetGlobalVector(ShapeOffsetId, Churn(time, ShapeChurn, ShapeTile, new Vector3(0.3f, 1.0f, 0.2f)));
-        Shader.SetGlobalVector(DetailOffsetId, Churn(time, DetailChurn, DetailTile, new Vector3(0.5f, 1.0f, -0.3f)));
+        Shader.SetGlobalVector(ShapeOffsetId, Churn(time * ShapeChurn / MapSpace.MetresPerUnit, ShapeTile, new Vector3(0.3f, 1.0f, 0.2f)));
+        Shader.SetGlobalVector(DetailOffsetId, Churn(time * DetailChurn / MapSpace.MetresPerUnit, DetailTile, new Vector3(0.5f, 1.0f, -0.3f)));
         Shader.SetGlobalFloat(CloudsOnId, Enabled ? 1.0f : 0.0f);
 
+        Forecast(time, drift, toBody * _sun);
         FitShadow(camera);
+
+    }
+
+    private void Forecast(double time, double drift, Vector3 sun) {
+
+        if (Math.Abs(time - _forecast) < WeatherInterval) {
+
+            return;
+
+        }
+
+        _forecast = time;
+        _noise.SetFloat("_WeatherDrift", (float)drift);
+        _noise.SetVector("_WeatherChurn", Churn(time * ChurnRate, 1.0, new Vector3(0.6f, 0.3f, 0.75f)));
+        _noise.SetFloat("_WeatherPhase", (float)Wrap(time / CycloneCycle, 1.0));
+        _noise.SetVector("_WeatherSun", sun);
+        _noise.Dispatch(_weatherKernel, WeatherWidth / 8, WeatherHeight / 8, 1);
 
     }
 
@@ -153,9 +203,8 @@ public sealed class CloudView : IDisposable {
 
     }
 
-    private static Vector4 Churn(double time, double speed, double tile, Vector3 direction) {
-
-        double distance = time * speed / MapSpace.MetresPerUnit;
+    // An offset that has travelled distance along direction, wrapped to the tile.
+    private static Vector4 Churn(double distance, double tile, Vector3 direction) {
 
         return new Vector4((float)Wrap(distance * direction.x, tile), (float)Wrap(distance * direction.y, tile), (float)Wrap(distance * direction.z, tile), 0.0f);
 
@@ -163,62 +212,51 @@ public sealed class CloudView : IDisposable {
 
     private static double Wrap(double value, double period) => value - Math.Floor(value / period) * period;
 
-    private static (Texture2D Weather, Texture2D Anvils) Load(string path) {
+    // Land share and ground height round the body, row 0 at the north pole and column 0 at 180 W, as the weather is laid out.
+    private static Texture2D Land(CelestialBody body) {
 
-        if (!File.Exists(path)) {
+        byte[] texels = new byte[LandWidth * LandHeight * 2];
 
-            throw new InvalidOperationException("Terra's weather is not baked; run tools/terra.sh");
+        if (body.Terrain is { } terrain) {
 
-        }
+            double footprint = 2.0 * Math.PI * body.Radius / LandWidth;
 
-        using BinaryReader reader = new BinaryReader(File.OpenRead(path));
+            Parallel.For(0, LandHeight, row => {
 
-        int magic = reader.ReadInt32();
-        int rows = reader.ReadInt32();
-        int columns = reader.ReadInt32();
-        int channels = reader.ReadInt32();
+                double latitude = Math.PI * (0.5 - (row + 0.5) / LandHeight);
 
-        if (magic != Magic || channels != Channels) {
+                for (int column = 0; column < LandWidth; column++) {
 
-            throw new InvalidDataException($"{path} is not a cloud bake; rebake it with tools/terra.sh");
+                    double longitude = Math.PI * (2.0 * (column + 0.5) / LandWidth - 1.0);
+                    Vector3d direction = new Vector3d(Math.Cos(latitude) * Math.Cos(longitude), Math.Cos(latitude) * Math.Sin(longitude), Math.Sin(latitude));
+                    int texel = 2 * (row * LandWidth + column);
 
-        }
+                    texels[texel] = double.IsNaN(terrain.WaterLevelAt(direction, footprint)) ? (byte)255 : (byte)0;
+                    texels[texel + 1] = (byte)Math.Clamp(terrain.HeightAt(direction, footprint) / LandHeightRange * 255.0, 0.0, 255.0);
 
-        byte[] cells = reader.ReadBytes(rows * columns * Channels);
-        byte[] low = new byte[rows * columns * 4];
-        byte[] anvils = new byte[rows * columns * 4];
+                }
 
-        for (int i = 0; i < rows * columns; i++) {
-
-            Buffer.BlockCopy(cells, i * Channels, low, i * 4, 4);
-            Buffer.BlockCopy(cells, i * Channels + 4, anvils, i * 4, 4);
+            });
 
         }
 
-        return (Weather("Cloud Weather", columns, rows, low), Weather("Cloud Anvils", columns, rows, anvils));
+        Texture2D land = new Texture2D(LandWidth, LandHeight, TextureFormat.RG16, false, true) {
 
-    }
-
-    // Row 0 is the north edge and sits at v = 0, as the shaders read it.
-    private static Texture2D Weather(string name, int width, int height, byte[] texels) {
-
-        Texture2D texture = new Texture2D(width, height, TextureFormat.RGBA32, true, true) {
-
-            name = name,
+            name = "Cloud Land",
             wrapModeU = TextureWrapMode.Repeat,
             wrapModeV = TextureWrapMode.Clamp,
-            filterMode = FilterMode.Trilinear,
+            filterMode = FilterMode.Bilinear,
 
         };
 
-        texture.SetPixelData(texels, 0);
-        texture.Apply(true, true);
+        land.SetPixelData(texels, 0);
+        land.Apply(false, true);
 
-        return texture;
+        return land;
 
     }
 
-    private static RenderTexture Volume(string name, int size, bool mips = true) {
+    private static RenderTexture Volume(string name, int size, bool mips) {
 
         RenderTexture volume = new RenderTexture(size, size, 0, GraphicsFormat.R8_UNorm) {
 
@@ -239,49 +277,46 @@ public sealed class CloudView : IDisposable {
 
     }
 
-    private static void Generate(ComputeShader noise, string kernelName, RenderTexture volume, int size) {
+    private static RenderTexture Generate(ComputeShader noise, string kernelName, int size) {
 
+        RenderTexture volume = Volume($"Cloud {kernelName}", size, true);
         int kernel = noise.FindKernel(kernelName);
 
-        noise.SetTexture(kernel, VolumeId, volume);
-        noise.SetInt(SizeId, size);
+        noise.SetTexture(kernel, "_Volume", volume);
+        noise.SetInt("_Size", size);
         noise.Dispatch(kernel, size / 4, size / 4, size / 4);
         volume.GenerateMips();
 
+        return volume;
+
     }
 
-    // The shape's bounds, mip by mip: each level's cell maxima from the level below, spread over their neighbours.
-    private static void Bound(ComputeShader noise, RenderTexture shape, RenderTexture bound) {
+    // The shape's bounds, mip by mip, each level read back from its own copy while the next is drawn.
+    private static RenderTexture Bound(ComputeShader noise, RenderTexture shape) {
 
-        int highest = noise.FindKernel("Highest");
-        int spread = noise.FindKernel("Spread");
-        RenderTexture level = shape;
+        RenderTexture bound = Volume("Cloud Shape Bound", ShapeTexels, true);
+        RenderTexture source = shape;
+        int kernel = noise.FindKernel("Bound");
 
         for (int mip = 0, size = ShapeTexels; size >= 1; mip++, size /= 2) {
 
+            RenderTexture level = Volume("Cloud Shape Bound Level", size, false);
             int groups = Mathf.Max(1, size / 4);
 
-            if (mip > 0) {
-
-                RenderTexture next = Volume("Cloud Shape Highest", size, false);
-
-                noise.SetTexture(highest, SourceId, level);
-                noise.SetTexture(highest, VolumeId, next);
-                noise.SetInt(SizeId, size);
-                noise.Dispatch(highest, groups, groups, groups);
-                Discard(level, shape);
-                level = next;
-
-            }
-
-            noise.SetTexture(spread, SourceId, level);
-            noise.SetTexture(spread, VolumeId, bound, mip);
-            noise.SetInt(SizeId, size);
-            noise.Dispatch(spread, groups, groups, groups);
+            noise.SetTexture(kernel, "_Source", source);
+            noise.SetTexture(kernel, "_Volume", level);
+            noise.SetTexture(kernel, "_Bound", bound, mip);
+            noise.SetInt("_Size", size);
+            noise.SetInt("_Scale", mip == 0 ? 1 : 2);
+            noise.Dispatch(kernel, groups, groups, groups);
+            Discard(source, shape);
+            source = level;
 
         }
 
-        Discard(level, shape);
+        Discard(source, shape);
+
+        return bound;
 
     }
 
@@ -298,11 +333,10 @@ public sealed class CloudView : IDisposable {
 
     public void Dispose() {
 
-        Trace.Dispose();
         UnityEngine.Object.Destroy(_material);
-        UnityEngine.Object.Destroy(_weather);
-        UnityEngine.Object.Destroy(_anvils);
+        UnityEngine.Object.Destroy(_land);
 
+        _weather.Release();
         _shape.Release();
         _detail.Release();
         _bound.Release();

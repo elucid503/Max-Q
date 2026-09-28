@@ -1,17 +1,13 @@
-// The ground's materials: grass, forest floor, soil, sand, rock, scree and snow. Where each lies comes from the land
-// itself: how steep it is, whether it is a crest or a hollow, how high, and world-anchored noise, inside the bounds the
-// satellite's tone sets (vegetated, bare, sandy or snowbound). Near the camera they are textures at two scales, out to
-// 15 km a macro scale of the same textures, and past that the satellite colour, reshaded by the same choice of
-// materials. Each texture is laid stochastically, turned and shifted at random across a lattice, so none shows a repeat.
-// Everything is recoloured by how the satellite pixel differs from the materials its tone implies, so the handover never
-// shifts the colour the ground has from further away, while a cliff in snow still shows as rock, coloured like the bare
-// land around it.
+// The ground's materials: grass, forest floor, soil, sand, rock, scree and snow, each where Biome.hlsl places it from the
+// patch's cover and the lie of the land. Near the camera they are textures at two scales, out to 15 km a macro scale of
+// the same textures, and past that each material's colour alone. Each texture is laid stochastically, turned and shifted
+// at random across a lattice, so none shows a repeat, and recoloured toward its material's colour under the climate, so
+// the handover never shifts the colour the ground has from further away.
 #ifndef MAXQ_GROUND_MATERIALS_INCLUDED
 #define MAXQ_GROUND_MATERIALS_INCLUDED
 
 #include "Ground.hlsl"
 #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Packing.hlsl"
-#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Color.hlsl"
 
 TEXTURE2D_ARRAY(_GroundAlbedo);
 TEXTURE2D_ARRAY(_GroundNormal);
@@ -166,15 +162,6 @@ void StochasticSample(int slice, float2 uv, float2 dx, float2 dy, float lod, int
 
 }
 
-#define GRASS 0
-#define FOREST 1
-#define SOIL 2
-#define SAND 3
-#define ROCK 4
-#define SNOW 5
-#define SCREE 6
-#define MATERIALS 7
-
 // Texture slice of each material, and how many of its repeats fit in one NEAR_TILE: scree is rock broken small. Repeats
 // are powers of two, so the stochastic lattice wraps with a mask.
 static const int Slice[MATERIALS] = { 0, 1, 2, 3, 4, 5, 4 };
@@ -197,16 +184,13 @@ static const float ParallaxDepth[MATERIALS] = { 0.0, 0.0, 0.05, 0.04, 0.08, 0.05
 #define NEAR_TEXELS_PER_METRE (1024.0 / NEAR_TILE)
 
 // Metres from the camera over which the near textures fade into the far ones (past about 40 m the far repeat's texels
-// are as fine as the pixels), the far into the macro scale, and the macro into the satellite.
+// are as fine as the pixels), the far into the macro scale, and the macro into the materials' colours.
 #define FINE_START 30.0
 #define FINE_END 60.0
 #define DETAIL_START 1500.0
 #define DETAIL_END 4000.0
 #define MACRO_START 9000.0
 #define MACRO_END 15000.0
-
-// Forest gives way to grass and soil around this altitude (metres on Terra: about 2 km on Earth).
-#define TREE_LINE 420.0
 
 struct Layer {
 
@@ -322,21 +306,6 @@ Layer Triplanar(int slice, Tiling tiling, bool stochastic, bool stochasticNormal
 
 }
 
-// Each material's mean linear albedo: the mean of its texture, taken from Art/Ground; update it with the textures.
-static const float3 Averages[MATERIALS] = {
-
-    float3(0.0999, 0.1263, 0.0275), float3(0.3192, 0.2964, 0.1071), float3(0.1728, 0.1314, 0.0759),
-    float3(0.5872, 0.4684, 0.2853), float3(0.0729, 0.0683, 0.0576), float3(0.6942, 0.8120, 0.9188),
-    float3(0.0729, 0.0683, 0.0576),
-
-};
-
-float3 Average(int material) {
-
-    return Averages[material];
-
-}
-
 // Where a spot, metres from the patch centre, falls in a scale's repeats and how far that moves across the pixel.
 Tiling TilingOf(float3 metres, float3 dx, float3 dy, float tile, float4 origin, int repeats, uint seed) {
 
@@ -384,7 +353,7 @@ Layer SampleMaterial(int material, float3 metres, float3 macroMetres, float3 dx,
     float detail, float fine) {
 
     int slice = Slice[material];
-    float3 average = Average(material);
+    float3 average = Averages[material];
     float4 mean = float4(average, 0.5);
     Tiling macroTiling = Blurred(TilingOf(macroMetres, dx, dy, MACRO_TILE, _TileOriginMacro, 1, LayoutSeed(material, 0)));
     Layer macro = Triplanar(slice, macroTiling, false, false, mean, normalOS, sharpWeights, sampler_trilinear_repeat);
@@ -446,148 +415,6 @@ float2 GroundNoise(float3 metres, float3 upOS, float footprint) {
 
 }
 
-// Convexity is how much more sky a spot sees than a plane of its slope would: negative in hollows, near zero on crests
-// and plains. The horizon occlusion measures it at every scale from the stones to the valley walls. Beach is how far a
-// spot lies in the band just over the water that waves and wind keep bare.
-struct Terrain {
-
-    float upness;
-    float convexity;
-    float altitude;
-    float2 noise;
-    float beach;
-
-};
-
-// Metres over the water that a beach reaches: a sea's surf and storms reach far up the shore, a lake's hardly, and a
-// river's banks, grassed to the water, not at all.
-#define SEA_BEACH 1.0
-#define LAKE_BEACH 0.3
-
-// How far a spot lies in the beach band, above water metres over the nearest sheet (negative under it), at altitude, by
-// water whose current runs at flow m/s.
-float BeachAt(float aboveWater, float altitude, float flow) {
-
-    float rise = lerp(SEA_BEACH, LAKE_BEACH, saturate(altitude / 5.0)) * saturate(1.0 - flow / 0.2);
-
-    return saturate(1.0 - aboveWater / max(rise, 1e-3)) * (rise > 1e-3);
-
-}
-
-// How much each material suits a spot. The satellite's tone (sRGB-encoded, as the thresholds were read off the imagery)
-// says what the land is; the terrain says where on it each material lies: rock on steep ground and bare crests, scree on
-// the steep hollows below it, snow where it can hold, forest below the tree line.
-void MaterialWeights(float3 tone, Terrain terrain, out float weights[MATERIALS]) {
-
-    float sum = max(tone.r + tone.g + tone.b, 1e-4);
-    float luma = dot(tone, float3(0.2126, 0.7152, 0.0722));
-    float chroma = (max(tone.r, max(tone.g, tone.b)) - min(tone.r, min(tone.g, tone.b))) / max(max(tone.r, max(tone.g, tone.b)), 1e-4);
-    float2 n = terrain.noise - 0.5;
-
-    // Noise moves each threshold, so borders between materials follow the land instead of the satellite's pixels.
-    float vegetation = saturate((tone.g / sum - 0.36 + 0.02 * n.y) / 0.08);
-    // At the satellite's half-kilometre pixels forest and meadow differ only in how dark they are (forest about 0.14 in
-    // luminance, meadow and crops 0.16 to 0.25), so darkness sets the odds of forest and broad noise lays it out as
-    // woods and clearings.
-    float canopy = saturate((0.19 - luma) / 0.05 + 1.2 * n.y + 0.4 * n.x);
-    float bright = saturate((luma - 0.18) / 0.15 + 0.3 * n.x);
-    float snow = saturate((luma - 0.40) / 0.15 + 0.4 * n.y) * saturate(1.0 - chroma * 3.0);
-    float bare = saturate(1.0 - chroma * 4.0) * (1.0 - vegetation);
-
-    // Grass and scrub hold to about 45 degrees, bare ground weathers to rock from about 35.
-    float steep = saturate((lerp(0.8, 0.7, vegetation) + 0.1 * n.x - terrain.upness) / 0.1);
-    float cliff = saturate((0.56 + 0.08 * n.x - terrain.upness) / 0.1);
-    float crest = saturate(terrain.convexity * 30.0 + n.x);
-    float hollow = saturate(-terrain.convexity * 15.0 - 0.3 + n.x);
-    float scree = saturate((terrain.upness - 0.62) / 0.08) * saturate((0.93 - terrain.upness) / 0.08) * hollow;
-    float alpine = smoothstep(TREE_LINE - 40.0, TREE_LINE + 40.0, terrain.altitude + 80.0 * n.y);
-
-    canopy *= 1.0 - alpine;
-    snow *= saturate((terrain.upness - 0.6) / 0.12) * (1.0 - 0.5 * crest);
-
-    weights[GRASS] = vegetation * (1.0 - canopy) * (1.0 - 0.4 * crest);
-    weights[FOREST] = vegetation * canopy;
-    weights[SOIL] = (1.0 - vegetation) * (1.0 - bright) * 0.8 + vegetation * 0.35 * crest * (1.0 - canopy);
-    weights[SAND] = (1.0 - vegetation) * bright * saturate((tone.r / sum - 0.36) / 0.06);
-    weights[ROCK] = max(max(steep, cliff), bare * max(0.6 * crest, 0.35));
-    weights[SNOW] = snow * 2.0;
-    weights[SCREE] = scree * (1.0 - 0.7 * vegetation) * (1.0 - snow) * 1.4;
-
-    for (int i = 0; i < MATERIALS; i++) {
-
-        if (i != ROCK && i != SCREE) {
-
-            weights[i] *= 1.0 - steep;
-
-        }
-
-    }
-
-    weights[SCREE] *= 1.0 - cliff;
-
-    // The satellite's half-kilometre pixels never see a beach: flat ground in the band is sand, save under snow.
-    float beach = terrain.beach * saturate((terrain.upness - 0.9) / 0.05) * (1.0 - snow);
-
-    for (int j = 0; j < MATERIALS; j++) {
-
-        weights[j] *= 1.0 - beach;
-
-    }
-
-    weights[SAND] += 1.5 * beach;
-
-}
-
-// Rock takes the colour of the bare land around it, as cliffs weather to the colour of their ground: red in sandstone
-// country, pale on limestone, dark where the satellite sees dark ground, with the hue muted and the brightness kept to
-// what rock has. Under vegetation or snow the satellite shows no rock, which is then a weathered grey. Tone is the
-// satellite's, sRGB-encoded, as MaterialWeights reads it.
-#define ROCK_GREY float3(0.15, 0.14, 0.125)
-
-float3 RockColour(float3 tone) {
-
-    float sum = max(tone.r + tone.g + tone.b, 1e-4);
-    float vegetation = saturate((tone.g / sum - 0.36) / 0.08);
-    float snow = saturate((dot(tone, float3(0.2126, 0.7152, 0.0722)) - 0.40) / 0.15);
-    float3 land = SRGBToLinear(tone);
-    float brightness = max(Luminance(land), 1e-3);
-    float3 hue = lerp(1.0, land / brightness, 0.7);
-
-    return lerp(ROCK_GREY, hue * clamp(0.9 * brightness, 0.08, 0.35), (1.0 - vegetation) * (1.0 - snow));
-
-}
-
-// Mean colour of a material, rock and scree taking the site's.
-float3 MaterialColour(int material, float3 rock) {
-
-    return material == ROCK || material == SCREE ? rock : Average(material);
-
-}
-
-// How far a material's textures are recoloured from their own mean: rock and scree toward the site's rock.
-float3 Tint(int material, float3 rock) {
-
-    return material == ROCK || material == SCREE ? rock / Average(ROCK) : 1.0;
-
-}
-
-// The mean colour of materials in these proportions.
-float3 Palette(float weights[MATERIALS], float3 rock) {
-
-    float3 colour = 0.0;
-    float total = 0.0;
-
-    for (int i = 0; i < MATERIALS; i++) {
-
-        colour += MaterialColour(i, rock) * weights[i];
-        total += weights[i];
-
-    }
-
-    return colour / max(total, 1e-4);
-
-}
-
 // Snow grains big enough to mirror the sun: one cell in eight, each a 1024th of the far repeat, holds a facet tipped
 // at random up to 20 degrees off the surface, which flashes when it turns the sun to the eye. Once cells shrink below a
 // pixel they blend into the sheen instead.
@@ -623,11 +450,13 @@ float Glitter(float3 metres, float3 normalWS, float3 toCamera, float footprint) 
 
 }
 
+// The ground's albedo, normal and share of snow at a pixel, and the colour its surroundings bounce light in.
 struct GroundSurface {
 
     float3 albedo;
     float3 normalWS;
     float snow;
+    float3 surroundings;
 
 };
 
@@ -684,78 +513,17 @@ float3 Parallax(int material, float3 metres, float3 normalOS, float3 planes, flo
 
 }
 
-// The materials that suit a spot, the colour its rock takes, and the recolouring toward its satellite pixel.
-struct GroundSite {
-
-    float weights[MATERIALS];
-    float3 rock;
-    float3 transfer;
-
-};
-
-// Share of the ground a material has at a site.
-float Share(GroundSite site, int material) {
-
-    float total = 0.0;
-
-    for (int i = 0; i < MATERIALS; i++) {
-
-        total += site.weights[i];
-
-    }
-
-    return site.weights[material] / max(total, 1e-4);
-
-}
-
-// A spot at metres (object space) on ground that faces upness of the way up, sees occlusion of the sky, and stands at
-// altitude metres, aboveWater over the nearest sheet whose current runs at flow m/s, under a satellite pixel of colour
-// satellite and tone tone, seen by pixels footprint metres across; upOS is the way up in object space.
-GroundSite Site(float3 satellite, float3 tone, float3 metres, float3 upOS, float upness, float occlusion, float altitude, float aboveWater,
-    float flow, float footprint) {
-
-    Terrain terrain;
-    terrain.upness = upness;
-    terrain.convexity = occlusion - (1.0 - 0.5 * (1.0 - upness * upness));
-    terrain.altitude = altitude;
-    terrain.noise = GroundNoise(metres, upOS, footprint);
-    terrain.beach = BeachAt(aboveWater, altitude, flow);
-
-    GroundSite site;
-    MaterialWeights(tone, terrain, site.weights);
-    site.rock = RockColour(tone);
-
-    // What the satellite pixel implies from its tone alone, on level, unremarkable ground: the materials' departure
-    // from it becomes the recolouring.
-    Terrain level;
-    level.upness = 1.0;
-    level.convexity = 0.0;
-    level.altitude = 0.0;
-    level.noise = 0.5;
-    level.beach = 0.0;
-
-    float implied[MATERIALS];
-    MaterialWeights(tone, level, implied);
-
-    site.transfer = lerp(1.0, clamp(satellite / max(Palette(implied, site.rock), 1e-3), 0.25, 4.0), 0.8);
-
-    // A beach keeps its sand's own colour: the satellite pixel it falls in is the land or the water beside it.
-    site.transfer = lerp(site.transfer, 1.0, 0.8 * Share(site, SAND) * terrain.beach);
-
-    return site;
-
-}
-
 // Past the trees drawn near the camera, forest is a canopy: domed crowns on a jittered grid, CROWNS to a macro repeat
-// (8.5 m apart), sunlit on top and dark in the gaps between them, in the satellite's own colour, which is what a forest
-// looks like from above. Where crowns shrink below a few pixels only their mean shade is left.
+// (8.5 m apart), sunlit on top and dark in the gaps between them, in the canopy's colour, which is what a forest looks
+// like from above. Where crowns shrink below a few pixels only their mean shade is left. Share is the forest's share of
+// the ground.
 #define CANOPY_START 250.0
 #define CANOPY_FULL 600.0
 #define CROWNS 18.0
 
-void Canopy(inout GroundSurface surface, GroundSite site, float3 satellite, float3 metres, float3 upOS, float distance, float footprint) {
+void Canopy(inout GroundSurface surface, float share, float3 canopy, float3 metres, float3 upOS, float distance, float footprint) {
 
-    float cover = Share(site, FOREST) * smoothstep(CANOPY_START, CANOPY_FULL, distance);
+    float cover = share * smoothstep(CANOPY_START, CANOPY_FULL, distance);
 
     UNITY_BRANCH
     if (cover <= 0.01) {
@@ -805,7 +573,7 @@ void Canopy(inout GroundSurface surface, GroundSite site, float3 satellite, floa
 
     float lit = lerp(0.9, lerp(0.45, 1.15, saturate(crown * 1.5)) * shade, resolved);
 
-    surface.albedo = lerp(surface.albedo, satellite * lit, cover);
+    surface.albedo = lerp(surface.albedo, canopy * lit, cover);
     surface.normalWS = normalize(lerp(surface.normalWS, crownNormal, cover * resolved));
 
 }
@@ -814,34 +582,45 @@ void Canopy(inout GroundSurface surface, GroundSite site, float3 satellite, floa
 // screen-space derivatives are defined.
 GroundSurface GroundMaterial(GroundVaryings input, GroundDetail detail, float3 up, float footprint, float3 dx, float3 dy) {
 
-    float3 satellite = SatelliteColour(input.uv);
     float3 metres = input.positionOS * 1000.0;
+    float3 upOS = TransformWorldToObjectDir(up);
     float distance = length(input.positionWS - _WorldSpaceCameraPos) * 1000.0;
     float altitude = (length(input.positionWS - _PlanetCentre) - _PlanetRadius) * 1000.0;
+    float warmth = Warmth(up, altitude);
+    GroundCover cover = SampleCover(input.uv, input.morph);
 
-    GroundSite site = Site(satellite, LinearToSRGB(SatelliteTone(input.uv)), metres, TransformWorldToObjectDir(up), dot(detail.normalWS, up),
-        detail.occlusion, altitude,
-        -detail.waterDepth, length(SampleWaterDetail(input.uv, input.morph).flow), footprint);
-    float3 transfer = site.transfer;
+    Lie lie;
+    lie.upness = dot(detail.normalWS, up);
+    lie.convexity = detail.occlusion - (1.0 - 0.5 * (1.0 - lie.upness * lie.upness));
+    lie.noise = GroundNoise(metres, upOS, footprint);
+    lie.beach = BeachAt(-detail.waterDepth, altitude);
+
     float weights[MATERIALS];
+    float total = 0.0;
+
+    MaterialWeights(cover, lie, weights);
 
     for (int m = 0; m < MATERIALS; m++) {
 
-        weights[m] = site.weights[m];
+        total += weights[m];
 
     }
 
+    float forest = weights[FOREST] / max(total, 1e-4);
+    float3 canopy = MaterialColour(FOREST, cover, warmth);
+
     GroundSurface surface;
-    surface.albedo = Palette(weights, site.rock) * transfer;
+    surface.albedo = Palette(weights, cover, warmth);
+    surface.surroundings = surface.albedo;
     surface.normalWS = detail.normalWS;
-    surface.snow = Share(site, SNOW);
+    surface.snow = weights[SNOW] / max(total, 1e-4);
 
     float macro = 1.0 - smoothstep(MACRO_START, MACRO_END, distance);
 
     UNITY_BRANCH
     if (macro <= 0.0) {
 
-        Canopy(surface, site, satellite, metres, TransformWorldToObjectDir(up), distance, footprint);
+        Canopy(surface, forest, canopy, metres, upOS, distance, footprint);
 
         return surface;
 
@@ -896,7 +675,7 @@ GroundSurface GroundMaterial(GroundVaryings input, GroundDetail detail, float3 u
     float bb = max(hb - top, 0.0);
     float blend = ba / max(ba + bb, 1e-4);
 
-    float3 albedo = lerp(b.albedo * Tint(second, site.rock), a.albedo * Tint(first, site.rock), blend) * transfer;
+    float3 albedo = lerp(b.albedo * Tint(second, cover, warmth), a.albedo * Tint(first, cover, warmth), blend);
     float3 normalOS = normalize(lerp(b.normalOS, a.normalOS, blend));
     float snow = (first == SNOW ? blend : 0.0) + (second == SNOW ? 1.0 - blend : 0.0);
 
@@ -904,7 +683,7 @@ GroundSurface GroundMaterial(GroundVaryings input, GroundDetail detail, float3 u
     surface.normalWS = normalize(lerp(detail.normalWS, TransformObjectToWorldNormal(normalOS), macro));
     surface.snow = lerp(surface.snow, snow, macro);
 
-    Canopy(surface, site, satellite, metres, TransformWorldToObjectDir(up), distance, footprint);
+    Canopy(surface, forest, canopy, metres, upOS, distance, footprint);
 
     return surface;
 

@@ -1,7 +1,5 @@
-// The eye's adaptation: a histogram of the frame's luminance, trimmed of its darkest and brightest pixels, sets the
-// exposure the next frame's composite applies, but never so high that the frame's highlights (a planet's sunlit side
-// against space, a sunlit peak above a shaded valley) burn out. The sun's disk falls outside the trimmed range. Above
-// the air the eye keeps to daylight exposure, as photographs from orbit do: a dark ocean is dark, not grey.
+// Eye adaptation: a trimmed histogram of the frame sets the next frame's exposure, never so high the highlights burn
+// out; above the air it keeps to daylight's, as photographs from orbit do.
 #pragma kernel Histogram
 #pragma kernel Adapt
 

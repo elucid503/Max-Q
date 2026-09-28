@@ -8,16 +8,12 @@ namespace MaxQ.Sim.Tests.Ocean;
 
 public sealed class SpectrumTests {
 
-    private static SeaConditions Open(double wind, double seaHeight, double seaPeriod, double swellHeight = 0.0, double swellPeriod = 12.0) => new SeaConditions {
+    private static SeaConditions Open(double seaHeight, double seaPeriod, double swellHeight = 0.0, double swellPeriod = 12.0) => new SeaConditions {
 
-        WindEast = wind,
-        WindSpeed = wind,
         SeaHeight = seaHeight,
         SeaPeriod = seaPeriod,
-        SeaEast = 1.0,
         SwellHeight = swellHeight,
         SwellPeriod = swellPeriod,
-        SwellEast = 1.0,
 
     };
 
@@ -83,20 +79,6 @@ public sealed class SpectrumTests {
 
     }
 
-    [Test]
-    public void EveryFrequencyRepeatsInTheLoop() {
-
-        foreach (double k in new[] { 0.004, 0.1, 3.0, 400.0 }) {
-
-            double cycles = Spectrum.LoopFrequency(k) * Spectrum.LoopSeconds / (2.0 * Math.PI);
-
-            Assert.That(cycles, Is.EqualTo(Math.Round(cycles)).Within(1e-9));
-            Assert.That(cycles, Is.GreaterThanOrEqualTo(1.0));
-
-        }
-
-    }
-
     [TestCase(0.3)]
     [TestCase(1.0)]
     [TestCase(1.3)]
@@ -123,7 +105,7 @@ public sealed class SpectrumTests {
     [Test]
     public void TheSpectrumHoldsTheRequestedHeight() {
 
-        Spectrum spectrum = Spectrum.For(Open(12.0, 2.5, 8.0, 1.5, 13.0), 0.0, 0.4);
+        Spectrum spectrum = Spectrum.For(Open(2.5, 8.0, 1.5, 13.0), 0.0, 0.4);
 
         Assert.That(spectrum.SignificantHeight, Is.EqualTo(Math.Sqrt(2.5 * 2.5 + 1.5 * 1.5)).Within(0.01));
         Assert.That(4.0 * Math.Sqrt(Variance(spectrum)), Is.EqualTo(spectrum.SignificantHeight).Within(0.03 * spectrum.SignificantHeight));
@@ -133,46 +115,31 @@ public sealed class SpectrumTests {
     [Test]
     public void ShortFetchHoldsTheSeaDown() {
 
-        // Hasselmann's growth law: 10 m/s over 10 km raises about half a metre, whatever the open sea outside holds.
-        Spectrum spectrum = Spectrum.For(Spectrum.Sheltered(Open(10.0, 3.0, 9.0), 10_000.0, 10_000.0), 0.0, 0.0);
+        // Hasselmann's growth law: 10 m/s over 10 km raises about half a metre.
+        double height = Spectrum.WindSea(10.0, 10_000.0, out double period);
         double expected = 0.0016 * Math.Sqrt(Spectrum.Gravity * 10_000.0 / 100.0) * 100.0 / Spectrum.Gravity;
 
-        Assert.That(spectrum.SignificantHeight, Is.EqualTo(expected).Within(0.02 * expected));
+        Spectrum.WindSea(10.0, double.PositiveInfinity, out double openPeriod);
+
+        Assert.That(height, Is.EqualTo(expected).Within(1e-9));
+        Assert.That(period, Is.LessThan(0.6 * openPeriod));
 
     }
 
     [Test]
-    public void OpenWaterTakesTheClimatologysSea() {
+    public void TheOpenOceanRaisesPiersonAndMoskowitzsSea() {
 
-        Spectrum spectrum = Spectrum.For(Spectrum.Sheltered(Open(10.0, 1.8, 7.0), 1e7, 1e7), 0.0, 0.0);
+        double height = Spectrum.WindSea(10.0, double.PositiveInfinity, out double period);
 
-        Assert.That(spectrum.SignificantHeight, Is.EqualTo(1.8).Within(0.01));
-
-    }
-
-    [Test]
-    public void SwellReachesOnlyWaterOpenToIt() {
-
-        SeaConditions calm = Open(0.5, 0.0, 3.0, 2.0, 14.0);
-
-        Assert.That(Spectrum.Sheltered(calm, 1e7, 1e7).SwellHeight, Is.EqualTo(2.0));
-        Assert.That(Spectrum.Sheltered(calm, 1e7, 1_000.0).SwellHeight, Is.EqualTo(0.0));
-
-    }
-
-    [Test]
-    public void IceStillsTheSea() {
-
-        SeaConditions frozen = Open(10.0, 2.0, 7.0, 1.0, 12.0) with { Ice = 1.0 };
-
-        Assert.That(Spectrum.For(frozen, 0.0, 0.0).SignificantHeight, Is.EqualTo(0.0));
+        Assert.That(height, Is.EqualTo(0.21 * 100.0 / Spectrum.Gravity).Within(0.05 * height));
+        Assert.That(period, Is.EqualTo(2.0 * Math.PI * 10.0 / (0.877 * Spectrum.Gravity)).Within(0.01 * period));
 
     }
 
     [Test]
     public void WavesRunWithTheirHeading() {
 
-        Spectrum spectrum = Spectrum.For(Open(10.0, 1.8, 7.0), 0.5 * Math.PI, 0.0);
+        Spectrum spectrum = Spectrum.For(Open(1.8, 7.0), 0.5 * Math.PI, 0.0);
         double k = Math.Pow(2.0 * Math.PI / 7.0, 2.0) / Spectrum.Gravity;
 
         Assert.That(spectrum.Density(0.0, k), Is.GreaterThan(10.0 * spectrum.Density(0.0, -k)));

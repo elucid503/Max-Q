@@ -11,8 +11,8 @@ namespace MaxQ.Game.Planet.Ground;
 
 /// <summary>Draws the rocks the ground's patches strew: a dozen procedural stones in three families (rounded, angular and
 /// slabby), each in a near and a far detail. Every shape shares one topology, so each patch's rocks draw in one indexed
-/// procedural call per detail, and the shader takes their colour from the patch's satellite tile. Rocks shrink away
-/// short of a distance that grows with their size, so none pops out.</summary>
+/// procedural call per detail, and the shader colours them by the climate each carries. Rocks shrink away short of a
+/// distance that grows with their size, so none pops out.</summary>
 public sealed class Rocks : IDisposable {
 
     private const int Shapes = 12;
@@ -27,8 +27,6 @@ public sealed class Rocks : IDisposable {
     private static readonly int InstancesId = Shader.PropertyToID("_RockInstances");
     private static readonly int ShapeVerticesId = Shader.PropertyToID("_RockShapeVertices");
     private static readonly int OffsetId = Shader.PropertyToID("_RockInstanceOffset");
-    private static readonly int ColourId = Shader.PropertyToID("_Colour");
-    private static readonly int ColourRectId = Shader.PropertyToID("_ColourRect");
 
     private sealed class Detail {
 
@@ -43,8 +41,6 @@ public sealed class Rocks : IDisposable {
         public Detail Detail;
         public int Offset;
         public int Count;
-        public Texture Colour;
-        public Vector4 Rect;
         public Bounds Bounds;
 
     }
@@ -68,17 +64,17 @@ public sealed class Rocks : IDisposable {
     }
 
     /// <summary>Queues one patch's rocks, the patch standing at <paramref name="position"/> turned by
-    /// <paramref name="rotation"/> and coloured by its satellite tile, as seen from <paramref name="camera"/>.</summary>
-    public void Add(float4[] rocks, Texture colour, Vector4 rect, Vector3 position, Quaternion rotation, Vector3 camera) {
+    /// <paramref name="rotation"/>, as seen from <paramref name="camera"/>.</summary>
+    public void Add(float4[] rocks, Vector3 position, Quaternion rotation, Vector3 camera) {
 
-        AddDetail(_near, rocks, colour, rect, position, rotation, camera);
-        AddDetail(_far, rocks, colour, rect, position, rotation, camera);
+        AddDetail(_near, rocks, position, rotation, camera);
+        AddDetail(_far, rocks, position, rotation, camera);
 
     }
 
-    private void AddDetail(Detail detail, float4[] rocks, Texture colour, Vector4 rect, Vector3 position, Quaternion rotation, Vector3 camera) {
+    private void AddDetail(Detail detail, float4[] rocks, Vector3 position, Quaternion rotation, Vector3 camera) {
 
-        Batch batch = new Batch { Detail = detail, Offset = _count, Colour = colour, Rect = rect };
+        Batch batch = new Batch { Detail = detail, Offset = _count };
 
         for (int i = 0; i < rocks.Length / 3 && _count < Capacity; i++) {
 
@@ -149,8 +145,6 @@ public sealed class Rocks : IDisposable {
             block.SetBuffer(InstancesId, _instances);
             block.SetInt(ShapeVerticesId, batch.Detail.ShapeVertices);
             block.SetInt(OffsetId, batch.Offset);
-            block.SetTexture(ColourId, batch.Colour);
-            block.SetVector(ColourRectId, batch.Rect);
 
             RenderParams parameters = new RenderParams(_material) {
 

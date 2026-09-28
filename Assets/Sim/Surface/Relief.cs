@@ -9,9 +9,9 @@ namespace MaxQ.Sim.Surface;
 /// says the land is, and on steep ground, bands of cliff over aprons of scree.</summary>
 public static class Relief {
 
-    // The survey carries everything above ~185 m; detail starts just below that and halves down to a metre.
-    private const double LongestWavelength = 256.0;
-    private const int Octaves = 9;
+    // The survey carries everything above ~2 km; detail starts just below that and halves down to a metre.
+    private const double LongestWavelength = 2_048.0;
+    private const int Octaves = 12;
 
     // Gullies are cut at the longer octaves only; below a few metres rolling noise alone roughens the ground.
     private const int GullyOctaves = 7;
@@ -95,7 +95,7 @@ public static class Relief {
 
     }
 
-    /// <summary>Gradient noise in roughly [-1, 1], continuous in value and slope.</summary>
+    /// <summary>Gradient noise in [-1, 1], continuous in value and slope.</summary>
     public static double Noise(double x, double y, double z, uint seed) {
 
         double fx = Math.Floor(x);

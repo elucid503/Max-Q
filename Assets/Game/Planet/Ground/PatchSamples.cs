@@ -9,7 +9,7 @@ namespace MaxQ.Game.Planet.Ground;
 
 /// <summary>What one patch build gathers across the workers before it assembles, kept between builds so none allocates:
 /// the vertex grid and the ring of ground around it that the horizons search, the parent's posts the vertices morph
-/// toward, the detail texture's finer grid and the water depth under it, the water detail, and the rocks and trees placed.</summary>
+/// toward, the detail texture's finer grid and the water depth under it, and the plants and rocks strewn.</summary>
 internal sealed class PatchSamples : IDisposable {
 
     // The vertex grid with HorizonReach vertices of ground around it; the detail texture's grid with a texel of margin
@@ -25,8 +25,8 @@ internal sealed class PatchSamples : IDisposable {
     public readonly NativeArray<Vector3d> Coarse = new NativeArray<Vector3d>(PatchJob.Vertices * PatchJob.Vertices, Allocator.Persistent);
     public readonly NativeArray<Vector3d> Fine = new NativeArray<Vector3d>(FineSize * FineSize, Allocator.Persistent);
     public readonly NativeArray<double> Depths = new NativeArray<double>(PatchJob.Texels * PatchJob.Texels, Allocator.Persistent);
-    public readonly NativeArray<float4> Rocks = new NativeArray<float4>(3 * PatchStrewJob.RockChances, Allocator.Persistent);
-    public readonly NativeArray<float4> Trees = new NativeArray<float4>(2 * PatchJob.MaxTrees, Allocator.Persistent);
+    public readonly NativeArray<float4> Plants = new NativeArray<float4>(PatchStrewJob.PlantLength, Allocator.Persistent);
+    public readonly NativeArray<float4> Rocks = new NativeArray<float4>(PatchStrewJob.RockLength, Allocator.Persistent);
 
     public void Dispose() {
 
@@ -38,8 +38,8 @@ internal sealed class PatchSamples : IDisposable {
         Coarse.Dispose();
         Fine.Dispose();
         Depths.Dispose();
+        Plants.Dispose();
         Rocks.Dispose();
-        Trees.Dispose();
 
     }
 
