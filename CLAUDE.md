@@ -21,7 +21,9 @@ patched conics, 1/5 Earth scale. Personal project, never distributed. Successor 
     tree places, then the assembled mesh and water sheet with horizon occlusion) so no job runs long, streamed colour
     tiles, ground, seabed and rock shaders; `Ground/Plants/` grass, trees of foliage cards then painted cards, groves strewn by
     coarser levels out to ten kilometres, and `Vegetation` choosing plants on the GPU from the ground's materials;
-    `Sky/` atmosphere tables, RenderGraph passes and eye adaptation; `Water/` seas, lakes and rivers, owned by
+    `Sky/` atmosphere tables, RenderGraph passes and eye adaptation, `Sky/Clouds/` volumetric clouds from one ERA5 hour
+    (quarter-res trace with temporal reprojection, split into the air march for aerial perspective, a shadow map along the
+    sun that `SunShadow` reads, and a sky map water mirrors); `Water/` seas, lakes and rivers, owned by
     `WaterView`: `Waves/` FFT cascades on a body-fixed wave frame, `Surface/` the water pass and sheet shader (sky and
     screen-space reflections, refraction, Jerlov water column, foam, a soft waterline, river flow
     and rapids)),
@@ -32,10 +34,10 @@ patched conics, 1/5 Earth scale. Personal project, never distributed. Successor 
 - `tools/` - `run.sh` runs the game without the editor, rebuilding the player first when sources
   changed (extra args go to the player); `build.sh` builds the player, or runs the sim tests with
   `--tests [results.xml]`. The engine path lives in `build.sh` (override with `UNITY=`). `terra.sh`
-  downloads Terra's sources (ERA5 through `terra_era5.py`; HydroSHEDS and GLOBathy by hand) and bakes them
+  downloads Terra's sources (ERA5 climatology and the clouds' weather hour through `terra_era5.py`; HydroSHEDS and GLOBathy by hand) and bakes them
   (`terra_bake.py`, then BC7 tiles in Unity).
 - `Data/` - gitignored. `Sources/` downloads and bake intermediates; `Terra/` the baked survey
-  (`elevation.i16`, `levels.i16`, `shore.i16`, `coast.i8`, `fetch.u8`, `rivers.bin`, `sea_state.bin`) and colour tiles
+  (`elevation.i16`, `levels.i16`, `shore.i16`, `coast.i8`, `fetch.u8`, `rivers.bin`, `sea_state.bin`, `clouds.bin`) and colour tiles
   (`colour.tiles`) the game streams at runtime.
 
 Group by feature, not by file type: a feature's code, shader and stylesheet live together. When a

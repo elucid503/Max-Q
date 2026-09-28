@@ -1,8 +1,10 @@
-"""Download the ERA5 monthly means Terra's sea state is baked from into Data/Sources/era5.
+"""Download the ERA5 fields Terra is baked from into Data/Sources/era5.
 
-One NetCDF per variable: every month of 1991-2020 (the WMO normal) on the 0.5 degree wave grid. Needs a Copernicus
-CDS account whose token is in ~/.cdsapirc, and the dataset licence accepted once on its web page. Each file is
-skipped once present, so a rerun resumes.
+Sea state: one NetCDF per variable, every month of 1991-2020 (the WMO normal) on the 0.5 degree wave grid.
+Weather: one hour (WEATHER_HOUR, a June day to match the Blue Marble colour) on the native 0.25 degree grid, the low
+cloud, its base, convection and the ground's height from the single levels, and cloud cover on pressure levels (~60 MB).
+Needs a Copernicus CDS account whose token is in ~/.cdsapirc, and each dataset's licence accepted once on its web page.
+Each file is skipped once present, so a rerun resumes.
 """
 
 import os
@@ -24,6 +26,38 @@ VARIABLES = {
     "mdts": "mean_direction_of_total_swell",
     "siconc": "sea_ice_cover",
 }
+
+WEATHER_HOUR = {"year": ["2019"], "month": ["06"], "day": ["21"], "time": ["12:00"]}
+
+WEATHER_SINGLE = [
+    "low_cloud_cover",
+    "cloud_base_height",
+    "convective_available_potential_energy",
+    "convective_precipitation",
+    "geopotential",
+]
+
+# Pressure levels the cloud columns are traced through, hPa.
+WEATHER_LEVELS = ["1000", "950", "925", "900", "850", "800", "700", "600", "500", "400", "300", "250", "200", "150"]
+
+
+def retrieve(client, dataset, request, path):
+
+    if os.path.exists(path):
+
+        return
+
+    print(f"requesting {os.path.basename(path)}", flush=True)
+    client.retrieve(dataset, request, path + ".part")
+    os.replace(path + ".part", path)
+
+
+def weather(client):
+
+    common = {"product_type": ["reanalysis"], **WEATHER_HOUR, "data_format": "netcdf", "download_format": "unarchived"}
+    retrieve(client, "reanalysis-era5-single-levels", {**common, "variable": WEATHER_SINGLE}, os.path.join(OUT, "weather_single.nc"))
+    retrieve(client, "reanalysis-era5-pressure-levels", {**common, "variable": ["fraction_of_cloud_cover"], "pressure_level": WEATHER_LEVELS},
+             os.path.join(OUT, "weather_levels.nc"))
 
 
 def main():
@@ -51,6 +85,8 @@ def main():
             "download_format": "unarchived",
         }, path + ".part")
         os.replace(path + ".part", path)
+
+    weather(client)
 
 
 if __name__ == "__main__":

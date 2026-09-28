@@ -61,6 +61,10 @@ public sealed class Capture : MonoBehaviour {
         ("river-banks-40m", 49.995, 8.285, 40.0, 300.0, -15.0, 14.0),
         ("canyon-walls-400m", 36.08, -112.12, 400.0, 20.0, -12.0, 10.0),
         ("meadow-tiling-20m", 46.93, 7.72, 20.0, 200.0, -25.0, 14.0),
+        ("cumulus-nigeria-1km", 10.9, 7.6, 1_000.0, 0.0, 8.0, 13.0),
+        ("cumulonimbus-maine-3km", 43.0, -71.0, 3_000.0, 60.0, 6.0, 15.0),
+        ("stratocumulus-above-6km", 49.6, -131.6, 6_000.0, 90.0, -15.0, 10.0),
+        ("cyclone-orbit-400km", -50.0, 110.0, 400_000.0, 0.0, -60.0, 12.0),
 
     };
 
@@ -70,6 +74,7 @@ public sealed class Capture : MonoBehaviour {
         ("ground", (view, shown) => view.Ground.Hidden = !shown),
         ("plants and rocks", (view, shown) => view.Ground.StrewHidden = !shown),
         ("atmosphere", (view, shown) => view.Atmosphere.Enabled = shown),
+        ("clouds", (view, shown) => view.Clouds.Enabled = shown),
         ("shadows", (view, shown) => view.Sun.Shadows = shown),
         ("water", (view, shown) => view.Water.Hidden = !shown),
 

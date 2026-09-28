@@ -220,6 +220,8 @@ public static class ProjectSetup {
         view.FindProperty("_atmosphereTables").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>($"{Sky}/AtmosphereLuts.shader");
         view.FindProperty("_atmosphereSky").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>($"{Sky}/AtmosphereSky.shader");
         view.FindProperty("_exposure").objectReferenceValue = AssetDatabase.LoadAssetAtPath<ComputeShader>($"{Sky}/Exposure.compute");
+        view.FindProperty("_cloudShader").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>($"{Sky}/Clouds/Clouds.shader");
+        view.FindProperty("_cloudNoise").objectReferenceValue = AssetDatabase.LoadAssetAtPath<ComputeShader>($"{Sky}/Clouds/CloudNoise.compute");
         view.FindProperty("_waves").objectReferenceValue = AssetDatabase.LoadAssetAtPath<ComputeShader>($"{Water}/Waves/Waves.compute");
         view.FindProperty("_waterCopy").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>($"{Water}/Surface/WaterCopy.shader");
         view.FindProperty("_skyMaterial").objectReferenceValue = sky;

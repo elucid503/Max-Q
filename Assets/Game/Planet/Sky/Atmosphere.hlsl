@@ -38,6 +38,25 @@ TEXTURE2D(_IrradianceLut);
 TEXTURE2D(_SkyViewLut);
 SAMPLER(sampler_linear_clamp);
 
+// The clouds' shadow along the sun, mapped around the camera over 1 / _CloudShadowOrigin.w kilometres (zero when there
+// are no clouds): per texel the share of sunlight the clouds let through, and how far toward the sun from the origin
+// their shade starts.
+TEXTURE2D(_CloudShadow);
+float4 _CloudShadowOrigin;
+float3 _CloudShadowRight;
+float3 _CloudShadowUp;
+
+#define CLOUD_SHADOW_SOFTNESS 0.4
+#define CLOUD_SHADOW_TEXELS 512.0
+
+// The clouds round the camera, which the sky-view table lacks: what they add over the sky behind and how much of it they
+// let through, by azimuth from the sun and elevation, when _CloudsOn.
+TEXTURE2D(_CloudSky);
+float _CloudsOn;
+
+#define CLOUD_SKY_WIDTH 256.0
+#define CLOUD_SKY_BELOW 0.1
+
 #define SKY_VIEW_SIZE float2(192.0, 108.0)
 
 float TopRadius() {
@@ -183,16 +202,44 @@ float FogSunTransmittance(float3 position, float3 sun) {
 
 }
 
-// Sun visibility past the ground's cascaded shadows; one wherever the cascades do not reach.
-float SunShadow(float3 positionWS) {
+// Sunlight the clouds let through to a point: all of it sunward of their shade and off the map, which fades out at its
+// edges; lod blurs the map, as for a march step that spans many texels.
+float CloudShadow(float3 positionWS, float lod = 0.0) {
+
+    if (_CloudShadowOrigin.w <= 0.0) {
+
+        return 1.0;
+
+    }
+
+    float3 offset = positionWS - _CloudShadowOrigin.xyz;
+    float2 uv = float2(dot(offset, _CloudShadowRight), dot(offset, _CloudShadowUp)) * _CloudShadowOrigin.w + 0.5;
+    float2 edge = saturate((0.5 - abs(uv - 0.5)) * 16.0);
+    float2 shade = SAMPLE_TEXTURE2D_LOD(_CloudShadow, sampler_linear_clamp, uv, lod).rg;
+    float sunward = saturate((dot(offset, _SunDirection) - shade.g) / CLOUD_SHADOW_SOFTNESS + 0.5);
+
+    return lerp(1.0, lerp(shade.r, 1.0, sunward), edge.x * edge.y);
+
+}
+
+// Sun visibility past the ground's cascaded shadows and the clouds; the cascades count only where they reach. For the
+// air, cloudLod blurs the clouds' shadow over a march step, whose one jittered sample would otherwise print the jitter's
+// pattern wherever the shadow changes along the ray.
+float SunShadow(float3 positionWS, float cloudLod = 0.0) {
 
     #if defined(_MAIN_LIGHT_SHADOWS_CASCADE)
     float4 coord = TransformWorldToShadowCoord(positionWS);
 
-    return lerp(MainLightRealtimeShadow(coord), 1.0, GetMainLightShadowFade(positionWS));
+    return lerp(MainLightRealtimeShadow(coord), 1.0, GetMainLightShadowFade(positionWS)) * CloudShadow(positionWS, cloudLod);
     #else
-    return 1.0;
+    return CloudShadow(positionWS, cloudLod);
     #endif
+
+}
+
+float CloudShadowLod(float stretch) {
+
+    return log2(max(stretch * _CloudShadowOrigin.w * CLOUD_SHADOW_TEXELS, 1.0));
 
 }
 
@@ -215,10 +262,13 @@ float3 SkyIrradiance(float r, float muSun) {
 
 }
 
+// front is the same up to the split distance along the ray, where the clouds stand.
 struct Scattering {
 
     float3 radiance;
     float3 transmittance;
+    float3 frontRadiance;
+    float3 frontTransmittance;
 
 };
 
@@ -228,11 +278,14 @@ struct Scattering {
 // at jitter (0 to 1) of each step, which neighbouring rays vary so shafts blend instead of banding.
 // With fog, each step also takes the stretch of it that lies inside the low haze, which is uniform, so a thin layer
 // counts in full however long the step.
-Scattering Integrate(float3 origin, float3 direction, float tMax, float3 sun, int steps, bool multiScatter, float jitter = 0.3, bool shadows = false, bool fog = false) {
+Scattering Integrate(float3 origin, float3 direction, float tMax, float3 sun, int steps, bool multiScatter, float jitter = 0.3, bool shadows = false, bool fog = false,
+    float split = 1e9) {
 
     Scattering result;
     result.radiance = 0.0;
     result.transmittance = 1.0;
+    result.frontRadiance = 0.0;
+    result.frontTransmittance = 1.0;
 
     float2 top = RaySphere(origin, direction, TopRadius());
 
@@ -279,7 +332,7 @@ Scattering Integrate(float3 origin, float3 direction, float tMax, float3 sun, in
 
         if (shadows) {
 
-            sunlight *= SunShadow(origin + direction * (previous + jitter * dt) + _PlanetCentre);
+            sunlight *= SunShadow(origin + direction * (previous + jitter * dt) + _PlanetCentre, CloudShadowLod(dt));
 
         }
 
@@ -295,7 +348,7 @@ Scattering Integrate(float3 origin, float3 direction, float tMax, float3 sun, in
 
             if (shadows) {
 
-                hazeLight *= SunShadow(q + _PlanetCentre);
+                hazeLight *= SunShadow(q + _PlanetCentre, CloudShadowLod(inHaze));
 
             }
 
@@ -306,9 +359,25 @@ Scattering Integrate(float3 origin, float3 direction, float tMax, float3 sun, in
 
         float3 stepTransmittance = exp(-depth);
 
+        if (split > previous && split <= t) {
+
+            float3 partial = exp(-depth * (split - previous) / dt);
+
+            result.frontRadiance = result.radiance + result.transmittance * scattered * (1.0 - partial) / max(depth, 1e-9);
+            result.frontTransmittance = result.transmittance * partial;
+
+        }
+
         result.radiance += result.transmittance * scattered * (1.0 - stepTransmittance) / max(depth, 1e-9);
         result.transmittance *= stepTransmittance;
         previous = t;
+
+    }
+
+    if (split > end) {
+
+        result.frontRadiance = result.radiance;
+        result.frontTransmittance = result.transmittance;
 
     }
 
@@ -376,6 +445,29 @@ float2 SkyViewUv(float viewHeight, float cosZenith, float cosLight) {
 
 }
 
+// The clear-sky table's radiance in a direction from the camera, with the clouds; lod picks the blur of the cloud map for
+// a table read lod mips down.
+float3 CloudySky(float3 direction, float3 sky, float lod) {
+
+    if (_CloudsOn <= 0.0) {
+
+        return sky;
+
+    }
+
+    float3 up = normalize(_WorldSpaceCameraPos - _PlanetCentre);
+    float3 flatSun = _SunDirection - up * dot(_SunDirection, up);
+    float3 anyFlat = normalize(cross(up, abs(up.y) < 0.99 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0)));
+    float3 forward = length(flatSun) > 1e-4 ? normalize(flatSun) : anyFlat;
+    float3 side = cross(up, forward);
+    float sinElevation = dot(direction, up);
+    float2 uv = float2(atan2(dot(direction, side), dot(direction, forward)) / (2.0 * PI) + 0.5, sqrt(saturate((sinElevation + CLOUD_SKY_BELOW) / (1.0 + CLOUD_SKY_BELOW))));
+    float4 clouds = SAMPLE_TEXTURE2D_LOD(_CloudSky, sampler_linear_clamp, uv, lod + log2(CLOUD_SKY_WIDTH / SKY_VIEW_SIZE.x));
+
+    return clouds.rgb + clouds.a * sky;
+
+}
+
 // Sky radiance seen from the camera in a direction, from the per-frame sky-view table; only valid inside the air.
 float3 SkyRadiance(float3 direction) {
 
@@ -386,7 +478,7 @@ float3 SkyRadiance(float3 direction) {
     float3 flatSun = _SunDirection - up * dot(_SunDirection, up);
     float cosLight = dot(flatView, flatSun) / max(length(flatView) * length(flatSun), 1e-5);
 
-    return SAMPLE_TEXTURE2D_LOD(_SkyViewLut, sampler_linear_clamp, SkyViewUv(viewHeight, dot(direction, up), cosLight), 0).rgb;
+    return CloudySky(direction, SAMPLE_TEXTURE2D_LOD(_SkyViewLut, sampler_linear_clamp, SkyViewUv(viewHeight, dot(direction, up), cosLight), 0).rgb, 0.0);
 
 }
 

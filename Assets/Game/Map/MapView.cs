@@ -6,6 +6,7 @@ using MaxQ.Game.Planet;
 using MaxQ.Game.Planet.Ground;
 using MaxQ.Game.Planet.Ground.Plants;
 using MaxQ.Game.Planet.Sky;
+using MaxQ.Game.Planet.Sky.Clouds;
 using MaxQ.Game.Planet.Water;
 using MaxQ.Sim.Bodies;
 using MaxQ.Sim.Numerics;
@@ -17,7 +18,7 @@ using UnityEngine.Rendering;
 // Block-scoped: Unity's script importer cannot see classes in file-scoped namespaces, and a scene needs this one.
 namespace MaxQ.Game.Map {
 
-    /// <summary>The scene: owns the clock, flies the free camera over Terra and draws the ground, water, sky and Selene in order.</summary>
+    /// <summary>The scene: owns the clock, flies the free camera over Terra and draws the ground, water, sky, clouds and Selene in order.</summary>
     public sealed class MapView : MonoBehaviour {
 
         [SerializeField] private Texture2D[] _seleneFaces;
@@ -31,6 +32,8 @@ namespace MaxQ.Game.Map {
         [SerializeField] private Shader _atmosphereTables;
         [SerializeField] private Shader _atmosphereSky;
         [SerializeField] private ComputeShader _exposure;
+        [SerializeField] private Shader _cloudShader;
+        [SerializeField] private ComputeShader _cloudNoise;
         [SerializeField] private ComputeShader _waves;
         [SerializeField] private Shader _waterCopy;
         [SerializeField] private Material _skyMaterial;
@@ -44,6 +47,7 @@ namespace MaxQ.Game.Map {
         private Texture2D _groundNoise;
         private GroundView _ground;
         private WaterView _water;
+        private CloudView _clouds;
         private Atmosphere _atmosphere;
         private Sun _sun;
         private BodyView _seleneView;
@@ -66,7 +70,8 @@ namespace MaxQ.Game.Map {
             _camera = Camera.main;
             _freeCamera = new FreeCamera(_camera);
 
-            _atmosphere = new Atmosphere(_terra, _atmosphereTables, _atmosphereSky, _exposure, MapSpace.Direction(Vector3d.UnitX), SunIlluminance);
+            _clouds = new CloudView(_terra, data, _cloudShader, _cloudNoise, MapSpace.Direction(Vector3d.UnitX));
+            _atmosphere = new Atmosphere(_terra, _clouds, _atmosphereTables, _atmosphereSky, _exposure, MapSpace.Direction(Vector3d.UnitX), SunIlluminance);
             _groundNoise = GroundNoise.Create();
             Shader.SetGlobalTexture(GroundNoiseId, _groundNoise);
 
@@ -98,6 +103,7 @@ namespace MaxQ.Game.Map {
             _water?.Dispose();
             Destroy(_groundNoise);
             _atmosphere?.Dispose();
+            _clouds?.Dispose();
             _survey?.Dispose();
 
         }
@@ -109,6 +115,7 @@ namespace MaxQ.Game.Map {
             _time += dt;
             _freeCamera.Update(_time, dt);
 
+            _clouds.Update(_time, _camera.transform.position);
             _atmosphere.Update(_time, _camera.transform.position, dt);
             _water.Update(_time, _camera);
             _freeCamera.WaveClearance = 1.25 * _water.SeaHeight;
@@ -133,6 +140,8 @@ namespace MaxQ.Game.Map {
         internal GroundView Ground => _ground;
 
         internal Atmosphere Atmosphere => _atmosphere;
+
+        internal CloudView Clouds => _clouds;
 
         internal WaterView Water => _water;
 

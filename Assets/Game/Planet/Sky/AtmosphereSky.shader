@@ -1,6 +1,7 @@
-// Composites the atmosphere over the opaque scene. The air varies slowly, so each view ray is marched at half resolution
-// to the depth buffer (or out of the air); the full-resolution pass then upsamples by depth, so silhouettes stay sharp,
-// dims what lies behind, adds the scattered light, and gives sky pixels the sun's disk.
+// Composites the atmosphere and the clouds over the opaque scene. The air varies slowly, so each view ray is marched at
+// half resolution to the depth buffer (or out of the air), splitting the air at the clouds, so those far off fade into
+// the air before them; the full-resolution pass then upsamples by depth, so silhouettes stay sharp, dims what lies behind,
+// adds the scattered light, and gives sky pixels the sun's disk.
 Shader "Hidden/MaxQ/AtmosphereSky" {
 
     SubShader {
@@ -14,50 +15,18 @@ Shader "Hidden/MaxQ/AtmosphereSky" {
         #include "Atmosphere.hlsl"
         #include "Packages/com.unity.render-pipelines.core/Runtime/Utilities/Blit.hlsl"
 
-        TEXTURE2D_X(_SceneDepth);
+        #include "ViewRay.hlsl"
+
         TEXTURE2D_X(_AtmosphereInscatter);
         TEXTURE2D_X(_AtmosphereTransmittance);
         float4 _AtmosphereSize;
-        float4 _SceneSize;
         StructuredBuffer<float> _Exposure;
 
-        // Stand-in distance for sky pixels, and the cap on every other: large, but safe in half precision.
-        #define SKY_DISTANCE 60000.0
-
-        struct ViewRay {
-
-            float3 direction;
-            float distance;
-            bool sky;
-
-        };
-
-        // Directions come from the near plane and distances from linear depth: with a near plane of centimetres and a
-        // far plane past Selene, unprojecting the far depth loses all precision.
-        ViewRay ViewRayThrough(float2 uv, float depth) {
-
-            #if UNITY_REVERSED_Z
-            bool sky = depth <= 0.0;
-            #else
-            bool sky = depth >= 1.0;
-            #endif
-
-            float3 near = ComputeWorldSpacePosition(uv, UNITY_NEAR_CLIP_VALUE, UNITY_MATRIX_I_VP);
-
-            ViewRay ray;
-            ray.direction = normalize(near - _WorldSpaceCameraPos);
-            ray.distance = sky ? SKY_DISTANCE : min(LinearEyeDepth(depth, _ZBufferParams) / dot(ray.direction, -UNITY_MATRIX_V[2].xyz), SKY_DISTANCE);
-            ray.sky = sky;
-
-            return ray;
-
-        }
-
-        ViewRay ViewRayAt(float2 uv) {
-
-            return ViewRayThrough(uv, SAMPLE_TEXTURE2D_X_LOD(_SceneDepth, sampler_PointClamp, uv, 0).r);
-
-        }
+        // The clouds' light and transmittance, and their distance and the ground's behind them, at half resolution;
+        // _CloudSize is zero without clouds.
+        TEXTURE2D(_CloudLight);
+        TEXTURE2D(_CloudDepth);
+        float4 _CloudSize;
 
         ENDHLSL
 
@@ -88,11 +57,27 @@ Shader "Hidden/MaxQ/AtmosphereSky" {
 
                 // Interleaved gradient noise staggers neighbouring rays' samples, so shafts in the haze blend instead of banding.
                 float jitter = frac(52.9829189 * frac(dot(input.positionCS.xy, float2(0.06711056, 0.00583715))));
-                Scattering scattering = Integrate(_WorldSpaceCameraPos - _PlanetCentre, ray.direction, ray.sky ? 1e9 : ray.distance, _SunDirection, 24, true, jitter, true, true);
+                float4 clouds = float4(0.0, 0.0, 0.0, 1.0);
+                float cloudDepth = 1e9;
 
+                // The clouds' history is at this pass's resolution, traced through the same half-resolution pixels.
+                if (_CloudSize.x > 0.0) {
+
+                    int2 at = min(int2(input.positionCS.xy), int2(_CloudSize.xy) - 1);
+
+                    clouds = LOAD_TEXTURE2D(_CloudLight, at);
+                    cloudDepth = LOAD_TEXTURE2D(_CloudDepth, at).r;
+
+                }
+
+                Scattering scattering = Integrate(_WorldSpaceCameraPos - _PlanetCentre, ray.direction, ray.sky ? 1e9 : ray.distance, _SunDirection, 24, true, jitter, true, true,
+                    cloudDepth);
+                float3 front = scattering.frontRadiance * _SunIlluminance;
+
+                // Air before the clouds, the clouds through it, and the air behind them through both.
                 Output output;
-                output.inscatter = float4(scattering.radiance * _SunIlluminance, ray.distance);
-                output.transmittance = float4(scattering.transmittance, 1.0);
+                output.inscatter = float4(front + scattering.frontTransmittance * clouds.rgb + clouds.a * (scattering.radiance * _SunIlluminance - front), ray.distance);
+                output.transmittance = float4(scattering.transmittance * clouds.a, 1.0);
 
                 return output;
 

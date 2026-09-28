@@ -554,7 +554,7 @@ float3 SkyReflection(float3 reflected, float3 up, float variance, Sunlight light
     // The mirrored lobe spans about twice the facets' spread of slope, against the table's 192 texels round the sky.
     float lod = log2(max(4.0 * sqrt(variance) * SKY_VIEW_SIZE.x / (2.0 * PI), 1.0));
 
-    return SAMPLE_TEXTURE2D_LOD(_SkyViewLut, sampler_linear_clamp, SkyViewUv(viewHeight, dot(reflected, cameraUp), cosLight), lod).rgb;
+    return CloudySky(reflected, SAMPLE_TEXTURE2D_LOD(_SkyViewLut, sampler_linear_clamp, SkyViewUv(viewHeight, dot(reflected, cameraUp), cosLight), lod).rgb, lod);
 
 }
 

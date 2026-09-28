@@ -1,3 +1,5 @@
+using MaxQ.Game.Planet.Sky.Clouds;
+
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering;
@@ -8,8 +10,8 @@ using UnityEngine.Rendering.Universal;
 namespace MaxQ.Game.Planet.Sky;
 
 /// <summary>URP has no planetary sky, so this pass composites the atmosphere after the opaque scene and before
-/// transparents, which keeps orbit lines crisp on top: it marches the air at half resolution, then redraws the colour
-/// target through it at full resolution. URP has no eye adaptation either; the composite applies the exposure, and a
+/// transparents, which keeps orbit lines crisp on top: it traces the clouds, marches the air through them at half
+/// resolution, then redraws the colour target through both at full resolution. URP has no eye adaptation either; the composite applies the exposure, and a
 /// histogram of its result adapts the exposure for the next frame.</summary>
 internal sealed class AtmospherePass : ScriptableRenderPass {
 
@@ -24,6 +26,9 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
     private static readonly int SourceSizeId = Shader.PropertyToID("_SourceSize");
     private static readonly int DeltaTimeId = Shader.PropertyToID("_DeltaTime");
     private static readonly int AdaptingId = Shader.PropertyToID("_Adapting");
+    private static readonly int CloudLightId = Shader.PropertyToID("_CloudLight");
+    private static readonly int CloudDepthId = Shader.PropertyToID("_CloudDepth");
+    private static readonly int CloudSizeId = Shader.PropertyToID("_CloudSize");
 
     // Pixels per histogram sample along each axis, and threads per group along each; must match Exposure.compute.
     private const int ExposureStride = 4;
@@ -36,6 +41,7 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
     private readonly ComputeShader _exposure;
     private readonly GraphicsBuffer _exposureValue;
     private readonly GraphicsBuffer _histogram;
+    private readonly CloudView _clouds;
     private readonly int _histogramKernel;
     private readonly int _adaptKernel;
 
@@ -48,6 +54,9 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
         public TextureHandle Source;
         public TextureHandle Depth;
         public Vector4 SceneSize;
+        public TextureHandle CloudLight;
+        public TextureHandle CloudDepth;
+        public Vector4 CloudSize;
 
     }
 
@@ -77,9 +86,10 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
 
     }
 
-    public AtmospherePass(Material material, ComputeShader exposure, GraphicsBuffer exposureValue, GraphicsBuffer histogram) {
+    public AtmospherePass(Material material, ComputeShader exposure, GraphicsBuffer exposureValue, GraphicsBuffer histogram, CloudView clouds) {
 
         _material = material;
+        _clouds = clouds;
         _exposure = exposure;
         _exposureValue = exposureValue;
         _histogram = histogram;
@@ -122,6 +132,15 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
         half.name = "Atmosphere Transmittance";
         TextureHandle transmittance = renderGraph.CreateTexture(half);
         BufferHandle exposure = renderGraph.ImportBuffer(_exposureValue);
+        TextureHandle cloudLight = TextureHandle.nullHandle;
+        TextureHandle cloudDepth = TextureHandle.nullHandle;
+        Vector4 cloudSize = Vector4.zero;
+
+        if (_clouds.Enabled) {
+
+            _clouds.Trace.Record(renderGraph, frameData, depth, sceneSize, _clouds.Centre, _clouds.Rotation, out cloudLight, out cloudDepth, out cloudSize);
+
+        }
 
         using (IRasterRenderGraphBuilder builder = renderGraph.AddRasterRenderPass("Atmosphere March", out MarchData data)) {
 
@@ -129,14 +148,26 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
             data.Source = source;
             data.Depth = depth;
             data.SceneSize = sceneSize;
+            data.CloudLight = cloudLight;
+            data.CloudDepth = cloudDepth;
+            data.CloudSize = cloudSize;
 
             builder.UseTexture(source);
             builder.UseTexture(depth);
 
-            // The march samples the sun's shadow cascades, which URP publishes as a global.
+            // The march samples the sun's shadow cascades and the clouds' shadow, both published as globals.
+            builder.UseAllGlobalTextures(true);
+
             if (resources.mainShadowsTexture.IsValid()) {
 
                 builder.UseTexture(resources.mainShadowsTexture);
+
+            }
+
+            if (cloudLight.IsValid()) {
+
+                builder.UseTexture(cloudLight);
+                builder.UseTexture(cloudDepth);
 
             }
 
@@ -146,6 +177,9 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
 
                 pass.Material.SetTexture(SceneDepthId, pass.Depth);
                 pass.Material.SetVector(SceneSizeId, pass.SceneSize);
+                pass.Material.SetVector(CloudSizeId, pass.CloudSize);
+                pass.Material.SetTexture(CloudLightId, pass.CloudLight.IsValid() ? pass.CloudLight : Texture2D.blackTexture);
+                pass.Material.SetTexture(CloudDepthId, pass.CloudDepth.IsValid() ? pass.CloudDepth : Texture2D.blackTexture);
                 Blitter.BlitTexture(context.cmd, pass.Source, new Vector4(1.0f, 1.0f, 0.0f, 0.0f), pass.Material, MarchPass);
 
             });

@@ -15,6 +15,9 @@ rivers.bin     HydroRIVERS reaches carrying at least MIN_DISCHARGE, as smoothed 
                vertex and each vertex's neighbours along the curve (across a junction, on the main stem), speed per
                reach, and an index of the reaches near each 0.1 degree cell.
 sea_state.bin  ERA5 1991-2020 monthly climatology on a 0.5 degree grid: wind, wind sea, swell and sea ice.
+clouds.bin     ERA5 weather at one hour on a 0.25 degree grid, eight bytes per cell: the low cloud's cover, convection,
+               base and top, then the anvils' cover, base and top. Heights are Terra's: the ground scaled by TERRA,
+               the air above it at full size.
 colour.raw     Blue Marble June 2004 as cube-face tiles (levels 0-6, 256 px: 248 plus a 4 px border),
                uncompressed; the Unity bake (Max-Q > Bake Terra Tiles) compresses it to colour.tiles.
 
@@ -74,6 +77,11 @@ TERRA = 0.2
 RIVER_MAGIC = 0x5652514F
 RIVER_CELLS = 10
 SEA_MAGIC = 0x5353514D
+CLOUD_MAGIC = 0x4443514D
+
+# Cloud heights are encoded in bytes over these ranges (m): the low cloud's base, and every top and the anvils' base.
+CLOUD_BASE_RANGE = 6_000.0
+CLOUD_TOP_RANGE = 16_000.0
 
 # The coast's distance on the 15" posts, from the source's own 5" pixels: 8 m units out to a kilometre either side,
 # negative in water. Bands of posts are measured with a halo wide enough for the bodies' filters and that kilometre.
@@ -1202,6 +1210,163 @@ def sea_state():
     os.replace(path + ".part", path)
 
 
+# --- Weather --------------------------------------------------------------------------------------
+
+
+def _weather_file(file, name):
+
+    # The CDS zips single-level requests that mix instantaneous and accumulated fields, one NetCDF per kind.
+    path = os.path.join(ERA5, file)
+
+    if not zipfile.is_zipfile(path):
+
+        return h5py.File(path, "r")
+
+    with zipfile.ZipFile(path) as archive:
+
+        for member in archive.namelist():
+
+            f = h5py.File(io.BytesIO(archive.read(member)), "r")
+
+            if name in f:
+
+                return f
+
+            f.close()
+
+    raise KeyError(f"{name} is not in {file}")
+
+
+def _weather(file, name):
+
+    with _weather_file(file, name) as f:
+
+        variable = f[name]
+        raw = variable[:]
+        data = raw.astype(np.float64) * variable.attrs.get("scale_factor", 1.0) + variable.attrs.get("add_offset", 0.0)
+        fill = variable.attrs.get("_FillValue")
+        longitudes = f["longitude"][:]
+        levels = f["pressure_level"][:].astype(np.float64) if "pressure_level" in f else None
+
+    if fill is not None:
+
+        data[raw == fill] = np.nan
+
+    # The one hour, columns rolled to start at 180 W.
+    start = int(np.argmin(np.abs(((longitudes + 180.0) % 360.0) - 0.0)))
+
+    return np.roll(data[0], -start, axis=-1), levels
+
+
+def _walk(cloudy, start, step):
+
+    # The last level of the unbroken run of cloudy levels from start (per column), stepping by step.
+    count = cloudy.shape[0]
+    index = start.copy()
+    alive = np.take_along_axis(cloudy, start[None], 0)[0]
+
+    for _ in range(count):
+
+        after = np.clip(index + step, 0, count - 1)
+        grow = alive & (after != index) & np.take_along_axis(cloudy, after[None], 0)[0]
+        index = np.where(grow, after, index)
+        alive = grow
+
+    return index
+
+
+def clouds():
+
+    path = os.path.join(OUT, "clouds.bin")
+
+    if os.path.exists(path):
+
+        return
+
+    log("baking the weather")
+    low, _ = _weather("weather_single.nc", "lcc")
+    base, _ = _weather("weather_single.nc", "cbh")
+    cape, _ = _weather("weather_single.nc", "cape")
+    rain, _ = _weather("weather_single.nc", "cp")
+    ground = _weather("weather_single.nc", "z")[0] / 9.80665
+    cover, pressures = _weather("weather_levels.nc", "cc")
+
+    # Levels from the ground up, at their heights in the standard atmosphere, and each level's slab between midpoints.
+    order = np.argsort(-pressures)
+    cover = np.nan_to_num(cover[order])
+    heights = 44_330.8 * (1.0 - (pressures[order] / 1_013.25) ** 0.190263)
+    edges = np.concatenate([[heights[0] - 0.5 * (heights[1] - heights[0])], 0.5 * (heights[1:] + heights[:-1]),
+                            [heights[-1] + 0.5 * (heights[-1] - heights[-2])]])
+    cloudy = cover > 0.1
+    rows, cols = low.shape
+
+    # Low cloud: ERA5 gives its cover and base; its top is where the cloudy levels rising from the base end. A deck too
+    # thin to reach a level keeps a few hundred metres.
+    above = np.nan_to_num(base, nan=1_000.0)
+    low = np.where(above <= 3_000.0, np.nan_to_num(low), 0.0)
+    first = np.clip(np.searchsorted(heights, (ground + above).ravel() - 250.0), 0, len(heights) - 1).reshape(rows, cols)
+    starts = np.take_along_axis(cloudy, first[None], 0)[0] & (heights[first] <= ground + above + 1_500.0)
+    last = _walk(cloudy, first, 1)
+    thickness = np.where(starts, np.maximum(edges[last + 1] - (ground + above), 400.0), 400.0)
+    convection = np.maximum(np.clip((cape - 100.0) / 1_400.0, 0.0, 1.0), np.clip((rain - 1e-4) / 1.9e-3, 0.0, 1.0))
+    bottom = ground * TERRA + above
+
+    # Anvils: the upper cloud over and around deep convection, from the densest upper level out to its run's ends.
+    deep = (thickness > 5_000.0) & (convection > 0.3) & (low > 0.05)
+    near = ndimage.gaussian_filter(ndimage.maximum_filter(deep.astype(np.float64), size=(9, 9), mode=("nearest", "wrap")), 2.0, mode=("nearest", "wrap"))
+    upper = heights >= 6_000.0
+    offset = int(np.argmax(upper))
+    peak = offset + np.argmax(cover[upper], axis=0)
+    anvil = np.take_along_axis(cover, peak[None], 0)[0] * np.clip(2.0 * near, 0.0, 1.0)
+    anvil_top = edges[_walk(cloudy, peak, 1) + 1]
+    anvil_bottom = np.maximum(edges[np.maximum(_walk(cloudy, peak, -1), offset)], anvil_top - 4_000.0)
+    anvil_bottom = np.minimum(anvil_bottom, anvil_top - 1_000.0)
+    lowered = ground * (1.0 - TERRA)
+
+    # Tops step from pressure level to pressure level and the defaults from cell to cell; softened over a cell or so,
+    # neighbouring columns blend instead of standing as blocks. Cover is ERA5's own smooth field, barely touched.
+    def soften(field, sigma):
+
+        return ndimage.gaussian_filter(field, sigma, mode=("nearest", "wrap"))
+
+    low = soften(low, 0.6)
+    convection = soften(convection, 1.2)
+    bottom = soften(bottom, 1.2)
+    thickness = soften(thickness, 1.2)
+    anvil = soften(anvil, 0.8)
+    anvil_bottom = soften(anvil_bottom, 1.2)
+    anvil_top = soften(anvil_top, 1.2)
+
+    channels = [
+        low,
+        convection,
+        bottom / CLOUD_BASE_RANGE,
+        (bottom + thickness) / CLOUD_TOP_RANGE,
+        anvil,
+        (anvil_bottom - lowered) / CLOUD_TOP_RANGE,
+        (anvil_top - lowered) / CLOUD_TOP_RANGE,
+        np.zeros_like(low),
+    ]
+
+    # ERA5's 721 rows sit on the grid lines, poles included; averaging neighbours puts them at the cells' centres.
+    packed = []
+
+    for channel in channels:
+
+        centred = 0.5 * (channel[1:] + channel[:-1])
+        centred = 0.5 * (centred + np.roll(centred, -1, axis=1))
+        packed.append(np.round(np.clip(centred, 0.0, 1.0) * 255.0).astype(np.uint8))
+
+    packed = np.stack(packed, axis=-1)
+
+    with open(path + ".part", "wb") as out:
+
+        np.array([CLOUD_MAGIC, packed.shape[0], packed.shape[1], packed.shape[2]], np.int32).tofile(out)
+        packed.tofile(out)
+
+    os.replace(path + ".part", path)
+
+
 # --- Colour -----------------------------------------------------------------------------------------
 
 
@@ -1348,6 +1513,7 @@ def main():
     shore_distance(water15)
     fetch(water15)
     sea_state()
+    clouds()
     colour_tiles()
     log("bake complete")
 

@@ -1,0 +1,187 @@
+// The tiling noise volumes clouds are carved from, after Schneider, "The Real-time Volumetric Cloudscapes of Horizon Zero
+// Dawn" (2015): Perlin-Worley billows for their shape, and Worley octaves for the detail that erodes their edges.
+#pragma kernel Shape
+#pragma kernel Detail
+#pragma kernel Highest
+#pragma kernel Spread
+
+RWTexture3D<float> _Volume;
+Texture3D<float> _Source;
+uint _Size;
+
+// PCG's 3D hash (Jarzynski and Olano, 2020); Unity's math.hash is linear, which lines features up.
+uint3 Pcg3(uint3 v) {
+
+    v = v * 1664525u + 1013904223u;
+    v.x += v.y * v.z;
+    v.y += v.z * v.x;
+    v.z += v.x * v.y;
+    v ^= v >> 16u;
+    v.x += v.y * v.z;
+    v.y += v.z * v.x;
+    v.z += v.x * v.y;
+
+    return v;
+
+}
+
+float3 Random3(int3 cell, int period, uint seed) {
+
+    // Cells reach at most one tile below zero, so one period lifts them clear for an unsigned wrap.
+    uint3 wrapped = uint3(cell + period) % uint(period);
+
+    return (Pcg3(wrapped + seed * uint3(7919u, 104729u, 1299709u)) & 0xFFFFFFu) / 16777216.0;
+
+}
+
+// Distance to the nearest of one feature point per cell, over period cells to the tile.
+float Worley(float3 p, int period, uint seed) {
+
+    float3 scaled = p * period;
+    int3 cell = int3(floor(scaled));
+    float3 f = scaled - cell;
+    float nearest = 1.0;
+
+    for (int z = -1; z <= 1; z++) {
+
+        for (int y = -1; y <= 1; y++) {
+
+            for (int x = -1; x <= 1; x++) {
+
+                int3 offset = int3(x, y, z);
+                float3 feature = offset + Random3(cell + offset, period, seed);
+
+                nearest = min(nearest, length(feature - f));
+
+            }
+
+        }
+
+    }
+
+    return nearest;
+
+}
+
+// Gradient noise, zero at the lattice and roughly within -1 to 1, over period cells to the tile.
+float Perlin(float3 p, int period, uint seed) {
+
+    float3 scaled = p * period;
+    int3 cell = int3(floor(scaled));
+    float3 f = scaled - cell;
+    float3 fade = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    float corners[8];
+
+    for (int i = 0; i < 8; i++) {
+
+        int3 offset = int3(i & 1, (i >> 1) & 1, i >> 2);
+        float3 gradient = normalize(Random3(cell + offset, period, seed) * 2.0 - 1.0 + 1e-4);
+
+        corners[i] = dot(gradient, f - offset);
+
+    }
+
+    float4 x = lerp(float4(corners[0], corners[2], corners[4], corners[6]), float4(corners[1], corners[3], corners[5], corners[7]), fade.x);
+    float2 y = lerp(x.xz, x.yw, fade.y);
+
+    return lerp(y.x, y.y, fade.z) * 1.6;
+
+}
+
+float Remap(float value, float from, float to, float newFrom, float newTo) {
+
+    return newFrom + (value - from) / (to - from) * (newTo - newFrom);
+
+}
+
+// Billows: Perlin octaves, dilated by the Worley cells so they gather into rounded heaps, then carved by finer cells.
+[numthreads(4, 4, 4)]
+void Shape(uint3 id : SV_DispatchThreadID) {
+
+    float3 p = (id + 0.5) / _Size;
+    float perlin = 0.0;
+    float amplitude = 1.0;
+    float total = 0.0;
+
+    for (int octave = 0; octave < 4; octave++) {
+
+        perlin += amplitude * Perlin(p, 4 << octave, octave);
+        total += amplitude;
+        amplitude *= 0.5;
+
+    }
+
+    perlin = saturate(perlin / total * 0.5 + 0.5);
+
+    float cells = 0.625 * (1.0 - Worley(p, 4, 11u)) + 0.25 * (1.0 - Worley(p, 8, 12u)) + 0.125 * (1.0 - Worley(p, 16, 13u));
+    float fine = 0.625 * (1.0 - Worley(p, 8, 14u)) + 0.25 * (1.0 - Worley(p, 16, 15u)) + 0.125 * (1.0 - Worley(p, 32, 16u));
+    float billows = Remap(perlin, cells - 1.0, 1.0, 0.0, 1.0);
+
+    // The octaves stack into about 0.68 to 0.87; stretched over the whole range, cover can carve heaps from them.
+    _Volume[id] = saturate((Remap(billows, fine - 1.0, 1.0, 0.0, 1.0) - 0.68) / 0.19);
+
+}
+
+[numthreads(4, 4, 4)]
+void Detail(uint3 id : SV_DispatchThreadID) {
+
+    float3 p = (id + 0.5) / _Size;
+
+    float cells = 0.625 * (1.0 - Worley(p, 2, 21u)) + 0.25 * (1.0 - Worley(p, 4, 22u)) + 0.125 * (1.0 - Worley(p, 8, 23u));
+
+    // Likewise from about 0.12 to 0.67.
+    _Volume[id] = saturate((cells - 0.12) / 0.55);
+
+}
+
+// The shape's bounds, a level at a time: each cell's highest value from the level below (twice the size), then that
+// spread over each cell's neighbours, so a cell bounds everything within its own width of it. The tile wraps.
+[numthreads(4, 4, 4)]
+void Highest(uint3 id : SV_DispatchThreadID) {
+
+    if (any(id >= _Size)) {
+
+        return;
+
+    }
+
+    float highest = 0.0;
+
+    for (uint i = 0; i < 8; i++) {
+
+        highest = max(highest, _Source.Load(int4(id * 2 + uint3(i & 1, (i >> 1) & 1, i >> 2), 0)));
+
+    }
+
+    _Volume[id] = highest;
+
+}
+
+[numthreads(4, 4, 4)]
+void Spread(uint3 id : SV_DispatchThreadID) {
+
+    if (any(id >= _Size)) {
+
+        return;
+
+    }
+
+    float highest = 0.0;
+
+    for (int z = -1; z <= 1; z++) {
+
+        for (int y = -1; y <= 1; y++) {
+
+            for (int x = -1; x <= 1; x++) {
+
+                highest = max(highest, _Source.Load(int4((int3(id) + int3(x, y, z) + _Size) % _Size, 0)));
+
+            }
+
+        }
+
+    }
+
+    _Volume[id] = highest;
+
+}

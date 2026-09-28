@@ -1,6 +1,7 @@
 using System;
 
 using MaxQ.Game.Map;
+using MaxQ.Game.Planet.Sky.Clouds;
 using MaxQ.Sim.Bodies;
 using MaxQ.Sim.Numerics;
 
@@ -11,7 +12,7 @@ using UnityEngine.Rendering.Universal;
 namespace MaxQ.Game.Planet.Sky;
 
 /// <summary>A body's air: bakes the scattering tables once, keeps the shader globals (centre, sun) current, and adds the
-/// sky-view and composite passes to every game and scene camera.</summary>
+/// sky-view and composite passes, with the clouds', to every game and scene camera.</summary>
 public sealed class Atmosphere : IDisposable {
 
     private static readonly int PlanetCentreId = Shader.PropertyToID("_PlanetCentre");
@@ -40,6 +41,7 @@ public sealed class Atmosphere : IDisposable {
     private const double FogSettleSeconds = 2.0;
 
     private readonly CelestialBody _body;
+    private readonly CloudView _clouds;
     private readonly RenderTexture _transmittance;
     private readonly RenderTexture _multiScatter;
     private readonly RenderTexture _irradiance;
@@ -54,9 +56,10 @@ public sealed class Atmosphere : IDisposable {
     /// <summary>Whether the composite pass draws; the capture turns it off to time the rest of the frame.</summary>
     public bool Enabled { get; set; } = true;
 
-    public Atmosphere(CelestialBody body, Shader luts, Shader sky, ComputeShader exposure, Vector3 sunDirection, Color sunIlluminance) {
+    public Atmosphere(CelestialBody body, CloudView clouds, Shader luts, Shader sky, ComputeShader exposure, Vector3 sunDirection, Color sunIlluminance) {
 
         _body = body;
+        _clouds = clouds;
 
         Shader.SetGlobalFloat(PlanetRadiusId, (float)(body.Radius / MapSpace.MetresPerUnit));
         Shader.SetGlobalVector(SunDirectionId, sunDirection.normalized);
@@ -83,7 +86,7 @@ public sealed class Atmosphere : IDisposable {
         _histogram.SetData(new uint[64]);
 
         _composite = new Material(sky);
-        _pass = new AtmospherePass(_composite, exposure, _exposure, _histogram);
+        _pass = new AtmospherePass(_composite, exposure, _exposure, _histogram, clouds);
         _skyView = new SkyViewPass(_composite);
         RenderPipelineManager.beginCameraRendering += Enqueue;
 
@@ -91,13 +94,26 @@ public sealed class Atmosphere : IDisposable {
 
     private void Enqueue(ScriptableRenderContext context, Camera camera) {
 
-        if (!Enabled || (camera.cameraType != CameraType.Game && camera.cameraType != CameraType.SceneView)) {
+        if (camera.cameraType != CameraType.Game && camera.cameraType != CameraType.SceneView) {
 
             return;
 
         }
 
         ScriptableRenderer renderer = camera.GetUniversalAdditionalCameraData().scriptableRenderer;
+
+        // The clouds' shadow falls on the ground whether or not the air is drawn.
+        if (_clouds.Enabled) {
+
+            renderer.EnqueuePass(_clouds.SkyPass);
+
+        }
+
+        if (!Enabled) {
+
+            return;
+
+        }
 
         renderer.EnqueuePass(_skyView);
         renderer.EnqueuePass(_pass);
