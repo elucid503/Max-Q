@@ -30,6 +30,11 @@ public sealed class CloudView : IDisposable {
     private const int ShapeTexels = 128;
     private const int DetailTexels = 32;
 
+    // Mips of the shape ranked back onto its sharp values, in bins of its 8-bit values; the levels match
+    // CLOUD_SHAPE_LEVELS in Clouds.hlsl.
+    private const int RemapLevels = 6;
+    private const int RemapBins = 256;
+
     // The weather's cells (about 8 km at the equator), and the survey's land and heights it is drawn over.
     private const int WeatherWidth = 1024;
     private const int WeatherHeight = 512;
@@ -73,9 +78,11 @@ public sealed class CloudView : IDisposable {
     private readonly int _weatherKernel;
     private readonly Texture2D _land;
     private readonly RenderTexture _weather;
+    private readonly RenderTexture _warp;
     private readonly RenderTexture _shape;
     private readonly RenderTexture _detail;
     private readonly RenderTexture _bound;
+    private readonly Texture2D _remap;
     private readonly Material _material;
 
     private double _forecast = double.NaN;
@@ -107,26 +114,21 @@ public sealed class CloudView : IDisposable {
         _shape = Generate(noise, "Shape", ShapeTexels);
         _detail = Generate(noise, "Detail", DetailTexels);
         _bound = Bound(noise, _shape);
+        _remap = Remap(noise, _shape);
         _land = Land(body);
-        _weather = new RenderTexture(WeatherWidth, WeatherHeight, 0, GraphicsFormat.R8G8B8A8_UNorm) {
-
-            name = "Cloud Weather",
-            enableRandomWrite = true,
-            wrapModeU = TextureWrapMode.Repeat,
-            wrapModeV = TextureWrapMode.Clamp,
-            filterMode = FilterMode.Bilinear,
-
-        };
-
-        _weather.Create();
+        _weather = WeatherMap("Cloud Weather");
+        _warp = WeatherMap("Cloud Warp");
         noise.SetTexture(_weatherKernel, "_Land", _land);
         noise.SetTexture(_weatherKernel, "_Weather", _weather);
+        noise.SetTexture(_weatherKernel, "_Warp", _warp);
         noise.SetVector("_WeatherSize", new Vector4(WeatherWidth, WeatherHeight, 1.0f / WeatherWidth, 1.0f / WeatherHeight));
 
         Shader.SetGlobalTexture("_CloudWeather", _weather);
+        Shader.SetGlobalTexture("_CloudWarp", _warp);
         Shader.SetGlobalTexture("_CloudShape", _shape);
         Shader.SetGlobalTexture("_CloudDetail", _detail);
         Shader.SetGlobalTexture("_CloudShapeBound", _bound);
+        Shader.SetGlobalTexture("_CloudShapeRemap", _remap);
         Shader.SetGlobalTexture(SkyId, Texture2D.blackTexture);
         Shader.SetGlobalTexture(ShadowId, Texture2D.whiteTexture);
         Shader.SetGlobalFloat(CloudsOnId, 0.0f);
@@ -256,6 +258,24 @@ public sealed class CloudView : IDisposable {
 
     }
 
+    private static RenderTexture WeatherMap(string name) {
+
+        RenderTexture map = new RenderTexture(WeatherWidth, WeatherHeight, 0, GraphicsFormat.R8G8B8A8_UNorm) {
+
+            name = name,
+            enableRandomWrite = true,
+            wrapModeU = TextureWrapMode.Repeat,
+            wrapModeV = TextureWrapMode.Clamp,
+            filterMode = FilterMode.Bilinear,
+
+        };
+
+        map.Create();
+
+        return map;
+
+    }
+
     private static RenderTexture Volume(string name, int size, bool mips) {
 
         RenderTexture volume = new RenderTexture(size, size, 0, GraphicsFormat.R8_UNorm) {
@@ -320,6 +340,100 @@ public sealed class CloudView : IDisposable {
 
     }
 
+    // Each mip's values mapped to the sharp shape's value that holds the same share of the volume below it, so the cover's
+    // threshold carves the same share of cloud from a blurred mip as from the sharp one.
+    private static Texture2D Remap(ComputeShader noise, RenderTexture shape) {
+
+        int kernel = noise.FindKernel("Histogram");
+        uint[] counts = new uint[RemapLevels * RemapBins];
+        using ComputeBuffer histogram = new ComputeBuffer(counts.Length, sizeof(uint));
+
+        histogram.SetData(counts);
+        noise.SetBuffer(kernel, "_Histogram", histogram);
+        noise.SetTexture(kernel, "_Source", shape);
+
+        for (int mip = 0; mip < RemapLevels; mip++) {
+
+            int groups = Mathf.Max(1, (ShapeTexels >> mip) / 4);
+
+            noise.SetInt("_Size", ShapeTexels >> mip);
+            noise.SetInt("_Mip", mip);
+            noise.Dispatch(kernel, groups, groups, groups);
+
+        }
+
+        histogram.GetData(counts);
+
+        float[] table = new float[RemapLevels * RemapBins];
+        double[] sharp = Cumulative(counts, 0);
+
+        for (int mip = 0; mip < RemapLevels; mip++) {
+
+            double[] blurred = Cumulative(counts, mip);
+
+            for (int bin = 0; bin < RemapBins; bin++) {
+
+                table[mip * RemapBins + bin] = (float)ValueAtShare(sharp, 0.5 * (blurred[bin] + blurred[bin + 1]));
+
+            }
+
+        }
+
+        Texture2D remap = new Texture2D(RemapBins, RemapLevels, TextureFormat.RFloat, false, true) {
+
+            name = "Cloud Shape Remap",
+            wrapMode = TextureWrapMode.Clamp,
+            filterMode = FilterMode.Bilinear,
+
+        };
+
+        remap.SetPixelData(table, 0);
+        remap.Apply(false, true);
+
+        return remap;
+
+    }
+
+    // Share of a mip's values below each bin, and below all of them at the end.
+    private static double[] Cumulative(uint[] counts, int mip) {
+
+        double[] below = new double[RemapBins + 1];
+
+        for (int bin = 0; bin < RemapBins; bin++) {
+
+            below[bin + 1] = below[bin] + counts[mip * RemapBins + bin];
+
+        }
+
+        for (int bin = 0; bin <= RemapBins; bin++) {
+
+            below[bin] /= Math.Max(below[RemapBins], 1.0);
+
+        }
+
+        return below;
+
+    }
+
+    // The value with share of the volume below it, spread evenly across its bin.
+    private static double ValueAtShare(double[] below, double share) {
+
+        for (int bin = 0; bin < RemapBins; bin++) {
+
+            if (share < below[bin + 1]) {
+
+                double within = (share - below[bin]) / (below[bin + 1] - below[bin]);
+
+                return Math.Clamp((bin - 0.5 + within) / (RemapBins - 1), 0.0, 1.0);
+
+            }
+
+        }
+
+        return 1.0;
+
+    }
+
     private static void Discard(RenderTexture level, RenderTexture shape) {
 
         if (level != shape) {
@@ -335,8 +449,10 @@ public sealed class CloudView : IDisposable {
 
         UnityEngine.Object.Destroy(_material);
         UnityEngine.Object.Destroy(_land);
+        UnityEngine.Object.Destroy(_remap);
 
         _weather.Release();
+        _warp.Release();
         _shape.Release();
         _detail.Release();
         _bound.Release();

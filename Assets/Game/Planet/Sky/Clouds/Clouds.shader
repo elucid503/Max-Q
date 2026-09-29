@@ -75,8 +75,59 @@ Shader "Hidden/MaxQ/Clouds" {
             #pragma vertex Vert
             #pragma fragment Frag
 
-            // Share of each fresh sample in the history.
+            // Share of each fresh sample in the history, and of the fresh samples round a pixel not traced this frame: were
+            // only the traced quarter updated, noisy light would print as a lattice of every other pixel.
             #define CLOUD_BLEND 0.15
+            #define CLOUD_SPREAD 0.03
+
+            // Half-resolution pixels the view slides in a frame before its history is clamped, and fully; likewise the share
+            // by which the history's cloud distance strays from this frame's.
+            #define CLOUD_SLIDE_START 0.25
+            #define CLOUD_SLIDE_END 2.0
+            #define CLOUD_STRAY_START 0.15
+            #define CLOUD_STRAY_END 0.4
+
+            // The history through a Catmull-Rom filter over its 4x4 texels in five bilinear taps (Jimenez 2016): bilinear
+            // alone softens it a little more each frame it is carried, and the clouds blur as the camera moves.
+            float4 HistoryLight(float2 uv) {
+
+                float2 position = uv * _CloudSize.xy;
+                float2 centre = floor(position - 0.5) + 0.5;
+                float2 f = position - centre;
+                float2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+                float2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+                float2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+                float2 w3 = f * f * (-0.5 + 0.5 * f);
+                float2 w12 = w1 + w2;
+                float2 at0 = (centre - 1.0) * _CloudSize.zw;
+                float2 at3 = (centre + 2.0) * _CloudSize.zw;
+                float2 at12 = (centre + w2 / w12) * _CloudSize.zw;
+                float4 sum = SAMPLE_TEXTURE2D_LOD(_CloudHistory, sampler_LinearClamp, float2(at12.x, at0.y), 0) * (w12.x * w0.y) +
+                    SAMPLE_TEXTURE2D_LOD(_CloudHistory, sampler_LinearClamp, float2(at0.x, at12.y), 0) * (w0.x * w12.y) +
+                    SAMPLE_TEXTURE2D_LOD(_CloudHistory, sampler_LinearClamp, at12, 0) * (w12.x * w12.y) +
+                    SAMPLE_TEXTURE2D_LOD(_CloudHistory, sampler_LinearClamp, float2(at3.x, at12.y), 0) * (w3.x * w12.y) +
+                    SAMPLE_TEXTURE2D_LOD(_CloudHistory, sampler_LinearClamp, float2(at12.x, at3.y), 0) * (w12.x * w3.y);
+                float weight = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y;
+
+                // The filter's negative lobes overshoot, and carried frame after frame without the neighbourhood clamp they
+                // would sharpen noise into a lattice; held within the four nearest texels, it can never exceed what it reads.
+                int2 nearest = int2(centre - 0.5);
+                int2 last = int2(_CloudSize.xy) - 1;
+                float4 lowest = 1e9;
+                float4 highest = -1e9;
+
+                for (int i = 0; i < 4; i++) {
+
+                    float4 texel = LOAD_TEXTURE2D(_CloudHistory, clamp(nearest + int2(i & 1, i >> 1), 0, last));
+
+                    lowest = min(lowest, texel);
+                    highest = max(highest, texel);
+
+                }
+
+                return clamp(sum / weight, lowest, highest);
+
+            }
 
             Output Frag(Varyings input) {
 
@@ -133,23 +184,38 @@ Shader "Hidden/MaxQ/Clouds" {
                 // Where the clouds seen through this pixel stood last frame, as the planet turned and the camera moved.
                 float2 uv = (pixel * 2.0 + 1.0) * _SceneSize.zw;
                 float3 direction = normalize(ComputeWorldSpacePosition(uv, UNITY_NEAR_CLIP_VALUE, UNITY_MATRIX_I_VP) - _WorldSpaceCameraPos);
+
+                // A ray that misses the clouds' shell sees none, whatever its neighbours or history say, so nothing smears
+                // off the limb into space as the planet shrinks away.
+                float2 shell = RaySphere(_WorldSpaceCameraPos - _PlanetCentre, direction, _PlanetRadius + CLOUD_TOP);
+                bool through = shell.y > max(shell.x, 0.0);
+
+                current = through ? current : float4(0.0, 0.0, 0.0, 1.0);
                 float3 position = _WorldSpaceCameraPos + direction * depth.x;
                 float4 clip = mul(_CloudReprojection, float4(position, 1.0));
                 float2 previous = ComputeNormalizedDeviceCoordinatesWithZ(position, _CloudReprojection).xy;
                 float2 historyUv = previous * _SceneSize.xy / (2.0 * _CloudSize.xy);
-                float4 history = SAMPLE_TEXTURE2D_LOD(_CloudHistory, sampler_LinearClamp, historyUv, 0);
+                float4 history = HistoryLight(historyUv);
                 float2 historyDepth = SAMPLE_TEXTURE2D_LOD(_CloudHistoryDepth, sampler_LinearClamp, historyUv, 0).rg;
 
                 // Carried to this frame's camera, the history's distance keeps up instead of splitting the air short.
                 historyDepth.x += depth.x - length(position - _CloudPreviousCamera);
 
                 // History is dropped off screen, and where the ground behind the pixel has changed, as at a ridge line.
-                bool valid = _CloudHistoryValid > 0.0 && clip.w > 0.0 && all(previous >= 0.0) && all(previous <= 1.0) &&
+                bool valid = through && _CloudHistoryValid > 0.0 && clip.w > 0.0 && all(previous >= 0.0) && all(previous <= 1.0) &&
                     abs(historyDepth.y - depth.y) < 0.1 * depth.y + 0.05;
                 float4 spread = 0.25 * (highest - lowest);
-                float blend = valid ? (fresh ? CLOUD_BLEND : 0.0) : 1.0;
+                float blend = valid ? (fresh ? CLOUD_BLEND : CLOUD_SPREAD) : 1.0;
 
-                history = clamp(history, lowest - spread, highest + spread);
+                // The box comes from one ray per 4x4 block, which misses clouds smaller than that on most frames; clamped
+                // every frame they would blink out. History is clamped only where it may be stale: as far as the view has
+                // slid (half-resolution pixels this frame), or where the clouds it holds stand at another distance than
+                // this frame's, as when the camera pulls away. It is kept whole while the view holds nearly still.
+                float slide = length((previous - uv) * _SceneSize.xy) * 0.5;
+                float stray = abs(historyDepth.x - depth.x) / max(depth.x, 1.0);
+                float stale = max(smoothstep(CLOUD_SLIDE_START, CLOUD_SLIDE_END, slide), smoothstep(CLOUD_STRAY_START, CLOUD_STRAY_END, stray));
+
+                history = lerp(history, clamp(history, lowest - spread, highest + spread), stale);
 
                 Output output;
                 output.light = lerp(history, current, blend);

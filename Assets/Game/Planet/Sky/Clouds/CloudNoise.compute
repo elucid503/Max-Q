@@ -4,6 +4,7 @@
 #pragma kernel Shape
 #pragma kernel Detail
 #pragma kernel Bound
+#pragma kernel Histogram
 #pragma kernel Weather
 
 #define PI 3.14159265
@@ -22,6 +23,10 @@ SamplerState sampler_linear_repeatU_clampV;
 // cover. Equirectangular, row 0 at the north pole and column 0 at 180 W.
 RWTexture2D<float4> _Weather;
 float4 _WeatherSize;
+
+// Per cell, laid out as the weather is: an offset through the noise (over -1 to 1 of CLOUD_WARP in Clouds.hlsl) and the
+// mask between its two heap tilings. Neither repeats round the planet, so the tiles never line up from orbit.
+RWTexture2D<float4> _Warp;
 
 // How far east the weather has drifted (radians), its offset through the noise as it churns, its cyclones' stage of life
 // (0 to 1 over a cycle), and the sun in the body's frame.
@@ -188,6 +193,23 @@ void Bound(uint3 id : SV_DispatchThreadID) {
 
 }
 
+// Counts the shape's values in 256 bins per mip, so blurred mips can be ranked back onto the sharp one's values.
+RWStructuredBuffer<uint> _Histogram;
+uint _Mip;
+
+[numthreads(4, 4, 4)]
+void Histogram(uint3 id : SV_DispatchThreadID) {
+
+    if (any(id >= _Size)) {
+
+        return;
+
+    }
+
+    InterlockedAdd(_Histogram[_Mip * 256u + (uint)round(saturate(_Source.Load(int4(id, _Mip))) * 255.0)], 1u);
+
+}
+
 float Band(float x, float centre, float width) {
 
     return exp(-(x - centre) * (x - centre) / (width * width));
@@ -232,8 +254,9 @@ float2 Storms(float3 p, float potential) {
 
 // The comma clouds of the storm tracks' cyclones, spaced round each hemisphere in the drifting frame, each with its own
 // latitude, size and stage of life: a band that trails equatorward as the cold front and winds cyclonically (mirrored
-// south of the equator) into a head over the low. Latitude in degrees, longitude in radians; warp bends the bands.
-float Fronts(float latitude, float longitude, float warp) {
+// south of the equator) into a head over the low. Latitude in degrees, longitude in radians; warp bends the bands and
+// breakup, finer, frays them and breaks them into lengths.
+float Fronts(float latitude, float longitude, float warp, float breakup) {
 
     int hemisphere = latitude >= 0.0 ? 1 : -1;
     float spacing = 2.0 * PI / CYCLONES;
@@ -251,14 +274,15 @@ float Fronts(float latitude, float longitude, float warp) {
         float2 offset = float2(east, (latitude - centre) * hemisphere) / size;
         float r = length(offset);
 
-        // A logarithmic spiral: north-west of the low at half its size, swinging south as it reaches out.
-        float arm = 2.6 - 2.4 * log(max(r, 0.05) / 0.5);
-        float delta = atan2(offset.y, offset.x) + 0.6 * warp - arm;
-        float width = lerp(0.6, 0.2, saturate((r - 0.5) / 2.5));
+        // A logarithmic spiral: north-west of the low at half its size, swinging south as it reaches out, but less than a
+        // turn, so it trails off as a tail instead of closing into a ring.
+        float arm = 2.6 - 1.5 * log(max(r, 0.05) / 0.5);
+        float delta = atan2(offset.y, offset.x) + 1.2 * warp + 0.8 * breakup - arm;
+        float width = lerp(0.6, 0.25, saturate((r - 0.5) / 2.5)) * (1.0 + 0.6 * breakup);
 
         delta -= 2.0 * PI * round(delta / (2.0 * PI));
 
-        float band = exp(-(delta * r / width) * (delta * r / width)) * saturate((3.3 - r) / 0.8);
+        float band = exp(-(delta * r / width) * (delta * r / width)) * saturate((3.0 - r) / 1.2) * saturate(0.6 + 1.2 * breakup);
         float life = smoothstep(0.0, 0.5, sin(2.0 * PI * (_WeatherPhase + more.x)));
 
         // June: the southern track, in its winter, is the stronger.
@@ -267,6 +291,24 @@ float Fronts(float latitude, float longitude, float warp) {
     }
 
     return front;
+
+}
+
+// How heaps gather, 0 to 1 about a mean of a half: cloud systems at every size from some 20 to 160 km, as real fields are,
+// their outlines dragged about by a coarser flow (displaced up to about 100 km) so they swirl and trail instead of sitting
+// on a lattice.
+float Organization(float3 p) {
+
+    float3 flow = float3(Fbm(p, 8, 2, 81u), Fbm(p, 8, 2, 83u), Fbm(p, 8, 2, 85u));
+
+    return saturate(0.5 + 1.8 * Fbm(p + 0.04 * flow, 16, 4, 71u));
+
+}
+
+// A kind of heap's regional cover gathered by the organisation: thinned between systems and whole in their cores.
+float Gather(float regional, float organized, float core) {
+
+    return max(saturate(regional * (0.2 + 1.2 * organized)), core);
 
 }
 
@@ -330,7 +372,17 @@ void Weather(uint3 id : SV_DispatchThreadID) {
     float cumulus = saturate((0.3 + 0.3 * potential + 0.15 * meso) * lerp(1.0, 0.2 + 0.8 * day, land) * calm);
     float cumulusBase = lerp(0.7, 1.4, land);
     float stratocumulus = saturate(smoothstep(55.0, 70.0, abs(lat)) + 0.6 * tracks) * saturate(0.6 + 0.6 * synoptic);
-    float front = Fronts(lat, drifted, synoptic);
+
+    // Cloud systems: where the organisation peaks, the region's heaps close up into unbroken masses at full cover; between
+    // systems they thin to scattered heaps. A system is whole or absent: drier regions raise fewer and smaller ones, as
+    // only the organisation's higher peaks clear their bar, and the driest none.
+    float organized = Organization(p + _WeatherChurn);
+    float bar = lerp(1.1, 0.55, saturate(max(cumulus, stratocumulus) / 0.4));
+    float core = smoothstep(bar, bar + 0.1, organized);
+
+    cumulus = Gather(cumulus, organized, core);
+    stratocumulus = Gather(stratocumulus, organized, core);
+    float front = Fronts(lat, drifted, synoptic, meso);
     float2 storm = Storms(p + 2.0 * _WeatherChurn, potential);
     float4 claims = 0.0;
 
@@ -343,6 +395,15 @@ void Weather(uint3 id : SV_DispatchThreadID) {
     float base = height + claims.x / claims.z;
     float top = height + claims.y / claims.z;
 
-    _Weather[id.xy] = float4(saturate(claims.w * (0.85 + 0.3 * meso)), base / WEATHER_BASE_RANGE, top / WEATHER_TOP_RANGE, storm.y);
+    // The finer weather varies cover between systems but leaves their cores whole.
+    float cover = saturate(claims.w * lerp(0.85 + 0.3 * meso, 1.0, core));
+
+    _Weather[id.xy] = float4(cover, base / WEATHER_BASE_RANGE, top / WEATHER_TOP_RANGE, storm.y);
+
+    // Two octaves (about 50 and 25 km) sit well above the grid's 8 km, so the bilinear lookup bends the tiles smoothly.
+    float4 warp = float4(Fbm(p + _WeatherChurn, 48, 2, 61u), Fbm(p + _WeatherChurn, 48, 2, 63u), Fbm(p + _WeatherChurn, 48, 2, 65u),
+        Fbm(p + _WeatherChurn, 24, 2, 67u)) / 0.75;
+
+    _Warp[id.xy] = saturate(warp * 0.5 + 0.5);
 
 }

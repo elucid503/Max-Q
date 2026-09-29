@@ -197,8 +197,19 @@ float FogSunTransmittance(float3 position, float3 sun) {
 
 }
 
-// Sunlight the clouds let through to a point, all of it sunward of their shade and off the map; lod blurs the map.
-float CloudShadow(float3 positionWS, float lod = 0.0) {
+// The integral of saturate(u) from zero.
+float RampIntegral(float u) {
+
+    float ramp = saturate(u);
+
+    return 0.5 * ramp * ramp + max(u - 1.0, 0.0);
+
+}
+
+// Sunlight the clouds let through to a point, all of it sunward of their shade and off the map; lod blurs the map. The
+// shade's sunward edge is averaged over span (km before and after the point along the sun), as the map's blur never can:
+// along the sun the map holds still, so a point sample would print its jitter.
+float CloudShadow(float3 positionWS, float lod = 0.0, float2 span = float2(0.0, 0.0)) {
 
     if (_CloudShadowOrigin.w <= 0.0) {
 
@@ -210,21 +221,24 @@ float CloudShadow(float3 positionWS, float lod = 0.0) {
     float2 uv = float2(dot(offset, _CloudShadowRight), dot(offset, _CloudShadowUp)) * _CloudShadowOrigin.w + 0.5;
     float2 edge = saturate((0.5 - abs(uv - 0.5)) * 16.0);
     float2 shade = SAMPLE_TEXTURE2D_LOD(_CloudShadow, sampler_linear_clamp, uv, lod).rg;
-    float sunward = saturate((dot(offset, _SunDirection) - shade.g) / CLOUD_SHADOW_SOFTNESS + 0.5);
+    float2 u = (dot(offset, _SunDirection) + span - shade.g) / CLOUD_SHADOW_SOFTNESS + 0.5;
+    float width = u.y - u.x;
+    float sunward = abs(width) > 1e-3 ? (RampIntegral(u.y) - RampIntegral(u.x)) / width : saturate(0.5 * (u.x + u.y));
 
     return lerp(1.0, lerp(shade.r, 1.0, sunward), edge.x * edge.y);
 
 }
 
-// Sun visibility past the cascades (where they reach) and the clouds; cloudLod blurs the clouds' shadow over a march step.
-float SunShadow(float3 positionWS, float cloudLod = 0.0) {
+// Sun visibility past the cascades (where they reach) and the clouds; cloudLod and cloudSpan spread the clouds' shadow
+// over a march step.
+float SunShadow(float3 positionWS, float cloudLod = 0.0, float2 cloudSpan = float2(0.0, 0.0)) {
 
     #if defined(_MAIN_LIGHT_SHADOWS_CASCADE)
     float4 coord = TransformWorldToShadowCoord(positionWS);
 
-    return lerp(MainLightRealtimeShadow(coord), 1.0, GetMainLightShadowFade(positionWS)) * CloudShadow(positionWS, cloudLod);
+    return lerp(MainLightRealtimeShadow(coord), 1.0, GetMainLightShadowFade(positionWS)) * CloudShadow(positionWS, cloudLod, cloudSpan);
     #else
-    return CloudShadow(positionWS, cloudLod);
+    return CloudShadow(positionWS, cloudLod, cloudSpan);
     #endif
 
 }
@@ -307,7 +321,7 @@ Scattering Integrate(float3 origin, float3 direction, float tMax, float3 sun, in
 
         if (shadows) {
 
-            sunlight *= SunShadow(origin + direction * (previous + jitter * dt) + _PlanetCentre, CloudShadowLod(dt));
+            sunlight *= SunShadow(origin + direction * (previous + jitter * dt) + _PlanetCentre, CloudShadowLod(dt), float2(-jitter, 1.0 - jitter) * dt * cosTheta);
 
         }
 
@@ -323,7 +337,7 @@ Scattering Integrate(float3 origin, float3 direction, float tMax, float3 sun, in
 
             if (shadows) {
 
-                hazeLight *= SunShadow(q + _PlanetCentre, CloudShadowLod(inHaze));
+                hazeLight *= SunShadow(q + _PlanetCentre, CloudShadowLod(inHaze), float2(-0.5, 0.5) * inHaze * cosTheta);
 
             }
 
