@@ -33,13 +33,17 @@ public sealed class GroundView : IDisposable {
     private const double ShadowReach = 60_000.0;
     private const double MorphStart = 0.85;
 
+    // Patch textures filter across this many texels along the view where the ground is seen edge-on.
+    private const int Anisotropy = 4;
+
     // A patch whose water quads the view sees edge-on, thinner than this many pixels, draws its sheet at half
     // resolution: finer triangles would shade most of their pixels twice over.
     private const double WaterEdgeOn = 2.0;
 
-    // Each build spreads across every worker, so a few in flight keep them all busy; more would only queue ahead of
-    // the engine's own jobs. The six roots build together before the first frame.
-    private static readonly int BuildSlots = Math.Clamp(JobsUtility.JobWorkerCount / 4, 2, 8);
+    // Each build spreads across every worker, but a slot hands over at most one patch a frame however soon its build
+    // finishes, so enough are in flight for the view to fill within a second or two; more would only queue ahead of the
+    // engine's own jobs. The six roots build together before the first frame.
+    private static readonly int BuildSlots = Math.Clamp(JobsUtility.JobWorkerCount / 2, 3, 12);
     private const int Capacity = 2_400;
 
     private static readonly int DetailId = Shader.PropertyToID("_Detail");
@@ -81,6 +85,10 @@ public sealed class GroundView : IDisposable {
         public double MaxHeight;
         public double Radius;
         public int LastUsed;
+        public double Urgency;
+
+        // Whether this frame drew the finer level in the node's place, rather than the node itself.
+        public bool Refined;
 
         public Node(int face, int depth, int x, int y, Node parent, double bodyRadius) {
 
@@ -230,8 +238,8 @@ public sealed class GroundView : IDisposable {
 
             _builds[i] = new Build {
 
-                Detail = new NativeArray<ushort>(PatchJob.Texels * PatchJob.Texels * 4, Allocator.Persistent),
-                Cover = new NativeArray<byte>(PatchJob.Texels * PatchJob.Texels * 4, Allocator.Persistent),
+                Detail = new NativeArray<ushort>(PatchJob.MipStart(PatchJob.Mips) * 4, Allocator.Persistent),
+                Cover = new NativeArray<byte>(PatchJob.MipStart(PatchJob.Mips) * 4, Allocator.Persistent),
                 Info = new NativeArray<double>(PatchJob.InfoLength, Allocator.Persistent),
                 Horizons = new NativeArray<byte>(PatchJob.HorizonLength, Allocator.Persistent),
                 Rocks = new NativeArray<float4>(3 * PatchJob.MaxRocks, Allocator.Persistent),
@@ -242,8 +250,8 @@ public sealed class GroundView : IDisposable {
 
         }
 
-        // Coarse levels first, then nearest: the view fills in top-down and never waits on a far patch.
-        _byPriority = (a, b) => a.Depth != b.Depth ? a.Depth.CompareTo(b.Depth) : Distance(a).CompareTo(Distance(b));
+        // Most urgent first, coarser first among equals, as each unlocks its children.
+        _byPriority = (a, b) => a.Urgency != b.Urgency ? a.Urgency.CompareTo(b.Urgency) : a.Depth.CompareTo(b.Depth);
 
         Vector4[] morph = new Vector4[MaxDepth + 1];
 
@@ -308,7 +316,7 @@ public sealed class GroundView : IDisposable {
 
         Show(time, bodyPosition);
         Strew(time, bodyPosition, cameraScene);
-        ScheduleRequests();
+        ScheduleRequests(time, bodyPosition);
 
         if (_patchCount > Capacity) {
 
@@ -321,6 +329,7 @@ public sealed class GroundView : IDisposable {
     private void Select(Node node, double time, Vector3d bodyPosition) {
 
         node.LastUsed = _frame;
+        node.Refined = false;
 
         if (!Visible(node, time, bodyPosition)) {
 
@@ -368,6 +377,8 @@ public sealed class GroundView : IDisposable {
 
             if (ready) {
 
+                node.Refined = true;
+
                 foreach (Node child in node.Children) {
 
                     Select(child, time, bodyPosition);
@@ -413,6 +424,25 @@ public sealed class GroundView : IDisposable {
         foreach (Plane plane in _planes) {
 
             if (plane.GetDistanceToPoint(centre) < -radius && plane.GetDistanceToPoint(centre - _sunward) < -radius) {
+
+                return false;
+
+            }
+
+        }
+
+        return true;
+
+    }
+
+    private bool InFrustum(Node node, double time, Vector3d bodyPosition) {
+
+        Vector3 centre = MapSpace.ToScene(bodyPosition + _body.FromBodyFixed(node.Middle(_terrain.Radius), time));
+        float radius = (float)(node.Radius / MapSpace.MetresPerUnit);
+
+        foreach (Plane plane in _planes) {
+
+            if (plane.GetDistanceToPoint(centre) < -radius) {
 
                 return false;
 
@@ -503,7 +533,7 @@ public sealed class GroundView : IDisposable {
 
                 Vector3 middle = MapSpace.ToScene(bodyPosition + _body.FromBodyFixed(node.Middle(_terrain.Radius), time));
 
-                _vegetation.Draw(patch.Plot, position, rotation, middle, (float)(node.Radius / MapSpace.MetresPerUnit), camera);
+                _vegetation.Draw(patch.Plot, position, rotation, middle, (float)(node.Radius / MapSpace.MetresPerUnit), camera, node.Refined);
 
             }
 
@@ -513,7 +543,16 @@ public sealed class GroundView : IDisposable {
 
     }
 
-    private void ScheduleRequests() {
+    // A node is as urgent as the ground drawn in its place is coarse: its distance over the range its level serves, zero
+    // wherever the camera stands inside it, so the view refines outward from the camera rather than level by level across
+    // the whole view. Nodes whose parent the frustum takes in only for its shadow wait on those the camera sees.
+    private void ScheduleRequests(double time, Vector3d bodyPosition) {
+
+        foreach (Node node in _requests) {
+
+            node.Urgency = Math.Max(Distance(node), 0.0) / RangeOf(node.Depth) + (InFrustum(node.Parent, time, bodyPosition) ? 0.0 : 1.0);
+
+        }
 
         _requests.Sort(_byPriority);
 
@@ -615,9 +654,14 @@ public sealed class GroundView : IDisposable {
 
             }
 
-            patch.Detail.SetPixelData(slot.Detail, 0);
+            for (int mip = 0; mip < PatchJob.Mips; mip++) {
+
+                patch.Detail.SetPixelData(slot.Detail, mip, 4 * PatchJob.MipStart(mip));
+                patch.Cover.SetPixelData(slot.Cover, mip, 4 * PatchJob.MipStart(mip));
+
+            }
+
             patch.Detail.Apply(false, false);
-            patch.Cover.SetPixelData(slot.Cover, 0);
             patch.Cover.Apply(false, false);
 
             node.MinHeight = slot.Info[PatchJob.InfoMinHeight];
@@ -686,18 +730,20 @@ public sealed class GroundView : IDisposable {
             Object = go,
             Transform = go.transform,
             Mesh = new Mesh { name = "Ground Patch" },
-            Detail = new Texture2D(PatchJob.Texels, PatchJob.Texels, GraphicsFormat.R16G16B16A16_UNorm, TextureCreationFlags.None) {
+            Detail = new Texture2D(PatchJob.Texels, PatchJob.Texels, GraphicsFormat.R16G16B16A16_UNorm, PatchJob.Mips, TextureCreationFlags.MipChain) {
 
                 name = "Ground Detail",
                 wrapMode = TextureWrapMode.Clamp,
-                filterMode = FilterMode.Bilinear,
+                filterMode = FilterMode.Trilinear,
+                anisoLevel = Anisotropy,
 
             },
-            Cover = new Texture2D(PatchJob.Texels, PatchJob.Texels, GraphicsFormat.R8G8B8A8_UNorm, TextureCreationFlags.None) {
+            Cover = new Texture2D(PatchJob.Texels, PatchJob.Texels, GraphicsFormat.R8G8B8A8_UNorm, PatchJob.Mips, TextureCreationFlags.MipChain) {
 
                 name = "Ground Cover",
                 wrapMode = TextureWrapMode.Clamp,
-                filterMode = FilterMode.Bilinear,
+                filterMode = FilterMode.Trilinear,
+                anisoLevel = Anisotropy,
 
             },
             Ground = new Material(_groundTemplate),

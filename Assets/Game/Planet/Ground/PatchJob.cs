@@ -28,6 +28,10 @@ internal struct PatchJob : IJob {
     public const int TexelsPerQuad = 4;
     public const int Texels = TexelsPerQuad * Quads + 1;
 
+    // The detail and cover textures carry their mips down to one texel, each half the last rounded down, after the full
+    // level in the same array, so the ground can filter them where it lies far off or is seen edge-on.
+    public const int Mips = 8;
+
     public const int GroundVertices = Vertices * Vertices + 4 * Vertices;
     public const int WaterVertices = Vertices * Vertices + 4 * Vertices;
     public const int MaxIndices = 3 * (Quads * Quads * 6 + 4 * Quads * 6);
@@ -102,6 +106,9 @@ internal struct PatchJob : IJob {
     public int X;
     public int Y;
 
+    // Whether the sampling left the cover at the vertices for this job to spread across the texels.
+    public bool VertexCover;
+
     public Mesh.MeshData Mesh;
     public NativeArray<ushort> Detail;
     public NativeArray<byte> Cover;
@@ -139,6 +146,9 @@ internal struct PatchJob : IJob {
     public NativeArray<double> Depths;
 
     [ReadOnly]
+    public NativeArray<float4> Covers;
+
+    [ReadOnly]
     public NativeArray<float4> PlacedPlants;
 
     [ReadOnly]
@@ -154,6 +164,24 @@ internal struct PatchJob : IJob {
 
     /// <summary>Metres between a node's vertices at <paramref name="depth"/>.</summary>
     public static double Footprint(double radius, int depth) => radius * 0.5 * Math.PI / (Quads * (double)(1L << depth));
+
+    /// <summary>Texels across a mip of the detail and cover textures.</summary>
+    public static int MipSize(int mip) => Math.Max(Texels >> mip, 1);
+
+    /// <summary>Where a mip's texels start in the detail and cover arrays; <see cref="Mips"/> gives their length.</summary>
+    public static int MipStart(int mip) {
+
+        int start = 0;
+
+        for (int m = 0; m < mip; m++) {
+
+            start += MipSize(m) * MipSize(m);
+
+        }
+
+        return start;
+
+    }
 
     public static Vector3d CentreDirection(int face, int depth, int x, int y) {
 
@@ -175,6 +203,8 @@ internal struct PatchJob : IJob {
         Coarse = samples.Coarse;
         Fine = samples.Fine;
         Depths = samples.Depths;
+        Covers = samples.Covers;
+        VertexCover = PatchSampleJob.CoversByVertex(Terrain.Radius, Depth);
         PlacedPlants = samples.Plants;
         PlacedRocks = samples.Rocks;
 
@@ -185,6 +215,7 @@ internal struct PatchJob : IJob {
             Depth = Depth,
             X = X,
             Y = Y,
+            VertexCover = VertexCover,
             Grid = samples.Grid,
             Directions = samples.Directions,
             Heights = samples.Heights,
@@ -194,6 +225,7 @@ internal struct PatchJob : IJob {
             Fine = samples.Fine,
             Depths = samples.Depths,
             CoverTexels = Cover,
+            Covers = samples.Covers,
 
         }.Schedule(PatchSampleJob.Rows, 1);
 
@@ -267,6 +299,15 @@ internal struct PatchJob : IJob {
 
         WriteMesh(ground, Coarse, Directions, Heights, reach1, reach2, centre, footprint);
         WriteDetail(Occlusion());
+
+        if (VertexCover) {
+
+            SpreadCover();
+
+        }
+
+        Reduce(Detail);
+        Reduce(Cover);
 
         double reach = 0.0;
         Vector3d middle = centre / radius * (radius + 0.5 * (minHeight + maxHeight));
@@ -898,16 +939,110 @@ internal struct PatchJob : IJob {
                 double depth = Depths[l * Texels + k];
 
                 Detail[t + 2] = Unorm((float)(0.5 + 0.5 * Math.Sign(depth) * Math.Sqrt(Math.Min(Math.Abs(depth), WaterDepthRange) / WaterDepthRange)));
-                int i0 = k / TexelsPerQuad;
-                int j0 = l / TexelsPerQuad;
-                int i1 = Math.Min(i0 + 1, Quads);
-                int j1 = Math.Min(j0 + 1, Quads);
-                float fx = (k % TexelsPerQuad) / (float)TexelsPerQuad;
-                float fy = (l % TexelsPerQuad) / (float)TexelsPerQuad;
-                float top = math.lerp(occlusion[j0 * Vertices + i0], occlusion[j0 * Vertices + i1], fx);
-                float bottom = math.lerp(occlusion[j1 * Vertices + i0], occlusion[j1 * Vertices + i1], fx);
 
-                Detail[t + 3] = Unorm(math.lerp(top, bottom, fy));
+                Around(k, l, out int4 corners, out float2 f);
+
+                float top = math.lerp(occlusion[corners.x], occlusion[corners.y], f.x);
+                float bottom = math.lerp(occlusion[corners.z], occlusion[corners.w], f.x);
+
+                Detail[t + 3] = Unorm(math.lerp(top, bottom, f.y));
+
+            }
+
+        }
+
+    }
+
+    // The cover the vertices carry, spread across the texels between them.
+    private void SpreadCover() {
+
+        for (int l = 0; l < Texels; l++) {
+
+            for (int k = 0; k < Texels; k++) {
+
+                Around(k, l, out int4 corners, out float2 f);
+
+                float4 cover = math.lerp(math.lerp(Covers[corners.x], Covers[corners.y], f.x), math.lerp(Covers[corners.z], Covers[corners.w], f.x), f.y);
+                int t = (l * Texels + k) * 4;
+
+                Cover[t] = PatchSampleJob.Unorm(cover.x);
+                Cover[t + 1] = PatchSampleJob.Unorm(cover.y);
+                Cover[t + 2] = PatchSampleJob.Unorm(cover.z);
+                Cover[t + 3] = PatchSampleJob.Unorm(cover.w);
+
+            }
+
+        }
+
+    }
+
+    // The four vertices around texel k, l, in reading order, and how far across them it lies.
+    private static void Around(int k, int l, out int4 corners, out float2 f) {
+
+        int i0 = k / TexelsPerQuad;
+        int j0 = l / TexelsPerQuad;
+        int i1 = Math.Min(i0 + 1, Quads);
+        int j1 = Math.Min(j0 + 1, Quads);
+
+        corners = new int4(j0 * Vertices + i0, j0 * Vertices + i1, j1 * Vertices + i0, j1 * Vertices + i1);
+        f = new float2(k % TexelsPerQuad, l % TexelsPerQuad) / TexelsPerQuad;
+
+    }
+
+    // Each mip after the first averages the two by two texels of the one before that it covers; four channels to a texel.
+    private static void Reduce(NativeArray<ushort> texels) {
+
+        for (int mip = 1; mip < Mips; mip++) {
+
+            int size = MipSize(mip);
+            int above = MipSize(mip - 1);
+            int from = MipStart(mip - 1);
+            int to = MipStart(mip);
+
+            for (int l = 0; l < size; l++) {
+
+                for (int k = 0; k < size; k++) {
+
+                    for (int c = 0; c < 4; c++) {
+
+                        int a = (from + 2 * l * above + 2 * k) * 4 + c;
+                        int sum = texels[a] + texels[a + 4] + texels[a + 4 * above] + texels[a + 4 * above + 4];
+
+                        texels[(to + l * size + k) * 4 + c] = (ushort)((sum + 2) / 4);
+
+                    }
+
+                }
+
+            }
+
+        }
+
+    }
+
+    private static void Reduce(NativeArray<byte> texels) {
+
+        for (int mip = 1; mip < Mips; mip++) {
+
+            int size = MipSize(mip);
+            int above = MipSize(mip - 1);
+            int from = MipStart(mip - 1);
+            int to = MipStart(mip);
+
+            for (int l = 0; l < size; l++) {
+
+                for (int k = 0; k < size; k++) {
+
+                    for (int c = 0; c < 4; c++) {
+
+                        int a = (from + 2 * l * above + 2 * k) * 4 + c;
+                        int sum = texels[a] + texels[a + 4] + texels[a + 4 * above] + texels[a + 4 * above + 4];
+
+                        texels[(to + l * size + k) * 4 + c] = (byte)((sum + 2) / 4);
+
+                    }
+
+                }
 
             }
 

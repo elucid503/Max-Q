@@ -578,16 +578,16 @@ void Canopy(inout GroundSurface surface, float share, float3 canopy, float3 metr
 
 }
 
-// The ground's surface at a pixel; dx and dy are how far its object-space metres move across the pixel, taken where
-// screen-space derivatives are defined.
-GroundSurface GroundMaterial(GroundVaryings input, GroundDetail detail, float3 up, float footprint, float3 dx, float3 dy) {
+// The ground's surface at a pixel; dx and dy are how far its object-space metres move across the pixel, and uvDx and uvDy
+// its texture coordinates, taken where screen-space derivatives are defined.
+GroundSurface GroundMaterial(GroundVaryings input, GroundDetail detail, float3 up, float footprint, float3 dx, float3 dy, float2 uvDx, float2 uvDy) {
 
     float3 metres = input.positionOS * 1000.0;
     float3 upOS = TransformWorldToObjectDir(up);
     float distance = length(input.positionWS - _WorldSpaceCameraPos) * 1000.0;
     float altitude = (length(input.positionWS - _PlanetCentre) - _PlanetRadius) * 1000.0;
     float warmth = Warmth(up, altitude);
-    GroundCover cover = SampleCover(input.uv, input.morph);
+    GroundCover cover = SampleCover(input.uv, input.morph, uvDx, uvDy);
 
     Lie lie;
     lie.upness = dot(detail.normalWS, up);

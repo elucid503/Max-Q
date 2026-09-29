@@ -20,6 +20,9 @@ TEXTURE2D(_ParentDetail);
 TEXTURE2D(_Cover);
 TEXTURE2D(_ParentCover);
 
+// The four patch textures filter alike, trilinear and anisotropic over their mips, so they share the detail's sampler.
+SAMPLER(sampler_Detail);
+
 // Per level: morph start (km) and one over the morph band's width, measured from the camera the levels were chosen for.
 float4 _GroundMorph[17];
 float3 _GroundCamera;
@@ -108,6 +111,33 @@ float2 DetailUv(float2 uv) {
 
 }
 
+float2 ParentUv(float2 uv) {
+
+    return DetailUv(uv * _ParentRect.xy + _ParentRect.zw);
+
+}
+
+// A patch texture and its parent's at uv, the parent's only where the morph reaches toward it, filtered to the pixel by
+// uv's screen-space gradients.
+void SamplePatch(TEXTURE2D_PARAM(own, ownSampler), TEXTURE2D_PARAM(parent, parentSampler), float2 uv, float morph, float2 uvDx, float2 uvDy,
+    out float4 ownTexel, out float4 parentTexel) {
+
+    float scale = (DETAIL_TEXELS - 1.0) / DETAIL_TEXELS;
+    float2 parentScale = _ParentRect.xy * scale;
+
+    ownTexel = SAMPLE_TEXTURE2D_GRAD(own, ownSampler, DetailUv(uv), uvDx * scale, uvDy * scale);
+    parentTexel = morph > 0.0 ? SAMPLE_TEXTURE2D_GRAD(parent, parentSampler, ParentUv(uv), uvDx * parentScale, uvDy * parentScale) : ownTexel;
+
+}
+
+// The finest level of the same, for the vertex stage and single taps.
+void SamplePatch(TEXTURE2D_PARAM(own, ownSampler), TEXTURE2D_PARAM(parent, parentSampler), float2 uv, float morph, out float4 ownTexel, out float4 parentTexel) {
+
+    ownTexel = SAMPLE_TEXTURE2D_LOD(own, ownSampler, DetailUv(uv), 0.0);
+    parentTexel = morph > 0.0 ? SAMPLE_TEXTURE2D_LOD(parent, parentSampler, ParentUv(uv), 0.0) : ownTexel;
+
+}
+
 float3 DecodeOctahedral(float2 encoded) {
 
     float2 e = encoded * 2.0 - 1.0;
@@ -142,10 +172,7 @@ struct GroundDetail {
 };
 
 // This patch's detail blended toward its parent's by the same factor that morphs the geometry.
-GroundDetail SampleDetail(float2 uv, float morph) {
-
-    float4 own = SAMPLE_TEXTURE2D_LOD(_Detail, sampler_linear_clamp, DetailUv(uv), 0.0);
-    float4 parent = morph > 0.0 ? SAMPLE_TEXTURE2D_LOD(_ParentDetail, sampler_linear_clamp, DetailUv(uv * _ParentRect.xy + _ParentRect.zw), 0.0) : own;
+GroundDetail DecodeDetail(float4 own, float4 parent, float morph) {
 
     GroundDetail detail;
     detail.normalOS = normalize(lerp(DecodeOctahedral(own.rg), DecodeOctahedral(parent.rg), morph));
@@ -157,11 +184,31 @@ GroundDetail SampleDetail(float2 uv, float morph) {
 
 }
 
-// What covers the ground (see Cover.cs), blended toward the parent's like the detail.
-GroundCover SampleCover(float2 uv, float morph) {
+GroundDetail SampleDetail(float2 uv, float morph, float2 uvDx, float2 uvDy) {
 
-    float4 own = SAMPLE_TEXTURE2D_LOD(_Cover, sampler_linear_clamp, DetailUv(uv), 0.0);
-    float4 parent = morph > 0.0 ? SAMPLE_TEXTURE2D_LOD(_ParentCover, sampler_linear_clamp, DetailUv(uv * _ParentRect.xy + _ParentRect.zw), 0.0) : own;
+    float4 own;
+    float4 parent;
+
+    SamplePatch(TEXTURE2D_ARGS(_Detail, sampler_Detail), TEXTURE2D_ARGS(_ParentDetail, sampler_Detail), uv, morph, uvDx, uvDy, own, parent);
+
+    return DecodeDetail(own, parent, morph);
+
+}
+
+GroundDetail SampleDetail(float2 uv, float morph) {
+
+    float4 own;
+    float4 parent;
+
+    SamplePatch(TEXTURE2D_ARGS(_Detail, sampler_Detail), TEXTURE2D_ARGS(_ParentDetail, sampler_Detail), uv, morph, own, parent);
+
+    return DecodeDetail(own, parent, morph);
+
+}
+
+// What covers the ground (see Cover.cs), blended toward the parent's like the detail.
+GroundCover DecodeCover(float4 own, float4 parent, float morph) {
+
     float4 blended = lerp(own, parent, morph);
 
     GroundCover cover;
@@ -171,6 +218,28 @@ GroundCover SampleCover(float2 uv, float morph) {
     cover.snow = blended.a;
 
     return cover;
+
+}
+
+GroundCover SampleCover(float2 uv, float morph, float2 uvDx, float2 uvDy) {
+
+    float4 own;
+    float4 parent;
+
+    SamplePatch(TEXTURE2D_ARGS(_Cover, sampler_Detail), TEXTURE2D_ARGS(_ParentCover, sampler_Detail), uv, morph, uvDx, uvDy, own, parent);
+
+    return DecodeCover(own, parent, morph);
+
+}
+
+GroundCover SampleCover(float2 uv, float morph) {
+
+    float4 own;
+    float4 parent;
+
+    SamplePatch(TEXTURE2D_ARGS(_Cover, sampler_Detail), TEXTURE2D_ARGS(_ParentCover, sampler_Detail), uv, morph, own, parent);
+
+    return DecodeCover(own, parent, morph);
 
 }
 

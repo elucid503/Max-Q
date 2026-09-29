@@ -7,13 +7,20 @@
 // picture, and further still each grove card stands for the trees of its cell; Vegetation sets the distances. Foliage
 // takes the colour its climate gives it (see Biome.hlsl) shaded by the atlas, with normals rounded over the whole crown
 // and bent by each leaf, or painted into the picture, darkening into the crown, and light through the leaves from
-// behind; bark is dark.
+// behind; bark is dark. Pictures and groves draw a second time as their fringe, after every opaque, to soften the edges
+// of their cut.
 Shader "MaxQ/Tree" {
 
     Properties {
 
         _Foliage ("Foliage", 2DArray) = "" {}
         _GroundAlbedo ("Ground Albedo", 2DArray) = "" {}
+
+        // Vegetation's fringe material blends and leaves depth alone; the trees themselves are opaque.
+        [HideInInspector] _Fringe ("Fringe", Float) = 0
+        [HideInInspector] _SrcBlend ("Source Blend", Float) = 1
+        [HideInInspector] _DstBlend ("Destination Blend", Float) = 0
+        [HideInInspector] _ZWrite ("Depth Write", Float) = 1
 
     }
 
@@ -52,6 +59,8 @@ Shader "MaxQ/Tree" {
         float4 _Fade;
         // Metres across a grove's cell, or zero for trees.
         float _Grove;
+        // One where this draw is the fringe just outside the cut, blended over whatever stands behind.
+        float _Fringe;
 
         // Foliage cards in the full layout; a detail with fewer takes every so many of them. Must match Vegetation.
         #define FOLIAGE 72u
@@ -431,6 +440,8 @@ Shader "MaxQ/Tree" {
             Tags { "LightMode" = "UniversalForward" }
 
             Cull Off
+            Blend [_SrcBlend] [_DstBlend]
+            ZWrite [_ZWrite]
 
             HLSLPROGRAM
 
@@ -462,7 +473,20 @@ Shader "MaxQ/Tree" {
 
                 float4 texel = SAMPLE_TEXTURE2D_ARRAY(_Foliage, sampler_Foliage, input.uv.xy, input.uv.z);
 
-                clip(texel.a - CUTOFF);
+                // The fringe is the pixel just outside the cut, fading out across it; the cut itself stays opaque.
+                float fringe = saturate((texel.a - CUTOFF) / max(fwidth(texel.a), 1e-4) + 1.0);
+                float alpha = 1.0;
+
+                if (_Fringe > 0.5) {
+
+                    clip(min(fringe - 1.0 / 256.0, CUTOFF - texel.a));
+                    alpha = fringe;
+
+                } else {
+
+                    clip(texel.a - CUTOFF);
+
+                }
 
                 // A picture carries its whole normal; a card's leaves bend the crown's.
                 float2 bump = 2.0 * texel.gb - 1.0;
@@ -484,7 +508,7 @@ Shader "MaxQ/Tree" {
                 float through = 0.5 * pow(saturate(dot(-toCamera, _SunDirection)), 3.0) + 0.5 * saturate(dot(-n, _SunDirection));
                 float3 sky = light.sky * saturate(-dot(n, light.up)) * occlusion;
 
-                return float4(lit + (light.direct * light.shadow * through + sky) * albedo * TRANSMISSION / PI, 1.0);
+                return float4(lit + (light.direct * light.shadow * through + sky) * albedo * TRANSMISSION / PI, alpha);
 
             }
 

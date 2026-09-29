@@ -12,7 +12,8 @@ namespace MaxQ.Game.Planet.Ground.Plants;
 /// near the camera, thinning with distance, and trees, conifers and broadleaves, of foliage cards and then of single
 /// painted cards. Past the trees, the coarser levels' patches draw groves, one card for the trees of each cell, their
 /// cells doubling in size as the distance doubles, so each level draws about as many as the last and the forest reaches
-/// ten kilometres for little more than the trees cost.</summary>
+/// ten kilometres for little more than the trees cost. Pictures and groves, a few pixels across, draw again as the soft
+/// fringe of their cut once everything opaque stands behind them.</summary>
 public sealed class Vegetation : IDisposable {
 
     // Metres: grass is drawn within GrassReach, every tuft within GrassDense and a share falling with the square of
@@ -46,6 +47,10 @@ public sealed class Vegetation : IDisposable {
     private static readonly int BandId = Shader.PropertyToID("_Band");
     private static readonly int FadeId = Shader.PropertyToID("_Fade");
     private static readonly int GroveId = Shader.PropertyToID("_Grove");
+    private static readonly int FringeId = Shader.PropertyToID("_Fringe");
+    private static readonly int SrcBlendId = Shader.PropertyToID("_SrcBlend");
+    private static readonly int DstBlendId = Shader.PropertyToID("_DstBlend");
+    private static readonly int ZWriteId = Shader.PropertyToID("_ZWrite");
 
     /// <summary>One patch's plants on the GPU, sorted by rank.</summary>
     public sealed class Plot : IDisposable {
@@ -69,6 +74,7 @@ public sealed class Vegetation : IDisposable {
 
     private readonly Material _grass;
     private readonly Material _tree;
+    private readonly Material _fringe;
     private readonly GraphicsBuffer _bladeIndices;
     private readonly GraphicsBuffer _nearIndices;
     private readonly GraphicsBuffer _farIndices;
@@ -86,6 +92,16 @@ public sealed class Vegetation : IDisposable {
         _farIndices = Indices(CardTriangles(FarCards));
         _standIndices = Indices(CardTriangles(StandCards));
 
+        // Last of the opaques, so the fringe blends over the ground and the trees behind it; before the sky, which only
+        // fills where nothing wrote depth, so against the sky the cut stays as it is.
+        _fringe = new Material(tree) { name = "Tree Fringe", renderQueue = (int)RenderQueue.GeometryLast };
+        _fringe.SetFloat(FringeId, 1.0f);
+        _fringe.SetFloat(SrcBlendId, (float)BlendMode.SrcAlpha);
+        _fringe.SetFloat(DstBlendId, (float)BlendMode.OneMinusSrcAlpha);
+        _fringe.SetFloat(ZWriteId, 0.0f);
+        _fringe.SetShaderPassEnabled("ShadowCaster", false);
+        _fringe.SetShaderPassEnabled("DepthOnly", false);
+
     }
 
     /// <summary>Takes the plants of a freshly built patch at <paramref name="depth"/>, three float4s each, as PatchJob
@@ -100,8 +116,9 @@ public sealed class Vegetation : IDisposable {
 
     /// <summary>Draws a patch's plants, the patch's origin standing at <paramref name="position"/> turned by
     /// <paramref name="rotation"/>, its ground within <paramref name="radius"/> of <paramref name="middle"/>, as seen from
-    /// <paramref name="camera"/>.</summary>
-    public void Draw(Plot plot, Vector3 position, Quaternion rotation, Vector3 middle, float radius, Vector3 camera) {
+    /// <paramref name="camera"/>; <paramref name="refined"/> when the finer level's patches, and their plants, are drawn
+    /// in its place.</summary>
+    public void Draw(Plot plot, Vector3 position, Quaternion rotation, Vector3 middle, float radius, Vector3 camera, bool refined) {
 
         float centre = Vector3.Distance(middle, camera) * 1_000.0f;
         float nearest = Mathf.Max(centre - radius * 1_000.0f, 1.0f);
@@ -123,7 +140,8 @@ public sealed class Vegetation : IDisposable {
         }
 
         int level = PatchStrewJob.TreeDepth - plot.Depth;
-        Vector2 fadeIn = level == 0 ? new Vector2(-2.0f, -1.0f) : Handovers[level - 1];
+        // Groves hand over to the finer level only where it has been built; until then they stand in for it up close.
+        Vector2 fadeIn = level == 0 || !refined ? new Vector2(-2.0f, -1.0f) : Handovers[level - 1];
         Vector4 fade = new Vector4(fadeIn.x, fadeIn.y, Handovers[level].x, Handovers[level].y);
 
         if (farthest < fade.x || nearest >= fade.w) {
@@ -134,8 +152,7 @@ public sealed class Vegetation : IDisposable {
 
         if (level > 0) {
 
-            Issue(plot.StandBlock, _tree, _standIndices, plot, position, rotation, bounds, plot.Count, new Vector2(0.0f, Everywhere), fade, GroveCell(plot.Depth),
-                ShadowCastingMode.Off, StandCards);
+            Pictures(plot, position, rotation, bounds, new Vector2(0.0f, Everywhere), fade, GroveCell(plot.Depth));
 
             return;
 
@@ -160,10 +177,17 @@ public sealed class Vegetation : IDisposable {
 
         if (farthest > TreeFar / (1.0f + Jitter)) {
 
-            Issue(plot.StandBlock, _tree, _standIndices, plot, position, rotation, bounds, plot.Count, new Vector2(TreeFar, Everywhere), fade, 0.0f, ShadowCastingMode.Off,
-                StandCards);
+            Pictures(plot, position, rotation, bounds, new Vector2(TreeFar, Everywhere), fade, 0.0f);
 
         }
+
+    }
+
+    // A plot's trees or groves as pictures, then their fringe.
+    private void Pictures(Plot plot, Vector3 position, Quaternion rotation, Bounds bounds, Vector2 band, Vector4 fade, float grove) {
+
+        Issue(plot.StandBlock, _tree, _standIndices, plot, position, rotation, bounds, plot.Count, band, fade, grove, ShadowCastingMode.Off, StandCards);
+        Issue(plot.StandBlock, _fringe, _standIndices, plot, position, rotation, bounds, plot.Count, band, fade, grove, ShadowCastingMode.Off, StandCards);
 
     }
 
@@ -203,6 +227,7 @@ public sealed class Vegetation : IDisposable {
         _nearIndices.Release();
         _farIndices.Release();
         _standIndices.Release();
+        UnityEngine.Object.Destroy(_fringe);
 
     }
 

@@ -104,10 +104,15 @@ Shader "MaxQ/Ground" {
                 float2 coords = FrameCoords(input.positionWS);
                 float2 coordsDx = ddx(coords);
                 float2 coordsDy = ddy(coords);
-                GroundDetail detail = SampleDetail(input.uv, input.morph);
+                float2 uvDx = ddx(input.uv);
+                float2 uvDy = ddy(input.uv);
+                GroundDetail detail = SampleDetail(input.uv, input.morph, uvDx, uvDy);
                 Sunlight light = SunlightAt(input.positionWS);
 
-                GroundSurface surface = GroundMaterial(input, detail, light.up, footprint, metresDx, metresDy);
+                // The coast gives way to the water over at least a pixel, so it never steps along the pixels.
+                float coast = max(fwidth(detail.waterDepth), 0.1);
+
+                GroundSurface surface = GroundMaterial(input, detail, light.up, footprint, metresDx, metresDy, uvDx, uvDy);
 
                 // Under the sheet, the bed; the sheet covers it where its level stands over the mesh.
                 UNITY_BRANCH
@@ -136,7 +141,7 @@ Shader "MaxQ/Ground" {
 
                 }
 
-                return float4(lerp(ground, DistantWater(input, detail, light, surface, coords, coordsDx, coordsDy), saturate(detail.waterDepth / 0.1)), 1.0);
+                return float4(lerp(ground, DistantWater(input, detail, light, surface, coords, coordsDx, coordsDy), saturate(detail.waterDepth / coast)), 1.0);
 
             }
 

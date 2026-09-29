@@ -27,6 +27,9 @@ internal readonly struct Cover {
     private const double WoodsWavelength = 2_000.0;
     private const int Octaves = 5;
 
+    /// <summary>Metres: the shortest wavelength the cover varies over.</summary>
+    public const double Finest = WoodsWavelength / (1 << (Octaves - 1));
+
     private Cover(double vegetation, double forest, double arid, double snow, double warmth) {
 
         Vegetation = (float)vegetation;

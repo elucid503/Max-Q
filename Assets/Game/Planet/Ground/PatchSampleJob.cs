@@ -9,12 +9,14 @@ using Unity.Burst;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
+using Unity.Mathematics;
 
 namespace MaxQ.Game.Planet.Ground;
 
 /// <summary>A patch build's first stage: its twenty-odd thousand terrain samples, a row to each index so the workers share
 /// them and none is held long. Rows are the detail texture's, then the horizon grid's, whose middle is the vertex grid,
-/// then every other row of the parent's posts.</summary>
+/// then every other row of the parent's posts. Where the vertices stand close enough to carry the cover, they work it out
+/// and the assembly spreads it across the texels between them.</summary>
 [BurstCompile]
 internal struct PatchSampleJob : IJobParallelFor {
 
@@ -27,6 +29,7 @@ internal struct PatchSampleJob : IJobParallelFor {
     public int Depth;
     public int X;
     public int Y;
+    public bool VertexCover;
 
     [WriteOnly, NativeDisableParallelForRestriction]
     public NativeArray<Vector3d> Grid;
@@ -54,6 +57,13 @@ internal struct PatchSampleJob : IJobParallelFor {
 
     [WriteOnly, NativeDisableParallelForRestriction]
     public NativeArray<byte> CoverTexels;
+
+    [WriteOnly, NativeDisableParallelForRestriction]
+    public NativeArray<float4> Covers;
+
+    /// <summary>Whether a patch at <paramref name="depth"/> takes its cover from its vertices: they stand an eighth of the
+    /// cover's finest wavelength apart or closer, so the texels between them interpolate it as well as they would sample it.</summary>
+    public static bool CoversByVertex(double radius, int depth) => PatchJob.Footprint(radius, depth) <= Cover.Finest / 8.0;
 
     public void Execute(int row) {
 
@@ -89,7 +99,8 @@ internal struct PatchSampleJob : IJobParallelFor {
 
     }
 
-    // Four samples to a quad, a texel of margin all round for the normals, and the water depth and cover of each texel.
+    // Four samples to a quad, a texel of margin all round for the normals, and the water depth of each texel and its cover
+    // unless the vertices carry it.
     private void SampleFine(int l, double a0, double b0, double span, double footprint) {
 
         double radius = Terrain.Radius;
@@ -106,9 +117,17 @@ internal struct PatchSampleJob : IJobParallelFor {
 
                 int t = (l - 1) * PatchJob.Texels + k - 1;
                 double level = Terrain.WaterLevelAt(direction, footprint / PatchJob.TexelsPerQuad);
-                Cover cover = Cover.At(Terrain, direction, height, footprint / PatchJob.TexelsPerQuad);
 
                 Depths[t] = double.IsNaN(level) ? -PatchJob.WaterDepthRange : level - height;
+
+                if (VertexCover) {
+
+                    continue;
+
+                }
+
+                Cover cover = Cover.At(Terrain, direction, height, footprint / PatchJob.TexelsPerQuad);
+
                 CoverTexels[4 * t] = Unorm(cover.Vegetation);
                 CoverTexels[4 * t + 1] = Unorm(cover.Forest);
                 CoverTexels[4 * t + 2] = Unorm(cover.Arid);
@@ -120,7 +139,8 @@ internal struct PatchSampleJob : IJobParallelFor {
 
     }
 
-    // Ground at the vertex spacing, out to HorizonReach past the patch; the vertices keep their height and water level too.
+    // Ground at the vertex spacing, out to HorizonReach past the patch; the vertices keep their height and water level too,
+    // and their cover where the texels take theirs from them.
     private void SampleGrid(int l, double a0, double b0, double span, double footprint) {
 
         int j = l - PatchJob.HorizonReach;
@@ -142,6 +162,14 @@ internal struct PatchSampleJob : IJobParallelFor {
                 Levels[v] = Terrain.WaterLevelAt(direction, footprint);
                 Shores[v] = Terrain.ShoreDistanceAt(direction);
 
+                if (VertexCover) {
+
+                    Cover cover = Cover.At(Terrain, direction, height, footprint / PatchJob.TexelsPerQuad);
+
+                    Covers[v] = new float4(cover.Vegetation, cover.Forest, cover.Arid, cover.Snow);
+
+                }
+
             }
 
         }
@@ -161,6 +189,6 @@ internal struct PatchSampleJob : IJobParallelFor {
 
     }
 
-    private static byte Unorm(float x) => (byte)Math.Round(Math.Min(Math.Max(x, 0.0f), 1.0f) * 255.0f);
+    public static byte Unorm(float x) => (byte)Math.Round(Math.Min(Math.Max(x, 0.0f), 1.0f) * 255.0f);
 
 }
