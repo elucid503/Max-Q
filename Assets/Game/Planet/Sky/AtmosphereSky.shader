@@ -14,6 +14,7 @@ Shader "Hidden/MaxQ/AtmosphereSky" {
         #include "Packages/com.unity.render-pipelines.core/Runtime/Utilities/Blit.hlsl"
 
         #include "ViewRay.hlsl"
+        #include "HorizonGlow.hlsl"
 
         TEXTURE2D_X(_AtmosphereInscatter);
         TEXTURE2D_X(_AtmosphereTransmittance);
@@ -66,7 +67,7 @@ Shader "Hidden/MaxQ/AtmosphereSky" {
 
                 }
 
-                Scattering scattering = Integrate(_WorldSpaceCameraPos - _PlanetCentre, ray.direction, ray.sky ? 1e9 : ray.distance, _SunDirection, 16, true, jitter, true, true,
+                Scattering scattering = Integrate(_WorldSpaceCameraPos - _PlanetCentre, ray.direction, ray.reach, _SunDirection, 16, true, jitter, true, true,
                     cloudDepth);
                 float3 front = scattering.frontRadiance * _SunIlluminance;
 
@@ -175,9 +176,9 @@ Shader "Hidden/MaxQ/AtmosphereSky" {
 
                 }
 
-                // Stars fade as the sky brightens; the eye never sees them against a daylit sky.
+                // Stars fade as the sky brightens; Selene's horizon glow adds where there is no air.
                 float glare = dot(inscatter, float3(0.2126, 0.7152, 0.0722));
-                float3 background = scene * exp(-glare * 40.0);
+                float3 background = scene * exp(-glare * 40.0) + HorizonGlow(ray.direction);
                 float3 origin = _WorldSpaceCameraPos - _PlanetCentre;
                 float cosSun = dot(ray.direction, _SunDirection);
 

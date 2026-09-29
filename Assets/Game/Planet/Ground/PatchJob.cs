@@ -103,6 +103,7 @@ internal struct PatchJob : IJob {
 
     public int Face;
     public int Depth;
+    public int MaxDepth;
     public int X;
     public int Y;
 
@@ -204,7 +205,7 @@ internal struct PatchJob : IJob {
         Fine = samples.Fine;
         Depths = samples.Depths;
         Covers = samples.Covers;
-        VertexCover = PatchSampleJob.CoversByVertex(Terrain.Radius, Depth);
+        VertexCover = PatchSampleJob.CoversByVertex(Terrain, Depth);
         PlacedPlants = samples.Plants;
         PlacedRocks = samples.Rocks;
 
@@ -229,11 +230,12 @@ internal struct PatchJob : IJob {
 
         }.Schedule(PatchSampleJob.Rows, 1);
 
-        JobHandle strewn = !PatchStrewJob.Strews(Depth) ? sampled : new PatchStrewJob {
+        JobHandle strewn = !PatchStrewJob.Strews(Depth, MaxDepth) ? sampled : new PatchStrewJob {
 
             Terrain = Terrain,
             Face = Face,
             Depth = Depth,
+            MaxDepth = MaxDepth,
             X = X,
             Y = Y,
             Grid = samples.Grid,
@@ -321,8 +323,8 @@ internal struct PatchJob : IJob {
         Info[InfoMinHeight] = minHeight;
         Info[InfoMaxHeight] = maxHeight;
         Info[InfoRadius] = reach + 0.5 * (maxHeight - minHeight);
-        Info[InfoPlants] = PatchStrewJob.Strews(Depth) ? GatherPlants() : 0;
-        Info[InfoRocks] = PatchStrewJob.Strews(Depth) ? GatherRocks() : 0;
+        Info[InfoPlants] = PatchStrewJob.Strews(Depth, MaxDepth) ? GatherPlants() : 0;
+        Info[InfoRocks] = PatchStrewJob.Strews(Depth, MaxDepth) ? GatherRocks() : 0;
 
     }
 
@@ -335,7 +337,7 @@ internal struct PatchJob : IJob {
 
         for (int quad = 0; quad < Quads * Quads; quad++) {
 
-            for (int c = 0; c < PatchStrewJob.PlantsPerQuad(Depth); c++) {
+            for (int c = 0; c < PatchStrewJob.PlantsPerQuad(Depth, MaxDepth, Terrain.IsCratered); c++) {
 
                 int slot = quad * PatchStrewJob.PlantChances + c;
                 float rank = PlacedPlants[3 * slot].w;
@@ -375,7 +377,7 @@ internal struct PatchJob : IJob {
 
         for (int quad = 0; quad < Quads * Quads && count < MaxRocks; quad++) {
 
-            for (int c = 0; c < PatchStrewJob.RocksPerQuad(Depth) && count < MaxRocks; c++) {
+            for (int c = 0; c < PatchStrewJob.RocksPerQuad(Depth, MaxDepth, Terrain.IsCratered) && count < MaxRocks; c++) {
 
                 int slot = quad * PatchStrewJob.RockChances + c;
 

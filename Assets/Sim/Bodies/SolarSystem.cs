@@ -9,11 +9,12 @@ namespace MaxQ.Sim.Bodies;
 public static class SolarSystem {
 
     public const double TerraRadius = 1_274_200.0;
+    public const double SeleneRadius = 347_420.0;
 
-    public static (CelestialBody Terra, CelestialBody Selene) Create(Terrain? terraTerrain = null) {
+    public static (CelestialBody Terra, CelestialBody Selene) Create(Terrain? terraTerrain = null, Terrain? seleneTerrain = null) {
 
         const double terraRadius = TerraRadius;
-        const double seleneRadius = 347_420.0;
+        const double seleneRadius = SeleneRadius;
 
         CelestialBody terra = new CelestialBody("Terra", 9.81 * terraRadius * terraRadius, terraRadius, 86_400.0, terrain: terraTerrain);
 
@@ -31,7 +32,7 @@ public static class SolarSystem {
         );
 
         // Tidally locked: one rotation per orbit.
-        CelestialBody selene = new CelestialBody("Selene", 1.625 * seleneRadius * seleneRadius, seleneRadius, seleneOrbit.Period, terra, seleneOrbit);
+        CelestialBody selene = new CelestialBody("Selene", 1.625 * seleneRadius * seleneRadius, seleneRadius, seleneOrbit.Period, terra, seleneOrbit, seleneTerrain);
 
         return (terra, selene);
 

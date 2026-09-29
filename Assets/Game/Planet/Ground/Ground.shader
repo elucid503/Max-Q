@@ -11,6 +11,7 @@ Shader "MaxQ/Ground" {
         _ParentCover ("Parent Cover", 2D) = "black" {}
         _ParentRect ("Parent Rect", Vector) = (1, 1, 0, 0)
         _Level ("Level", Float) = 0
+        _Morph ("Morph", Vector) = (0, 0, 0, 0)
         _TileOriginNear ("Near Tile Origin", Vector) = (0, 0, 0, 0)
         _TileOriginFar ("Far Tile Origin", Vector) = (0, 0, 0, 0)
         _TileOriginMacro ("Macro Tile Origin", Vector) = (0, 0, 0, 0)

@@ -4,8 +4,10 @@
 #pragma kernel Adapt
 
 #define BINS 64
-#define MIN_EV -14.0
 #define MAX_EV 6.0
+
+// The histogram reaches down as far below daylight as the eye may adapt, and two stops more.
+#define MIN_EV (-12.0 - _MaxStops)
 #define STRIDE 4
 
 // Share of the counted pixels ignored at each end.
@@ -17,9 +19,8 @@
 #define HIGHLIGHT_KEY 0.9
 #define HIGHLIGHT 0.9
 
-// Exposure never strays more than this many stops from daylight's, so dusk still reads as dusk.
+// Stops exposure may stray below daylight's; above, up to _MaxStops.
 #define MIN_STOPS -1.5
-#define MAX_STOPS 2.0
 
 // Seconds for the eye to close most of the gap, brightening and darkening.
 #define BRIGHTEN_TIME 1.2
@@ -30,8 +31,9 @@ RWStructuredBuffer<uint> _Histogram;
 RWStructuredBuffer<float> _Exposure;
 float4 _SourceSize;
 
-// Whether the camera is inside the air, where the eye adapts; above it, exposure returns to daylight's.
+// Whether the eye adapts (inside the air or on airless ground); otherwise exposure returns to daylight's.
 float _Adapting;
+float _MaxStops;
 float _DeltaTime;
 
 groupshared uint bins[BINS];
@@ -106,7 +108,7 @@ void Adapt() {
 
     }
 
-    float target = total == 0 || _Adapting == 0.0 ? 0.0 : clamp(min(log2(KEY) - sum / max(count, 1.0), log2(HIGHLIGHT_KEY) - highlightEv), MIN_STOPS, MAX_STOPS);
+    float target = total == 0 || _Adapting == 0.0 ? 0.0 : clamp(min(log2(KEY) - sum / max(count, 1.0), log2(HIGHLIGHT_KEY) - highlightEv), MIN_STOPS, _MaxStops);
     float current = log2(_Exposure[0]);
     float time = target > current ? BRIGHTEN_TIME : DARKEN_TIME;
 

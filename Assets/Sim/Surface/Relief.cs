@@ -237,7 +237,7 @@ public static class Relief {
 
     private static double Lerp(double a, double b, double t) => a + (b - a) * t;
 
-    private static uint Hash(int x, int y, int z, uint seed) {
+    internal static uint Hash(int x, int y, int z, uint seed) {
 
         uint h = seed * 0x9E3779B9u;
 

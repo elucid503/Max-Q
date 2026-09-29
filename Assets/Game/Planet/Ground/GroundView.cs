@@ -20,10 +20,13 @@ using UnityEngine.Rendering;
 namespace MaxQ.Game.Planet.Ground;
 
 /// <summary>Draws a surveyed body as a cube-sphere quadtree of patches (CDLOD): each frame it picks the nodes the camera
-/// needs, geomorphs between levels in the shader, and builds missing patches with Burst jobs from the sim's terrain.</summary>
+/// needs, geomorphs between levels in the shader, and builds missing patches with Burst jobs from the sim's terrain.
+/// Beyond the depth range it draws scaled down about the eye as a stand-in, lit where it truly is.</summary>
 public sealed class GroundView : IDisposable {
 
-    public const int MaxDepth = 16;
+    // Approximate finest quad size (m); cratered ground needs its small craters in the mesh.
+    private const double FinestQuad = 1.0;
+    private const double FinestCrateredQuad = 0.5;
 
     // A node splits once the camera is within Range of its children's size; 5.5 keeps each finer level
     // inside the coarser level's unmorphed band, so neighbouring levels always meet on shared edges.
@@ -67,7 +70,7 @@ public sealed class GroundView : IDisposable {
     // Repeats before a tile origin wraps; must match TILE_PERIOD in GroundMaterials.hlsl.
     private const double TilePeriod = 64.0;
 
-    private static readonly int MorphId = Shader.PropertyToID("_GroundMorph");
+    private static readonly int MorphId = Shader.PropertyToID("_Morph");
     private static readonly int GroundCameraId = Shader.PropertyToID("_GroundCamera");
 
     private sealed class Node {
@@ -91,7 +94,7 @@ public sealed class GroundView : IDisposable {
         // Whether this frame drew the finer level in the node's place, rather than the node itself.
         public bool Refined;
 
-        public Node(int face, int depth, int x, int y, Node parent, double bodyRadius) {
+        public Node(int face, int depth, int x, int y, Node parent, double bodyRadius, double lowest, double highest) {
 
             Face = face;
             Depth = depth;
@@ -105,8 +108,8 @@ public sealed class GroundView : IDisposable {
             double b = y * span - 1.0;
 
             // Until built, a node borrows its parent's heights, padded for the finer relief it will show.
-            MinHeight = parent?.MinHeight - 50.0 ?? Terrain.Lowest;
-            MaxHeight = parent?.MaxHeight + 50.0 ?? Terrain.Highest;
+            MinHeight = parent?.MinHeight - 50.0 ?? lowest;
+            MaxHeight = parent?.MaxHeight + 50.0 ?? highest;
 
             double corner = 0.0;
 
@@ -181,6 +184,8 @@ public sealed class GroundView : IDisposable {
     private readonly Rocks _rocks;
     private readonly Vegetation _vegetation;
     private readonly Comparison<Node> _byPriority;
+    private readonly Vector4[] _morphs;
+    private readonly int _standInId;
 
     private Vector3d _camera;
     private Vector3 _sunward;
@@ -188,6 +193,17 @@ public sealed class GroundView : IDisposable {
     private int _patchCount;
 
     public CelestialBody Body => _body;
+
+    /// <summary>The finest level of the quadtree, where quads are about FinestQuad across.</summary>
+    public int MaxDepth { get; }
+
+    /// <summary>How far the last draw scaled the body down about the eye to stand within reach; one when drawn true.</summary>
+    public double Scale { get; private set; } = 1.0;
+
+    /// <summary>Scene depth where the stand-in (air included) begins; <see cref="NoStandIn"/> when drawn true.</summary>
+    public float StandInDepth { get; private set; } = NoStandIn;
+
+    public const float NoStandIn = 1e30f;
 
     /// <summary>Keeps selecting and streaming but draws nothing; the capture uses it to time the ground.</summary>
     public bool Hidden { get; set; }
@@ -225,6 +241,7 @@ public sealed class GroundView : IDisposable {
 
     }
 
+    /// <summary>Water and vegetation may be null; shaders read the stand-in scale as _&lt;body&gt;StandIn.</summary>
     public GroundView(CelestialBody body, Material ground, Material water, Material rock, Vegetation vegetation) {
 
         _body = body;
@@ -234,6 +251,9 @@ public sealed class GroundView : IDisposable {
         _groundTemplate = ground;
         _waterTemplate = water;
         _root = new GameObject(body.Name).transform;
+        _standInId = Shader.PropertyToID($"_{body.Name}StandIn");
+        MaxDepth = MaxDepthFor(_terrain);
+        Shader.SetGlobalFloat(_standInId, 1.0f);
 
         for (int i = 0; i < _builds.Length; i++) {
 
@@ -254,22 +274,23 @@ public sealed class GroundView : IDisposable {
         // Most urgent first, coarser first among equals, as each unlocks its children.
         _byPriority = (a, b) => a.Urgency != b.Urgency ? a.Urgency.CompareTo(b.Urgency) : a.Depth.CompareTo(b.Depth);
 
-        Vector4[] morph = new Vector4[MaxDepth + 1];
+        _morphs = new Vector4[MaxDepth + 1];
 
         for (int depth = 0; depth <= MaxDepth; depth++) {
 
             double end = RangeOf(depth) / MapSpace.MetresPerUnit;
             double start = end * MorphStart;
 
-            morph[depth] = new Vector4((float)start, (float)(1.0 / (end - start)), 0.0f, 0.0f);
+            _morphs[depth] = new Vector4((float)start, (float)(1.0 / (end - start)), 0.0f, 0.0f);
 
         }
 
-        Shader.SetGlobalVectorArray(MorphId, morph);
+        // A root has no coarser level; morphing would only halve its detail where the whole body is seen from afar.
+        _morphs[0] = new Vector4(float.MaxValue, 0.0f, 0.0f, 0.0f);
 
         for (int face = 0; face < 6; face++) {
 
-            _roots[face] = new Node(face, 0, 0, 0, null, _terrain.Radius);
+            _roots[face] = new Node(face, 0, 0, 0, null, _terrain.Radius, _terrain.Lowest, _terrain.Highest);
             Schedule(_roots[face], _builds[face]);
 
         }
@@ -279,16 +300,25 @@ public sealed class GroundView : IDisposable {
 
     }
 
+    /// <summary>The finest level of a body's ground.</summary>
+    public static int MaxDepthFor(Terrain terrain) =>
+        (int)Math.Round(Math.Log(PatchJob.Footprint(terrain.Radius, 0) / (terrain.IsCratered ? FinestCrateredQuad : FinestQuad), 2.0));
+
     private double RangeOf(int depth) => Range * _terrain.Radius * 0.5 * Math.PI / (1L << depth);
 
-    /// <summary><paramref name="sunward"/> is the scene direction toward the sun, used to keep shadow casters that are off screen.</summary>
-    public void Draw(double time, Camera camera, Vector3 sunward) {
+    /// <summary>The body stands in when its centre is farther than <paramref name="reach"/> (scene units).</summary>
+    public void Draw(double time, Camera camera, Vector3 sunward, double reach, double airThickness) {
 
         _frame++;
 
         Vector3d bodyPosition = _body.PositionAt(time);
         Vector3 cameraScene = camera.transform.position;
         Vector3d cameraSim = MapSpace.Origin + new Vector3d(cameraScene.x, cameraScene.z, cameraScene.y) * MapSpace.MetresPerUnit;
+        double centreDistance = (cameraSim - bodyPosition).Length / MapSpace.MetresPerUnit;
+
+        Scale = Math.Min(1.0, reach / centreDistance);
+        StandInDepth = Scale < 1.0 ? (float)(Scale * (centreDistance - (_terrain.Radius + airThickness) / MapSpace.MetresPerUnit)) : NoStandIn;
+        Shader.SetGlobalFloat(_standInId, (float)Scale);
 
         _camera = _body.ToBodyFixed(cameraSim - bodyPosition, time);
         _sunward = sunward * (float)(ShadowReach / MapSpace.MetresPerUnit);
@@ -349,10 +379,10 @@ public sealed class GroundView : IDisposable {
 
             node.Children ??= new[] {
 
-                new Node(node.Face, node.Depth + 1, 2 * node.X, 2 * node.Y, node, _terrain.Radius),
-                new Node(node.Face, node.Depth + 1, 2 * node.X + 1, 2 * node.Y, node, _terrain.Radius),
-                new Node(node.Face, node.Depth + 1, 2 * node.X, 2 * node.Y + 1, node, _terrain.Radius),
-                new Node(node.Face, node.Depth + 1, 2 * node.X + 1, 2 * node.Y + 1, node, _terrain.Radius),
+                new Node(node.Face, node.Depth + 1, 2 * node.X, 2 * node.Y, node, _terrain.Radius, _terrain.Lowest, _terrain.Highest),
+                new Node(node.Face, node.Depth + 1, 2 * node.X + 1, 2 * node.Y, node, _terrain.Radius, _terrain.Lowest, _terrain.Highest),
+                new Node(node.Face, node.Depth + 1, 2 * node.X, 2 * node.Y + 1, node, _terrain.Radius, _terrain.Lowest, _terrain.Highest),
+                new Node(node.Face, node.Depth + 1, 2 * node.X + 1, 2 * node.Y + 1, node, _terrain.Radius, _terrain.Lowest, _terrain.Highest),
 
             };
 
@@ -401,7 +431,7 @@ public sealed class GroundView : IDisposable {
     // Behind the horizon of the lowest possible ground, or outside the view frustum even with its shadow swept along.
     private bool Visible(Node node, double time, Vector3d bodyPosition) {
 
-        double occluder = _terrain.Radius + Terrain.Lowest;
+        double occluder = _terrain.Radius + _terrain.Lowest;
         double cameraDistance = _camera.Length;
 
         if (cameraDistance > occluder) {
@@ -419,8 +449,8 @@ public sealed class GroundView : IDisposable {
 
         }
 
-        Vector3 centre = MapSpace.ToScene(bodyPosition + _body.FromBodyFixed(node.Middle(_terrain.Radius), time));
-        float radius = (float)(node.Radius / MapSpace.MetresPerUnit);
+        Vector3 centre = StandIn(MapSpace.ToScene(bodyPosition + _body.FromBodyFixed(node.Middle(_terrain.Radius), time)));
+        float radius = (float)(Scale * node.Radius / MapSpace.MetresPerUnit);
 
         foreach (Plane plane in _planes) {
 
@@ -438,8 +468,8 @@ public sealed class GroundView : IDisposable {
 
     private bool InFrustum(Node node, double time, Vector3d bodyPosition) {
 
-        Vector3 centre = MapSpace.ToScene(bodyPosition + _body.FromBodyFixed(node.Middle(_terrain.Radius), time));
-        float radius = (float)(node.Radius / MapSpace.MetresPerUnit);
+        Vector3 centre = StandIn(MapSpace.ToScene(bodyPosition + _body.FromBodyFixed(node.Middle(_terrain.Radius), time)));
+        float radius = (float)(Scale * node.Radius / MapSpace.MetresPerUnit);
 
         foreach (Plane plane in _planes) {
 
@@ -468,14 +498,20 @@ public sealed class GroundView : IDisposable {
         }
 
         Quaternion rotation = Quaternion.AngleAxis(-(float)(_body.RotationAt(time) * 180.0 / Math.PI), Vector3.up);
+        Vector3 scale = Vector3.one * (float)Scale;
+
+        // A stand-in's shadow would fall at its scaled place, so it casts none.
+        ShadowCastingMode shadows = Scale < 1.0 ? ShadowCastingMode.Off : ShadowCastingMode.On;
 
         foreach (Node node in _selected) {
 
             Patch patch = node.Patch;
 
             patch.Renderer.enabled = !Hidden;
+            patch.Renderer.shadowCastingMode = shadows;
             ShapeWater(node);
-            patch.Transform.SetPositionAndRotation(MapSpace.ToScene(bodyPosition + _body.FromBodyFixed(patch.Centre, time)), rotation);
+            patch.Transform.SetPositionAndRotation(StandIn(MapSpace.ToScene(bodyPosition + _body.FromBodyFixed(patch.Centre, time))), rotation);
+            patch.Transform.localScale = scale;
 
         }
 
@@ -509,10 +545,14 @@ public sealed class GroundView : IDisposable {
 
     }
 
+    // A scene position scaled toward the eye as the body stands in; the eye is the scene's origin.
+    private Vector3 StandIn(Vector3 scene) => scene * (float)Scale;
+
     // Rocks and plants of the strewing levels' visible patches, whether those patches are drawn or their finer children are.
+    // Nothing strewn is ever seen on a stand-in.
     private void Strew(double time, Vector3d bodyPosition, Vector3 camera) {
 
-        if (Hidden || StrewHidden) {
+        if (Hidden || StrewHidden || Scale < 1.0) {
 
             return;
 
@@ -535,7 +575,7 @@ public sealed class GroundView : IDisposable {
 
                 Vector3 middle = MapSpace.ToScene(bodyPosition + _body.FromBodyFixed(node.Middle(_terrain.Radius), time));
 
-                _vegetation.Draw(patch.Plot, position, rotation, middle, (float)(node.Radius / MapSpace.MetresPerUnit), camera, node.Refined);
+                _vegetation?.Draw(patch.Plot, position, rotation, middle, (float)(node.Radius / MapSpace.MetresPerUnit), camera, node.Refined);
 
             }
 
@@ -605,6 +645,7 @@ public sealed class GroundView : IDisposable {
             Terrain = _terrain,
             Face = node.Face,
             Depth = node.Depth,
+            MaxDepth = MaxDepth,
             X = node.X,
             Y = node.Y,
             Mesh = slot.Data[0],
@@ -645,10 +686,10 @@ public sealed class GroundView : IDisposable {
 
             int plants = (int)slot.Info[PatchJob.InfoPlants];
 
-            if (plants > 0) {
+            if (plants > 0 && _vegetation != null) {
 
                 patch.Plot ??= new Vegetation.Plot();
-                _vegetation.Load(patch.Plot, slot.Plants, plants, node.Depth);
+                _vegetation.Load(patch.Plot, slot.Plants, plants, node.Depth, MaxDepth);
 
             } else if (patch.Plot != null) {
 
@@ -680,7 +721,7 @@ public sealed class GroundView : IDisposable {
             patch.CoarseWater.indexStart = patch.FineWater.indexStart + patch.FineWater.indexCount;
             patch.CoarseWater.indexCount = (int)slot.Info[PatchJob.InfoCoarseWaterIndices];
             patch.Coarse = false;
-            patch.Water.SetFloat(WaterCoarseId, 0.0f);
+            patch.Water?.SetFloat(WaterCoarseId, 0.0f);
 
             Patch parent = node.Parent?.Patch ?? patch;
             Vector4 parentRect = node.Parent == null ? new Vector4(1.0f, 1.0f, 0.0f, 0.0f) : new Vector4(0.5f, 0.5f, 0.5f * (node.X & 1), 0.5f * (node.Y & 1));
@@ -702,6 +743,7 @@ public sealed class GroundView : IDisposable {
                 material.SetTexture(ParentCoverId, parent.Cover);
                 material.SetVector(ParentRectId, parentRect);
                 material.SetFloat(LevelId, node.Depth);
+                material.SetVector(MorphId, _morphs[node.Depth]);
 
             }
 
@@ -750,7 +792,7 @@ public sealed class GroundView : IDisposable {
 
             },
             Ground = new Material(_groundTemplate),
-            Water = new Material(_waterTemplate),
+            Water = _waterTemplate == null ? null : new Material(_waterTemplate),
             Horizons = new NativeArray<byte>(PatchJob.HorizonLength, Allocator.Persistent),
 
         };
@@ -758,7 +800,7 @@ public sealed class GroundView : IDisposable {
         _patches.Add(patch);
 
         patch.GroundOnly = new[] { patch.Ground };
-        patch.Both = new[] { patch.Ground, patch.Water };
+        patch.Both = patch.Water == null ? patch.GroundOnly : new[] { patch.Ground, patch.Water };
 
         go.AddComponent<MeshFilter>().sharedMesh = patch.Mesh;
         patch.Renderer = go.AddComponent<MeshRenderer>();
@@ -888,7 +930,7 @@ public sealed class GroundView : IDisposable {
 
         _noHorizons.Dispose();
         _rocks.Dispose();
-        _vegetation.Dispose();
+        _vegetation?.Dispose();
 
     }
 

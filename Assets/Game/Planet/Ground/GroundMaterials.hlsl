@@ -344,16 +344,15 @@ uint LayoutSeed(int material, int scale) {
 
 }
 
-// One material: the macro sample sets its colour and carries relief a few metres to tens of metres across; within
+// One texture slice of mean albedo average and repeats to a NEAR_TILE, laid out by material's seeds: the macro sample
+// sets its colour and carries relief a few metres to tens of metres across; within
 // DETAIL_END the far sample adds relief and grain a few centimetres up, and within FINE_END the near one adds the finest
 // grain and its height, with the far one breaking up its tone. The macro and far samples blend planes over a narrower
 // band than the near one: their seams are too coarse to show, and most slopes then need only one plane of each. dx and dy
 // are how far metres moves across the pixel.
-Layer SampleMaterial(int material, float3 metres, float3 macroMetres, float3 dx, float3 dy, float3 normalOS, float3 weights, float3 sharpWeights,
-    float detail, float fine) {
+Layer SampleSlice(int slice, float3 average, int repeats, int material, float3 metres, float3 macroMetres, float3 dx, float3 dy, float3 normalOS,
+    float3 weights, float3 sharpWeights, float detail, float fine) {
 
-    int slice = Slice[material];
-    float3 average = Averages[material];
     float4 mean = float4(average, 0.5);
     Tiling macroTiling = Blurred(TilingOf(macroMetres, dx, dy, MACRO_TILE, _TileOriginMacro, 1, LayoutSeed(material, 0)));
     Layer macro = Triplanar(slice, macroTiling, false, false, mean, normalOS, sharpWeights, sampler_trilinear_repeat);
@@ -375,7 +374,7 @@ Layer SampleMaterial(int material, float3 metres, float3 macroMetres, float3 dx,
     UNITY_BRANCH
     if (fine > 0.0) {
 
-        Tiling nearTiling = TilingOf(metres, dx, dy, NEAR_TILE, _TileOriginNear, (int)Repeats[material], LayoutSeed(material, 2));
+        Tiling nearTiling = TilingOf(metres, dx, dy, NEAR_TILE, _TileOriginNear, repeats, LayoutSeed(material, 2));
 
         near = Triplanar(slice, nearTiling, true, true, mean, far.normalOS, weights, sampler_GroundAlbedo);
         grain = lerp(grain, near.albedo * lerp(1.0, grain, 0.5) / max(average, 1e-3), fine);
@@ -388,6 +387,15 @@ Layer SampleMaterial(int material, float3 metres, float3 macroMetres, float3 dx,
     layer.normalOS = normalize(lerp(macro.normalOS, lerp(far.normalOS, near.normalOS, fine), detail));
 
     return layer;
+
+}
+
+// One of the ground's materials.
+Layer SampleMaterial(int material, float3 metres, float3 macroMetres, float3 dx, float3 dy, float3 normalOS, float3 weights, float3 sharpWeights,
+    float detail, float fine) {
+
+    return SampleSlice(Slice[material], Averages[material], (int)Repeats[material], material, metres, macroMetres, dx, dy, normalOS, weights, sharpWeights,
+        detail, fine);
 
 }
 
@@ -460,29 +468,30 @@ struct GroundSurface {
 
 };
 
-// How far to shift the material samples so the dominant material's height map stands proud of the surface: the view ray
-// is marched down through the relief on the plane the surface most faces until it passes under the height map, as laid
-// by the point of the near sample's stochastic layout that weighs most here.
-float3 Parallax(int material, float3 metres, float3 normalOS, float3 planes, float3 toCameraOS, float distance, float footprint) {
+// How far to shift the samples of a texture slice (repeats to a NEAR_TILE, its full height standing for relief metres,
+// laid out by material's seeds) so its height map stands proud of the surface: the view ray is marched down through the
+// relief on the plane the surface most faces until it passes under the height map, as laid by the point of the near
+// sample's stochastic layout that weighs most here.
+float3 ParallaxSlice(int slice, int repeats, float relief, int material, float3 metres, float3 normalOS, float3 planes, float3 toCameraOS, float distance,
+    float footprint) {
 
     float reach = saturate(1.0 - distance / PARALLAX_REACH);
 
     UNITY_BRANCH
-    if (reach <= 0.0 || ParallaxDepth[material] <= 0.0) {
+    if (reach <= 0.0 || relief <= 0.0) {
 
         return 0.0;
 
     }
 
-    int slice = Slice[material];
     int plane = planes.x > planes.y && planes.x > planes.z ? 0 : planes.y > planes.z ? 1 : 2;
-    float lod = max(log2(footprint * NEAR_TEXELS_PER_METRE * Repeats[material]), 0.0);
-    float depth = ParallaxDepth[material] * reach;
+    float lod = max(log2(footprint * NEAR_TEXELS_PER_METRE * repeats), 0.0);
+    float depth = relief * reach;
     float3 step = -toCameraOS / max(dot(toCameraOS, normalOS), 0.15) * (depth / PARALLAX_STEPS);
     float3 offset = 0.0;
     float previousGap = -1.0;
 
-    Tiling tiling = TilingOf(metres, 0.0, 0.0, NEAR_TILE, _TileOriginNear, (int)Repeats[material], LayoutSeed(material, 2));
+    Tiling tiling = TilingOf(metres, 0.0, 0.0, NEAR_TILE, _TileOriginNear, repeats, LayoutSeed(material, 2));
     float2 uv = OnPlane(tiling.position, plane);
     Stochastic layout = StochasticAt(uv);
     float3 w = layout.weight;
@@ -493,7 +502,7 @@ float3 Parallax(int material, float3 metres, float3 normalOS, float3 planes, flo
 
     for (int i = 0; i < PARALLAX_STEPS; i++) {
 
-        float2 at = mul(turn, uv + OnPlane(offset, plane) / NEAR_TILE * Repeats[material]) + shift;
+        float2 at = mul(turn, uv + OnPlane(offset, plane) / NEAR_TILE * repeats) + shift;
         float surface = (1.0 - SAMPLE_TEXTURE2D_ARRAY_LOD(_GroundAlbedo, sampler_GroundAlbedo, at, slice, lod).a) * depth;
         float gap = surface - i * depth / PARALLAX_STEPS;
 
@@ -510,6 +519,13 @@ float3 Parallax(int material, float3 metres, float3 normalOS, float3 planes, flo
     }
 
     return offset;
+
+}
+
+// The same for one of the ground's materials.
+float3 Parallax(int material, float3 metres, float3 normalOS, float3 planes, float3 toCameraOS, float distance, float footprint) {
+
+    return ParallaxSlice(Slice[material], (int)Repeats[material], ParallaxDepth[material], material, metres, normalOS, planes, toCameraOS, distance, footprint);
 
 }
 

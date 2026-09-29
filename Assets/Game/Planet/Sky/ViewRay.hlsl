@@ -8,10 +8,15 @@ float4 _SceneSize;
 // Stand-in distance for sky pixels, and the cap on every other: large, but safe in half precision.
 #define SKY_DISTANCE 60000.0
 
+// Depth past which pixels belong to a stand-in body (GroundView); rays reaching it run on to the body's sphere.
+float _StandInDepth;
+
+// Reach: how far the air and clouds may march, unbounded for sky and stand-ins.
 struct ViewRay {
 
     float3 direction;
     float distance;
+    float reach;
     bool sky;
 
 };
@@ -30,6 +35,7 @@ ViewRay ViewRayThrough(float2 uv, float depth) {
     ViewRay ray;
     ray.direction = normalize(near - _WorldSpaceCameraPos);
     ray.distance = sky ? SKY_DISTANCE : min(LinearEyeDepth(depth, _ZBufferParams) / dot(ray.direction, -UNITY_MATRIX_V[2].xyz), SKY_DISTANCE);
+    ray.reach = sky || ray.distance >= _StandInDepth ? 1e9 : ray.distance;
     ray.sky = sky;
 
     return ray;

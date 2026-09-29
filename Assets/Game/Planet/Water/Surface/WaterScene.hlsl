@@ -20,7 +20,7 @@ TEXTURE2D_FLOAT(_WaterSceneDepth);
 #define SCENERY_MIP 4.0
 #define SCENERY_PROBES 4
 
-// Eye depth (km) of the opaque scene at uv; the sky, which leaves the reversed depth at zero, is infinitely far.
+// Depths here are as drawn (a stand-in's scaled with it). Eye depth (km) of the opaque scene at uv; sky is infinite.
 float SceneEyeDepth(float2 uv) {
 
     float raw = SAMPLE_TEXTURE2D_LOD(_WaterSceneDepth, sampler_linear_clamp, uv, 0.0).r;
@@ -55,7 +55,7 @@ Refraction RefractedBed(float4 positionCS, float3 positionWS, float3 normal, flo
     float2 uv = positionCS.xy / _ScaledScreenParams.xy;
     float waterEye = LinearEyeDepth(positionCS.z, _ZBufferParams);
     float sceneEye = SceneEyeDepth(uv);
-    float gap = max(sceneEye - waterEye, 0.0) * 1000.0;
+    float gap = max(sceneEye - waterEye, 0.0) / GROUND_STAND_IN * 1000.0;
     float3 tilt = TransformWorldToViewDir(normal - up);
     float2 bent = uv + float2(tilt.x, -tilt.y) * REFRACTION_STRENGTH * saturate(gap / 3.0) / max(waterEye * 20.0, 1.0);
     float bentEye = SceneEyeDepth(bent);
@@ -97,8 +97,8 @@ float4 ScreenReflection(float3 positionWS, float3 direction, float3 up, float va
     }
 
     // A point along a ray moves linearly in clip space, so each step is one multiply-add.
-    float4 origin = TransformWorldToHClip(positionWS);
-    float4 heading = TransformWorldToHClip(positionWS + direction) - origin;
+    float4 origin = PlacedToHClip(positionWS);
+    float4 heading = PlacedToHClip(positionWS + direction) - origin;
     float near = max(length(positionWS - _WorldSpaceCameraPos) * 0.01, 5e-4);
 
     // The ray's path runs from here toward its vanishing point, where it would reach the sky; over open water nothing

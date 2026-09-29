@@ -10,9 +10,8 @@ namespace MaxQ.Game.Planet;
 /// to the camera's altitude every frame, so the nearest covers the ground at the camera's feet and the farthest the horizon.</summary>
 public sealed class Sun {
 
-    // Nearest cascade reach in kilometres at pad level, and the height of the tallest ground (km) that shows past the horizon.
+    // Nearest cascade reach in kilometres at pad level.
     private const float NearestReach = 0.06f;
-    private const float HighestGround = 1.8f;
 
     private readonly UniversalRenderPipelineAsset _pipeline;
     private readonly Light _light;
@@ -43,11 +42,12 @@ public sealed class Sun {
     }
 
     /// <summary>Fits the cascades to a camera <paramref name="altitude"/> kilometres above the ground of a body of
-    /// <paramref name="radius"/> kilometres: out to the horizon of the highest ground, in geometric steps from the ground below.</summary>
-    public void Fit(double altitude, double radius) {
+    /// <paramref name="radius"/> kilometres whose tallest ground stands <paramref name="highest"/> kilometres: out to the
+    /// horizon of that ground, in geometric steps from the ground below.</summary>
+    public void Fit(double altitude, double radius, double highest) {
 
         double height = Math.Max(altitude, 0.0);
-        double horizon = Math.Sqrt(height * (2.0 * radius + height)) + Math.Sqrt(2.0 * radius * HighestGround);
+        double horizon = Math.Sqrt(height * (2.0 * radius + height)) + Math.Sqrt(2.0 * radius * highest);
         double nearest = Math.Min(Math.Max(NearestReach, 1.5 * height), 0.5 * horizon);
         double ratio = Math.Pow(horizon / nearest, 1.0 / 3.0);
 

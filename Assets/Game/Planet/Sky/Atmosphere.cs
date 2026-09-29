@@ -32,8 +32,11 @@ public sealed class Atmosphere : IDisposable {
     private const int SkyViewWidth = 192;
     private const int SkyViewHeight = 108;
 
-    // Height of the air's top above the ground, metres; matches ATMOSPHERE_HEIGHT in Atmosphere.hlsl.
-    private const double AirThickness = 100_000.0;
+    /// <summary>Height of the air's top above the ground, metres; matches ATMOSPHERE_HEIGHT in Atmosphere.hlsl.</summary>
+    public const double AirThickness = 100_000.0;
+
+    // Most stops over daylight's exposure the eye adapts to under the air, where dusk must still read as dusk.
+    private const float AirStops = 2.0f;
 
     // Valley haze tops out a little above the ground's mean round the camera, burns off as the sun climbs, and fades as
     // the camera climbs away, since one layer stands in for every region's.
@@ -141,13 +144,14 @@ public sealed class Atmosphere : IDisposable {
     }
 
     /// <summary>Keeps the planet's centre and the low haze current, and lets the eye adapt while <paramref name="camera"/>
-    /// is inside the air.</summary>
-    public void Update(double time, Vector3 camera, float deltaSeconds) {
+    /// is inside the air or, given <paramref name="airlessStops"/>, near airless ground.</summary>
+    public void Update(double time, Vector3 camera, float deltaSeconds, float? airlessStops) {
 
         Vector3 centre = MapSpace.ToScene(_body.PositionAt(time));
 
         Shader.SetGlobalVector(PlanetCentreId, centre);
-        _pass.Adapting = (camera - centre).magnitude * MapSpace.MetresPerUnit < _body.Radius + AirThickness;
+        _pass.Adapting = airlessStops.HasValue || (camera - centre).magnitude * MapSpace.MetresPerUnit < _body.Radius + AirThickness;
+        _pass.MaxStops = airlessStops ?? AirStops;
 
         UpdateFog(time, camera, deltaSeconds);
 

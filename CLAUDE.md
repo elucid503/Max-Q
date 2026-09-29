@@ -11,18 +11,20 @@ patched conics, 1/5 Earth scale. Personal project, never distributed. Successor 
   - `Numerics/` vectors and maths types, `Orbits/` conics, patches, maneuvers and prediction,
     `Bodies/` celestial bodies and the system catalogue, `Surface/` the terrain function (a memory-mapped 2.5' real-Earth
     survey with 5' water levels, plus procedural relief and cliff strata; the coast is wherever the ground crosses the
-    level; Burst-compatible, so the renderer and physics share it), `Ocean/` the procedural sea state (climatological
+    level; Selene's is LOLA's heights with procedural craters down to about a metre (`Craters.cs`) and baked maria; Burst-compatible,
+    so the renderer and physics share it), `Ocean/` the procedural sea state (climatological
     wind belts, swell, ice) and the directional wave spectrum, `Vessels/` vessels, `Compatibility/` polyfills.
   - `Tests/` - assembly `MaxQ.Sim.Tests`, EditMode tests mirroring the sim folders.
 - `Assets/Game/` - assembly `MaxQ.Game`. Rendering, input, UI. No physics.
-  - `Map/` the scene and its free camera (`Rendering/` bodies without a survey), `Planet/`
+  - `Map/` the scene and its free camera (Tab flies it between Terra and Selene), `Planet/`
     surveyed bodies (`Sun.cs` the shadow-casting light and its per-frame cascade fit; `Ground/` CDLOD
     quadtree, Burst patch builds in stages (terrain sampled a row per work item across the workers, then rocks and
     plants strewn, then the assembled mesh and water sheet with horizon occlusion) so no job runs long; ground cover
     from a procedural climate (`Cover.cs` on the CPU baked into a per-patch cover texture, `Biome.hlsl` its colours),
     ground, seabed and rock shaders; `Ground/Plants/` grass, trees of foliage cards then painted cards, groves strewn by
-    coarser levels out to ten kilometres, placed where the cover is forest or grass;
-    `Sky/` atmosphere tables, RenderGraph passes and eye adaptation, `Sky/Clouds/` volumetric clouds over a procedural,
+    coarser levels out to ten kilometres, placed where the cover is forest or grass; `Ground/Regolith/` Selene's ground,
+    boulders and lighting; the body the camera is not over draws as a scaled stand-in (`GroundView`);
+    `Sky/` atmosphere tables, RenderGraph passes, eye adaptation and Selene's horizon glow, `Sky/Clouds/` volumetric clouds over a procedural,
     evolving June weather map (quarter-res trace with temporal reprojection, split into the air march for aerial
     perspective, a shadow map along the sun that `SunShadow` reads, and a sky map water mirrors); `Water/` seas and
     lakes, owned by `WaterView`: `Waves/` FFT cascades on a body-fixed wave frame, `Surface/` the water pass and sheet
@@ -35,9 +37,11 @@ patched conics, 1/5 Earth scale. Personal project, never distributed. Successor 
 - `tools/` - `run.sh` runs the game without the editor, rebuilding the player first when sources
   changed (extra args go to the player); `build.sh` builds the player, or runs the sim tests with
   `--tests [results.xml]`. The engine path lives in `build.sh` (override with `UNITY=`). `terra.sh`
-  downloads Terra's sources (GEBCO, the ESA CCI water mask; HydroLAKES by hand) and bakes them (`terra_bake.py`).
+  downloads Terra's sources (GEBCO, the ESA CCI water mask; HydroLAKES by hand) and bakes them (`terra_bake.py`);
+  `selene.sh` downloads LOLA's LDEM_64 and bakes it (`selene_bake.py`); `regolith_texture.py` bakes the regolith material.
 - `Data/` - gitignored. `Sources/` downloads and bake intermediates; `Terra/` the baked survey the game maps at
-  runtime (~145 MB: `height.i16`, `water.i16`, `shore_distance.i16`, `moisture.i16`). Everything finer is procedural.
+  runtime (~145 MB: `height.i16`, `water.i16`, `shore_distance.i16`, `moisture.i16`); `Selene/` (~800 MB: `height.i16`,
+  `maria.i16`, `steepness.i16`). Everything finer is procedural.
 
 Group by feature, not by file type: a feature's code, shader and stylesheet live together. When a
 folder collects more than a handful of files, split it into subfolders. Namespaces mirror folders

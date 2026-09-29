@@ -30,6 +30,9 @@ public sealed class FreeCamera {
 
     public FreeCamera(Camera camera) => _camera = camera;
 
+    /// <summary>The body the camera flies over.</summary>
+    public CelestialBody Body => _body;
+
     /// <summary>Metres the camera keeps above the water's level, clear of the crests of the waves on it.</summary>
     public double WaveClearance { get; set; }
 

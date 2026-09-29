@@ -3,6 +3,19 @@
 #ifndef MAXQ_GROUND_INCLUDED
 #define MAXQ_GROUND_INCLUDED
 
+// Each body's stand-in scale about the eye (GroundView); a shader picks its body with GROUND_STAND_IN, Terra's by default.
+float _TerraStandIn;
+float _SeleneStandIn;
+
+#ifndef GROUND_STAND_IN
+#define GROUND_STAND_IN _TerraStandIn
+#endif
+
+// The body's centre in the scene, which up is measured from.
+#ifndef GROUND_CENTRE
+#define GROUND_CENTRE _PlanetCentre
+#endif
+
 #include "Sunlight.hlsl"
 #include "Biome.hlsl"
 
@@ -13,6 +26,9 @@ float4 _TileOriginFar;
 float4 _TileOriginMacro;
 float4 _TileOriginBroad;
 float _Level;
+
+// The level's morph start (km) and one over the morph band's width, measured from the camera the levels were chosen for.
+float4 _Morph;
 
 // One while the patch draws its water sheet at half resolution (GroundView.ShapeWater).
 float _WaterCoarse;
@@ -26,8 +42,6 @@ TEXTURE2D(_ParentCover);
 // The four patch textures filter alike, trilinear and anisotropic over their mips, so they share the detail's sampler.
 SAMPLER(sampler_Detail);
 
-// Per level: morph start (km) and one over the morph band's width, measured from the camera the levels were chosen for.
-float4 _GroundMorph[17];
 float3 _GroundCamera;
 
 // Set by URP while it renders a shadow cascade.
@@ -66,21 +80,33 @@ struct GroundVaryings {
 // How far a point at positionWS has slid toward the parent level, as it nears the edge of this level's range.
 float MorphAt(float3 positionWS) {
 
-    float4 range = _GroundMorph[(int)_Level];
+    return saturate((distance(positionWS, _GroundCamera) - _Morph.x) * _Morph.y);
 
-    return saturate((distance(positionWS, _GroundCamera) - range.x) * range.y);
+}
+
+// True scene position of a patch point, the stand-in scaling undone (the eye is the origin).
+float3 PlacedWS(float3 positionOS) {
+
+    return TransformObjectToWorld(positionOS) / GROUND_STAND_IN;
+
+}
+
+// A true scene position as the stand-in draws it.
+float4 PlacedToHClip(float3 positionWS) {
+
+    return TransformWorldToHClip(positionWS * GROUND_STAND_IN);
 
 }
 
 // Vertices slide onto the parent level's surface as they near the edge of their level's range.
 GroundVaryings GroundVertex(GroundAttributes input) {
 
-    float morph = MorphAt(TransformObjectToWorld(input.position));
+    float morph = MorphAt(PlacedWS(input.position));
     float3 position = input.position + input.morph * morph;
 
     GroundVaryings output;
-    output.positionWS = TransformObjectToWorld(position);
-    output.positionCS = TransformWorldToHClip(output.positionWS);
+    output.positionWS = PlacedWS(position);
+    output.positionCS = PlacedToHClip(output.positionWS);
     output.uv = float2(input.uv.x > 1.5 ? input.uv.x - SKIRT_FLAG : input.uv.x, input.uv.y);
     output.morph = morph;
     output.positionOS = position;
@@ -102,7 +128,7 @@ float4 GroundShadowVertex(GroundAttributes input) : SV_POSITION {
     }
 
     float3 positionWS = GroundVertex(input).positionWS;
-    float3 up = normalize(positionWS - _PlanetCentre);
+    float3 up = normalize(positionWS - GROUND_CENTRE);
 
     return ApplyShadowClamping(TransformWorldToHClip(ApplyShadowBias(positionWS, up, _LightDirection)));
 

@@ -1,9 +1,5 @@
-// Rocks strewn over the ground near the camera, drawn procedurally: each instance picks one of the shapes in a shared
-// vertex buffer. The ground's rock material, mapped triplanar in each rock's frame so it stays put on the stone, takes
-// the colour the climate gives the ground's own rock (see Biome.hlsl); its base is dirtied with the colour of the ground
-// it stands on, stone facing the sky in green country gathers moss, and the ground around it bounces its colour back.
-// Each rock sits partly buried; its lower flanks see less sky.
-Shader "MaxQ/Rock" {
+// Selene's boulders and pebbles: fresh stone, dusted and buried in regolith, lit as the ground is.
+Shader "MaxQ/Boulder" {
 
     Properties {
 
@@ -18,20 +14,24 @@ Shader "MaxQ/Rock" {
 
         HLSLINCLUDE
 
-        #include "Sunlight.hlsl"
-        #include "Biome.hlsl"
-        #include "RockInstances.hlsl"
+        #include "Regolith.hlsl"
+        #include "../RockInstances.hlsl"
         #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Packing.hlsl"
 
         TEXTURE2D_ARRAY(_GroundAlbedo);
         TEXTURE2D_ARRAY(_GroundNormal);
         SAMPLER(sampler_GroundAlbedo);
 
-        // Slice of the ground arrays holding rock; GroundMaterials.hlsl names the same.
+        // Rock slice of the ground arrays and its mean albedo.
         #define ROCK_SLICE 4
+        #define ROCK_MEAN 0.069
 
         // Metres of stone per texture repeat.
         #define ROCK_TILE 1.6
+
+        // Brightness of bare stone and bedrock blocks over fresh regolith.
+        #define STONE_GAIN 1.35
+        #define BLOCK_GAIN 1.15
 
         struct Varyings {
 
@@ -40,9 +40,9 @@ Shader "MaxQ/Rock" {
             float3 positionOS : TEXCOORD1;
             float3 normalOS : TEXCOORD2;
             nointerpolation float4 turn : TEXCOORD3;
-            nointerpolation float4 ground : TEXCOORD4;
-            nointerpolation float scale : TEXCOORD5;
-            nointerpolation float4 stone : TEXCOORD6;
+            nointerpolation float3 regolith : TEXCOORD4;
+            nointerpolation float3 stone : TEXCOORD5;
+            nointerpolation float scale : TEXCOORD6;
 
         };
 
@@ -57,16 +57,8 @@ Shader "MaxQ/Rock" {
             output.normalOS = rock.normalOS;
             output.turn = rock.turn;
 
-            // The ground's colour under the rock and its vegetation, the stone's recolouring and whether it is bedrock.
-            GroundCover cover = (GroundCover)0;
-            cover.vegetation = rock.pick.y;
-            cover.arid = rock.pick.z;
-
-            float3 up = normalize(rock.placed - _PlanetCentre);
-            float warmth = Warmth(up, (length(rock.placed - _PlanetCentre) - _PlanetRadius) * 1000.0);
-
-            output.ground = float4(CoverColour(cover, warmth), rock.pick.y);
-            output.stone = float4(Tint(ROCK, cover, warmth), rock.pick.w);
+            output.regolith = RegolithAlbedo(rock.pick.y, rock.pick.z);
+            output.stone = RegolithAlbedo(rock.pick.y, 1.0) * lerp(STONE_GAIN, BLOCK_GAIN, rock.pick.w);
             output.scale = rock.scale;
 
             return output;
@@ -77,7 +69,7 @@ Shader "MaxQ/Rock" {
 
         Pass {
 
-            Name "Rock"
+            Name "Boulder"
             Tags { "LightMode" = "UniversalForward" }
 
             HLSLPROGRAM
@@ -95,7 +87,7 @@ Shader "MaxQ/Rock" {
                 weights /= weights.x + weights.y + weights.z;
 
                 float3 p = input.positionOS * input.scale / ROCK_TILE;
-                float4 albedo = 0.0;
+                float4 grain = 0.0;
                 float3 normal = 0.0;
 
                 // Triplanar with whiteout-blended normals, in the rock's own frame.
@@ -103,32 +95,27 @@ Shader "MaxQ/Rock" {
                 float3 ty = UnpackNormal(SAMPLE_TEXTURE2D_ARRAY(_GroundNormal, sampler_GroundAlbedo, p.xz, ROCK_SLICE));
                 float3 tz = UnpackNormal(SAMPLE_TEXTURE2D_ARRAY(_GroundNormal, sampler_GroundAlbedo, p.xy, ROCK_SLICE));
 
-                albedo += SAMPLE_TEXTURE2D_ARRAY(_GroundAlbedo, sampler_GroundAlbedo, p.zy, ROCK_SLICE) * weights.x;
-                albedo += SAMPLE_TEXTURE2D_ARRAY(_GroundAlbedo, sampler_GroundAlbedo, p.xz, ROCK_SLICE) * weights.y;
-                albedo += SAMPLE_TEXTURE2D_ARRAY(_GroundAlbedo, sampler_GroundAlbedo, p.xy, ROCK_SLICE) * weights.z;
+                grain += SAMPLE_TEXTURE2D_ARRAY(_GroundAlbedo, sampler_GroundAlbedo, p.zy, ROCK_SLICE) * weights.x;
+                grain += SAMPLE_TEXTURE2D_ARRAY(_GroundAlbedo, sampler_GroundAlbedo, p.xz, ROCK_SLICE) * weights.y;
+                grain += SAMPLE_TEXTURE2D_ARRAY(_GroundAlbedo, sampler_GroundAlbedo, p.xy, ROCK_SLICE) * weights.z;
 
                 normal += float3(tx.xy + n.zy, abs(tx.z) * n.x).zyx * weights.x;
                 normal += float3(ty.xy + n.xz, abs(ty.z) * n.y).xzy * weights.y;
                 normal += float3(tz.xy + n.xy, abs(tz.z) * n.z) * weights.z;
 
-                float3 ground = input.ground.rgb;
-                float3 stone = albedo.rgb * input.stone.rgb;
+                float3 stone = input.stone * dot(grain.rgb, float3(0.2126, 0.7152, 0.0722)) / ROCK_MEAN;
 
-                // Moss on the tops of stones in green country; soil splashed up the base, deepest in the texture's pits.
-                // Outcrops are bedrock, bare but for their buried foot.
-                float moss = input.ground.a * (1.0 - input.stone.w) * saturate((n.y - 0.35) / 0.3) * saturate(1.2 - 2.0 * albedo.a);
-                float dirt = saturate((-0.1 - input.positionOS.y) / 0.2 + (0.5 - albedo.a) * 0.8);
-
-                stone = lerp(stone, ground * float3(0.8, 0.95, 0.7), moss);
-                stone = lerp(stone, ground, dirt * 0.85);
-
+                // Dust on upward faces and pits; the foot is buried.
                 float3 normalWS = normalize(Rotate(input.turn, normalize(normal)));
-                Sunlight light = SunlightAt(input.positionWS);
+                float3 up = normalize(input.positionWS - _SeleneCentre);
+                float dust = saturate((dot(normalWS, up) - 0.55) / 0.3) * saturate(1.3 - 2.0 * grain.a);
+                float foot = saturate((-0.12 - input.positionOS.y) / 0.18 + (0.5 - grain.a) * 0.6);
+                float3 albedo = min(lerp(stone, input.regolith, saturate(0.7 * dust + foot)), 0.9);
 
-                // The buried base sits at -0.3 of the mesh; below the waist the ground hides more and more of the sky.
+                // The buried base sits at -0.3 of the mesh.
                 float occlusion = saturate(0.35 + 0.65 * (input.positionOS.y + 0.3) / 0.8);
 
-                return float4(GroundRadiance(stone, normalWS, light, ground, occlusion), 1.0);
+                return float4(RegolithRadiance(albedo, normalWS, input.positionWS, CascadeShadow(input.positionWS), occlusion), 1.0);
 
             }
 

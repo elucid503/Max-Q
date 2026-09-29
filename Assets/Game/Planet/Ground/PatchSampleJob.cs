@@ -16,7 +16,8 @@ namespace MaxQ.Game.Planet.Ground;
 /// <summary>A patch build's first stage: its twenty-odd thousand terrain samples, a row to each index so the workers share
 /// them and none is held long. Rows are the detail texture's, then the horizon grid's, whose middle is the vertex grid,
 /// then every other row of the parent's posts. Where the vertices stand close enough to carry the cover, they work it out
-/// and the assembly spreads it across the texels between them.</summary>
+/// and the assembly spreads it across the texels between them. Cratered ground's cover (mare, fresh ejecta, steep walls)
+/// changes crater by crater, so every texel takes its own.</summary>
 [BurstCompile]
 internal struct PatchSampleJob : IJobParallelFor {
 
@@ -63,7 +64,7 @@ internal struct PatchSampleJob : IJobParallelFor {
 
     /// <summary>Whether a patch at <paramref name="depth"/> takes its cover from its vertices: they stand an eighth of the
     /// cover's finest wavelength apart or closer, so the texels between them interpolate it as well as they would sample it.</summary>
-    public static bool CoversByVertex(double radius, int depth) => PatchJob.Footprint(radius, depth) <= Cover.Finest / 8.0;
+    public static bool CoversByVertex(Terrain terrain, int depth) => !terrain.IsCratered && PatchJob.Footprint(terrain.Radius, depth) <= Cover.Finest / 8.0;
 
     public void Execute(int row) {
 
@@ -109,7 +110,7 @@ internal struct PatchSampleJob : IJobParallelFor {
         for (int k = 0; k < PatchSamples.FineSize; k++) {
 
             Vector3d direction = CubeFace.Direction(Face, a0 + (k - 1) * step, b0 + (l - 1) * step);
-            double height = Terrain.HeightAt(direction, footprint / PatchJob.TexelsPerQuad);
+            double height = Terrain.HeightAt(direction, footprint / PatchJob.TexelsPerQuad, out double freshness);
 
             Fine[l * PatchSamples.FineSize + k] = direction * (radius + height);
 
@@ -122,6 +123,19 @@ internal struct PatchSampleJob : IJobParallelFor {
                 Depths[t] = double.IsNaN(level) ? -PatchJob.WaterDepthRange : level - height;
 
                 if (VertexCover) {
+
+                    continue;
+
+                }
+
+                if (Terrain.IsCratered) {
+
+                    Terrain.RegolithAt(direction, footprint / PatchJob.TexelsPerQuad, out double maria, out double steepness);
+
+                    CoverTexels[4 * t] = Unorm((float)maria);
+                    CoverTexels[4 * t + 1] = Unorm((float)freshness);
+                    CoverTexels[4 * t + 2] = Unorm((float)steepness);
+                    CoverTexels[4 * t + 3] = 0;
 
                     continue;
 

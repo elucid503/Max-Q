@@ -25,6 +25,7 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
     private static readonly int SourceSizeId = Shader.PropertyToID("_SourceSize");
     private static readonly int DeltaTimeId = Shader.PropertyToID("_DeltaTime");
     private static readonly int AdaptingId = Shader.PropertyToID("_Adapting");
+    private static readonly int MaxStopsId = Shader.PropertyToID("_MaxStops");
     private static readonly int CloudLightId = Shader.PropertyToID("_CloudLight");
     private static readonly int CloudDepthId = Shader.PropertyToID("_CloudDepth");
     private static readonly int CloudSizeId = Shader.PropertyToID("_CloudSize");
@@ -47,6 +48,9 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
     /// <summary>Whether the eye adapts to the view; above the air it keeps to daylight exposure.</summary>
     public bool Adapting { get; set; } = true;
 
+    /// <summary>The most stops over daylight's exposure the eye adapts to.</summary>
+    public float MaxStops { get; set; }
+
     private sealed class PassData {
 
         public Material Material;
@@ -68,6 +72,7 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
         public BufferHandle Exposure;
         public Vector4 Size;
         public bool Adapting;
+        public float MaxStops;
 
     }
 
@@ -213,6 +218,7 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
             data.Exposure = exposure;
             data.Size = new Vector4(full.width, full.height, 0.0f, 0.0f);
             data.Adapting = Adapting;
+            data.MaxStops = MaxStops;
 
             builder.UseTexture(target);
             builder.UseBuffer(data.Histogram, AccessFlags.ReadWrite);
@@ -225,6 +231,7 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
                 context.cmd.SetComputeBufferParam(pass.Shader, pass.AdaptKernel, ExposureId, pass.Exposure);
                 context.cmd.SetComputeTextureParam(pass.Shader, pass.HistogramKernel, SourceId, pass.Source);
                 context.cmd.SetComputeVectorParam(pass.Shader, SourceSizeId, pass.Size);
+                context.cmd.SetComputeFloatParam(pass.Shader, MaxStopsId, pass.MaxStops);
                 context.cmd.DispatchCompute(pass.Shader, pass.HistogramKernel, Mathf.CeilToInt(pass.Size.x / (ExposureStride * ExposureGroup)),
                     Mathf.CeilToInt(pass.Size.y / (ExposureStride * ExposureGroup)), 1);
                 context.cmd.SetComputeFloatParam(pass.Shader, DeltaTimeId, Time.unscaledDeltaTime);

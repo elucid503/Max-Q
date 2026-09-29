@@ -52,7 +52,7 @@ Shader "Hidden/MaxQ/Clouds" {
                 int2 pixel = min(texel * 4 + int2(_CloudJitter.xy), int2(_SceneSize.xy) - 1);
                 ViewRay ray = ViewRayThrough((pixel + 0.5) * _SceneSize.zw, LOAD_TEXTURE2D_X(_SceneDepth, pixel).r);
                 float jitter = CloudHash(uint2(texel), uint(_CloudJitter.z));
-                CloudTrace clouds = TraceClouds(_WorldSpaceCameraPos - _PlanetCentre, ray.direction, ray.sky ? 1e9 : ray.distance, jitter, _CloudPixelAngle, 96, 4, true);
+                CloudTrace clouds = TraceClouds(_WorldSpaceCameraPos - _PlanetCentre, ray.direction, ray.reach, jitter, _CloudPixelAngle, 96, 4, true);
 
                 Output output;
                 output.light = float4(clouds.radiance, clouds.transmittance);

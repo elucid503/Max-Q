@@ -1,5 +1,4 @@
 using System.IO;
-using System.Linq;
 
 using MaxQ.Game.Map;
 
@@ -21,8 +20,8 @@ public static class ProjectSetup {
     private const string Sky = "Assets/Game/Planet/Sky";
     private const string Water = "Assets/Game/Planet/Water";
 
-    // Slice order of the ground material arrays; GroundMaterials.hlsl names the same slices.
-    private static readonly string[] GroundMaterials = { "grass", "forest", "soil", "sand", "rock", "snow" };
+    // Slice order of the ground material arrays; GroundMaterials.hlsl names the same slices, Regolith.shader the last.
+    private static readonly string[] GroundMaterials = { "grass", "forest", "soil", "sand", "rock", "snow", "regolith" };
 
     [MenuItem("Max-Q/Rebuild Project Setup")]
     public static void Run() {
@@ -40,7 +39,6 @@ public static class ProjectSetup {
         // The sky, the ground and the exposure are lit in physical units, which only display right when encoded to sRGB.
         PlayerSettings.colorSpace = ColorSpace.Linear;
 
-        Material surface = SaveMaterial(new Material(Shader.Find("Universal Render Pipeline/Lit")), "Surface");
         Material groundTemplate = new Material(Shader.Find("MaxQ/Ground"));
         groundTemplate.SetTexture("_GroundAlbedo", GroundArray("albedo_height", false, "Ground Albedo"));
         groundTemplate.SetTexture("_GroundNormal", GroundArray("normal", true, "Ground Normals"));
@@ -55,14 +53,23 @@ public static class ProjectSetup {
         treeTemplate.SetTexture("_GroundAlbedo", groundTemplate.GetTexture("_GroundAlbedo"));
         Material tree = SaveMaterial(treeTemplate, "Tree");
         Material water = SaveMaterial(new Material(Shader.Find("MaxQ/Water")), "Water");
+        Material regolithTemplate = new Material(Shader.Find("MaxQ/Regolith"));
+        regolithTemplate.SetTexture("_GroundAlbedo", groundTemplate.GetTexture("_GroundAlbedo"));
+        regolithTemplate.SetTexture("_GroundNormal", groundTemplate.GetTexture("_GroundNormal"));
+        Material regolith = SaveMaterial(regolithTemplate, "Regolith");
+        Material boulderTemplate = new Material(Shader.Find("MaxQ/Boulder")) { enableInstancing = true };
+        boulderTemplate.SetTexture("_GroundAlbedo", groundTemplate.GetTexture("_GroundAlbedo"));
+        boulderTemplate.SetTexture("_GroundNormal", groundTemplate.GetTexture("_GroundNormal"));
+        Material boulder = SaveMaterial(boulderTemplate, "Boulder");
 
+        // Stars dimmed so only the brightest show at daylight exposure.
         Material sky = new Material(Shader.Find("Skybox/Panoramic"));
         sky.SetTexture("_MainTex", AssetDatabase.LoadAssetAtPath<Texture2D>($"{Art}/Sky/stars.png"));
         sky.SetFloat("_Mapping", 1.0f);
-        sky.SetFloat("_Exposure", 1.0f);
+        sky.SetFloat("_Exposure", 0.05f);
         sky = SaveMaterial(sky, "Sky");
 
-        BuildScene(surface, sky, ground, water, rock, grass, tree);
+        BuildScene(sky, ground, water, rock, grass, tree, regolith, boulder);
 
         AssetDatabase.SaveAssets();
         Debug.Log("Max-Q setup complete");
@@ -177,7 +184,7 @@ public static class ProjectSetup {
 
     }
 
-    private static void BuildScene(Material surface, Material sky, Material ground, Material water, Material rock, Material grass, Material tree) {
+    private static void BuildScene(Material sky, Material ground, Material water, Material rock, Material grass, Material tree, Material regolith, Material boulder) {
 
         EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
@@ -209,13 +216,13 @@ public static class ProjectSetup {
         volume.sharedProfile = profile;
 
         SerializedObject view = new SerializedObject(new GameObject("Map").AddComponent<MapView>());
-        SetArray(view.FindProperty("_seleneFaces"), Faces("Selene"));
-        view.FindProperty("_surfaceMaterial").objectReferenceValue = surface;
         view.FindProperty("_groundMaterial").objectReferenceValue = ground;
         view.FindProperty("_waterMaterial").objectReferenceValue = water;
         view.FindProperty("_rockMaterial").objectReferenceValue = rock;
         view.FindProperty("_grassMaterial").objectReferenceValue = grass;
         view.FindProperty("_treeMaterial").objectReferenceValue = tree;
+        view.FindProperty("_regolithMaterial").objectReferenceValue = regolith;
+        view.FindProperty("_boulderMaterial").objectReferenceValue = boulder;
         view.FindProperty("_atmosphereTables").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>($"{Sky}/AtmosphereLuts.shader");
         view.FindProperty("_atmosphereSky").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>($"{Sky}/AtmosphereSky.shader");
         view.FindProperty("_exposure").objectReferenceValue = AssetDatabase.LoadAssetAtPath<ComputeShader>($"{Sky}/Exposure.compute");
@@ -228,20 +235,6 @@ public static class ProjectSetup {
 
         EditorSceneManager.SaveScene(EditorSceneManager.GetActiveScene(), ScenePath);
         EditorBuildSettings.scenes = new[] { new EditorBuildSettingsScene(ScenePath, true) };
-
-    }
-
-    private static Texture2D[] Faces(string body) => Enumerable.Range(0, 6).Select(i => AssetDatabase.LoadAssetAtPath<Texture2D>($"{Art}/{body}/surface_{i}.jpg")).ToArray();
-
-    private static void SetArray(SerializedProperty property, Object[] values) {
-
-        property.arraySize = values.Length;
-
-        for (int i = 0; i < values.Length; i++) {
-
-            property.GetArrayElementAtIndex(i).objectReferenceValue = values[i];
-
-        }
 
     }
 

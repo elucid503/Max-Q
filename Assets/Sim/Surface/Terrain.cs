@@ -6,28 +6,25 @@ namespace MaxQ.Sim.Surface;
 
 /// <summary>A body's ground as one function of direction: the survey, scaled to the body, with procedural relief on it,
 /// and the lakes and seas on it at their levels. The coast is wherever the ground crosses its water's level, so the two
-/// cannot disagree. Rendering builds every patch from it and physics tests contact against it.</summary>
+/// cannot disagree. An airless body's ground is cratered instead, and dry. Rendering builds every patch from it and
+/// physics tests contact against it.</summary>
 public readonly unsafe struct Terrain {
 
     /// <summary>Survey heights are real-world metres; at one-fifth scale they shrink with the radius, keeping real slopes.</summary>
     public const double VerticalScale = 0.2;
 
-    /// <summary>Bounds on the ground's height, metres on the body: Earth's deepest trench and highest peak, scaled, with
-    /// room for the relief.</summary>
-    public const double Lowest = -11_000.0 * VerticalScale - 200.0;
-    public const double Highest = 8_900.0 * VerticalScale + 200.0;
-
     private const double EarthRadius = 6_371_000.0;
+    private const double MoonRadius = 1_737_400.0;
 
-    // Heights on 2.5' posts and five 2x2 mips; water levels on 5' cells, one level of them to each height mip past the
-    // first; shore distances on the 5' cells, in 32 m units; moisture on 0.25 degree cells.
-    private const int Columns = 8_640;
-    private const int Rows = 4_320;
+    // Grid layouts from tools/terra_bake.py and tools/selene_bake.py; shore distances in 32 m units.
+    private const int TerraColumns = 8_640;
+    private const int SeleneColumns = 23_040;
     private const int Mips = 6;
     private const short NoWater = short.MinValue;
     private const double ShoreUnit = 32.0;
     private const int MoistureColumns = 1_440;
-    private const int MoistureRows = 720;
+    private const int CellColumns = 5_760;
+    private const int CellMips = 5;
 
     // Metres either side of the waterline over which the relief fades in.
     private const double ReliefFade = 5.0;
@@ -44,39 +41,78 @@ public readonly unsafe struct Terrain {
     private readonly IntPtr _levels;
     private readonly IntPtr _shore;
     private readonly IntPtr _moisture;
+    private readonly IntPtr _maria;
+    private readonly IntPtr _steepness;
+    private readonly int _columns;
+    private readonly int _rows;
+    private readonly double _surveyRadius;
     private readonly double _spacing;
 
     public double Radius { get; }
 
-    /// <summary>Wraps mapped survey data, as tools/terra_bake.py lays it out: <paramref name="heights"/> the 2.5' posts and
-    /// their mips, <paramref name="levels"/> the 5' water levels and theirs, <paramref name="shore"/> the 5' shore
+    /// <summary>Bounds on the ground's height (m), relief included.</summary>
+    public double Lowest { get; }
+    public double Highest { get; }
+
+    /// <summary>Wraps Terra's mapped survey, as tools/terra_bake.py lays it out: <paramref name="heights"/> the 2.5' posts
+    /// and their mips, <paramref name="levels"/> the 5' water levels and theirs, <paramref name="shore"/> the 5' shore
     /// distances and <paramref name="moisture"/> the quarter-degree moisture.</summary>
-    public Terrain(IntPtr heights, IntPtr levels, IntPtr shore, IntPtr moisture, double radius) {
+    public Terrain(IntPtr heights, IntPtr levels, IntPtr shore, IntPtr moisture, double radius)
+        : this(heights, levels, shore, moisture, IntPtr.Zero, IntPtr.Zero, TerraColumns, EarthRadius, -11_000.0, 8_900.0, radius) { }
+
+    private Terrain(IntPtr heights, IntPtr levels, IntPtr shore, IntPtr moisture, IntPtr maria, IntPtr steepness, int columns, double surveyRadius,
+        double deepest, double highest, double radius) {
 
         _heights = heights;
         _levels = levels;
         _shore = shore;
         _moisture = moisture;
-        _spacing = 2.0 * Math.PI * radius / Columns;
+        _maria = maria;
+        _steepness = steepness;
+        _columns = columns;
+        _rows = columns / 2;
+        _surveyRadius = surveyRadius;
+        _spacing = 2.0 * Math.PI * radius / columns;
         Radius = radius;
+        Lowest = deepest * VerticalScale - 200.0 - (maria == IntPtr.Zero ? 0.0 : Craters.Deepest);
+        Highest = highest * VerticalScale + 200.0;
 
     }
+
+    /// <summary>Wraps Selene's mapped survey as tools/selene_bake.py lays it out.</summary>
+    public static Terrain Cratered(IntPtr heights, IntPtr maria, IntPtr steepness, double radius) =>
+        new Terrain(heights, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, maria, steepness, SeleneColumns, MoonRadius, -9_200.0, 10_800.0, radius);
+
+    /// <summary>Whether the ground is an airless body's: cratered, and without water.</summary>
+    public bool IsCratered => _maria != IntPtr.Zero;
 
     /// <summary>Metres between survey posts at the equator.</summary>
     public double PostSpacing => _spacing;
 
     /// <summary>Metres on the body per real-world metre of the survey across the ground.</summary>
-    public double HorizontalScale => Radius / EarthRadius;
+    public double HorizontalScale => Radius / _surveyRadius;
 
     /// <summary>Ground height above the reference radius, metres, at a unit body-fixed direction. <paramref name="footprint"/>
     /// is the spacing the caller samples at; the ground keeps no detail finer than it. Zero is full detail.</summary>
-    public double HeightAt(Vector3d direction, double footprint) {
+    public double HeightAt(Vector3d direction, double footprint) => HeightAt(direction, footprint, out _);
+
+    /// <summary>The same, with the young-crater ejecta there (0 to 1; 0 off cratered bodies).</summary>
+    public double HeightAt(Vector3d direction, double footprint, out double freshness) {
 
         GridPosition(direction, out double row, out double column);
 
         int mip = Mip(footprint);
         double survey = Survey(mip, row, column, direction, footprint) * VerticalScale;
         Vector3d position = direction * Radius;
+
+        if (IsCratered) {
+
+            return survey + Craters.Detail(position, footprint, Maria(row, column), out freshness);
+
+        }
+
+        freshness = 0.0;
+
         Vector3d gradient = Gradient(direction);
         double slope = gradient.Length;
         double relief = Relief.Strata(position, survey + Relief.Detail(position, footprint, gradient), slope, footprint) - survey;
@@ -100,6 +136,12 @@ public readonly unsafe struct Terrain {
     /// ground shows where it stands over the water.</summary>
     public double WaterLevelAt(Vector3d direction, double footprint) {
 
+        if (_levels == IntPtr.Zero) {
+
+            return double.NaN;
+
+        }
+
         GridPosition(direction, out double row, out double column);
 
         return Level(Mip(footprint), row, column);
@@ -107,8 +149,14 @@ public readonly unsafe struct Terrain {
     }
 
     /// <summary>Height of the water surface the ground is held against, metres, blended across the bodies near a unit
-    /// body-fixed direction as <see cref="HeightAt"/> blends them, or NaN where none is near.</summary>
+    /// body-fixed direction as <see cref="HeightAt(Vector3d, double)"/> blends them, or NaN where none is near.</summary>
     public double HeldWaterLevelAt(Vector3d direction, double footprint) {
+
+        if (_levels == IntPtr.Zero) {
+
+            return double.NaN;
+
+        }
 
         GridPosition(direction, out double row, out double column);
         Reach(Mip(footprint), row, column, out double level);
@@ -117,23 +165,64 @@ public readonly unsafe struct Terrain {
 
     }
 
-    /// <summary>Metres on the body to the nearest shore, negative over water.</summary>
+    /// <summary>Metres on the body to the nearest shore, negative over water; infinite on a dry body.</summary>
     public double ShoreDistanceAt(Vector3d direction) {
+
+        if (_shore == IntPtr.Zero) {
+
+            return double.PositiveInfinity;
+
+        }
 
         GridPosition(direction, out double row, out double column);
 
-        return Bilinear((short*)_shore, Rows / 2, Columns / 2, 0.5 * (row + 0.5) - 0.5, 0.5 * (column + 0.5) - 0.5) * ShoreUnit * HorizontalScale;
+        return Bilinear((short*)_shore, _rows / 2, _columns / 2, 0.5 * (row + 0.5) - 0.5, 0.5 * (column + 0.5) - 0.5) * ShoreUnit * HorizontalScale;
 
     }
 
-    /// <summary>How wet the climate keeps the ground, from 0 in the deserts to 1 under the tropical rain belt.</summary>
+    /// <summary>How wet the climate keeps the ground, from 0 in the deserts (and on a body without weather) to 1 under
+    /// the tropical rain belt.</summary>
     public double MoistureAt(Vector3d direction) {
+
+        if (_moisture == IntPtr.Zero) {
+
+            return 0.0;
+
+        }
 
         GridPosition(direction, out double row, out double column);
 
-        double scale = (double)MoistureRows / Rows;
+        return Cells((short*)_moisture, MoistureColumns, row, column);
 
-        return Bilinear((short*)_moisture, MoistureRows, MoistureColumns, scale * (row + 0.5) - 0.5, scale * (column + 0.5) - 0.5) / 1_000.0;
+    }
+
+    /// <summary>Cratered bodies: mare share and steep-wall share (0 to 1), no finer than <paramref name="footprint"/>.</summary>
+    public void RegolithAt(Vector3d direction, double footprint, out double maria, out double steepness) {
+
+        GridPosition(direction, out double row, out double column);
+
+        int mip = Math.Clamp((int)Math.Floor(Math.Log(Math.Max(footprint * CellColumns / (2.0 * Math.PI * Radius), 1.0), 2.0)), 0, CellMips - 1);
+
+        maria = Cells((short*)_maria, CellColumns >> mip, row, column, CellColumns);
+        steepness = Cells((short*)_steepness, CellColumns >> mip, row, column, CellColumns);
+
+    }
+
+    private double Maria(double row, double column) => IsCratered ? Cells((short*)_maria, CellColumns, row, column) : 0.0;
+
+    // A grid of thousandths, columns wide, at a post's row and column; mips follow a finest level of finest columns.
+    private double Cells(short* grid, int columns, double row, double column, int finest = 0) {
+
+        double scale = (double)columns / _columns;
+        long offset = 0;
+
+        for (int level = finest; level > columns; level >>= 1) {
+
+            offset += (long)level * (level / 2);
+
+        }
+
+        return Bilinear(grid + offset, columns / 2, columns, scale * (row + 0.5) - 0.5, scale * (column + 0.5) - 0.5) / 1_000.0;
 
     }
 
@@ -142,10 +231,10 @@ public readonly unsafe struct Terrain {
         footprint <= _spacing ? 0 : Math.Min((int)Math.Floor(Math.Log(footprint / _spacing) / Math.Log(2.0)), Mips - 1);
 
     // Burst compiles this struct into the patch builder, so it keeps to out parameters rather than tuples.
-    private static void GridPosition(Vector3d direction, out double row, out double column) {
+    private void GridPosition(Vector3d direction, out double row, out double column) {
 
-        row = (0.5 - Math.Asin(Math.Min(Math.Max(direction.Z, -1.0), 1.0)) / Math.PI) * Rows - 0.5;
-        column = (Math.Atan2(direction.Y, direction.X) + Math.PI) / (2.0 * Math.PI) * Columns - 0.5;
+        row = (0.5 - Math.Asin(Math.Min(Math.Max(direction.Z, -1.0), 1.0)) / Math.PI) * _rows - 0.5;
+        column = (Math.Atan2(direction.Y, direction.X) + Math.PI) / (2.0 * Math.PI) * _columns - 0.5;
 
     }
 
@@ -218,13 +307,13 @@ public readonly unsafe struct Terrain {
     private short LevelCell(int mip, int row, int column) {
 
         int level = Math.Max(mip - 1, 0);
-        int rows = Rows / (2 << level);
-        int columns = Columns / (2 << level);
+        int rows = _rows / (2 << level);
+        int columns = _columns / (2 << level);
         long offset = 0;
 
         for (int i = 0; i < level; i++) {
 
-            offset += (long)(Rows / (2 << i)) * (Columns / (2 << i));
+            offset += (long)(_rows / (2 << i)) * (_columns / (2 << i));
 
         }
 
@@ -357,8 +446,8 @@ public readonly unsafe struct Terrain {
     // Rows past a pole continue down the far meridian; columns wrap at the date line.
     private double Post(int mip, int row, int column) {
 
-        int rows = Rows >> mip;
-        int columns = Columns >> mip;
+        int rows = _rows >> mip;
+        int columns = _columns >> mip;
 
         if (row < 0) {
 
@@ -378,7 +467,7 @@ public readonly unsafe struct Terrain {
 
         for (int i = 0; i < mip; i++) {
 
-            offset += (long)(Rows >> i) * (Columns >> i);
+            offset += (long)(_rows >> i) * (_columns >> i);
 
         }
 

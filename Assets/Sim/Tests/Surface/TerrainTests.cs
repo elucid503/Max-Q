@@ -14,7 +14,7 @@ public sealed class TerrainTests {
     private Survey _survey;
 
     [OneTimeSetUp]
-    public void Open() => _survey = Survey.Open("Data/Terra", Radius);
+    public void Open() => _survey = Survey.Terra("Data/Terra", Radius);
 
     [OneTimeTearDown]
     public void Close() => _survey?.Dispose();

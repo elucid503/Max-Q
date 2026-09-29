@@ -10,6 +10,7 @@ Shader "MaxQ/Water" {
         _ParentDetail ("Parent Detail", 2D) = "gray" {}
         _ParentRect ("Parent Rect", Vector) = (1, 1, 0, 0)
         _Level ("Level", Float) = 0
+        _Morph ("Morph", Vector) = (0, 0, 0, 0)
         _WaterCoarse ("Coarse", Float) = 0
         _TileOriginNear ("Near Tile Origin", Vector) = (0, 0, 0, 0)
         _TileOriginFar ("Far Tile Origin", Vector) = (0, 0, 0, 0)
@@ -122,7 +123,7 @@ Shader "MaxQ/Water" {
 
                 bool skirt = input.uv.x > 1.5;
                 float2 uv = float2(skirt ? input.uv.x - SKIRT_FLAG : input.uv.x, input.uv.y);
-                float3 localWS = TransformObjectToWorld(input.position);
+                float3 localWS = PlacedWS(input.position);
                 float morph = MorphAt(localWS);
                 float3 up = normalize(localWS - _PlanetCentre);
 
@@ -142,8 +143,8 @@ Shader "MaxQ/Water" {
                 UNITY_BRANCH
                 if (shape > 0.0 && any(input.morph != 0.0)) {
 
-                    float3 endA = TransformObjectToWorld(input.position + input.parent.xyz) + hang;
-                    float3 endB = TransformObjectToWorld(input.position + 2.0 * input.morph - input.parent.xyz) + hang;
+                    float3 endA = PlacedWS(input.position + input.parent.xyz) + hang;
+                    float3 endB = PlacedWS(input.position + 2.0 * input.morph - input.parent.xyz) + hang;
                     float4 strengthA = wave.weights;
                     float4 strengthB = wave.weights;
 
@@ -161,11 +162,11 @@ Shader "MaxQ/Water" {
 
                 }
 
-                float3 restWS = TransformObjectToWorld(input.position + input.morph * shape);
+                float3 restWS = PlacedWS(input.position + input.morph * shape);
 
                 WaterVaryings output;
                 output.positionWS = restWS + displacement;
-                output.positionCS = TransformWorldToHClip(output.positionWS);
+                output.positionCS = PlacedToHClip(output.positionWS);
                 output.uv = uv;
                 output.coords = FrameCoords(restWS);
                 output.weights = wave.weights;

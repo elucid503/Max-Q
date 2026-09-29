@@ -28,7 +28,7 @@ public sealed class Vegetation : IDisposable {
     private const float Everywhere = 1e9f;
 
     // Metres over which each level hands over to the next coarser, tree by tree: the trees to the first groves, each level
-    // of groves to the next, and the last fading out at the reach. One per level from PatchStrewJob.TreeDepth out.
+    // of groves to the next, and the last fading out at the reach. One per level from the trees' out.
     private static readonly Vector2[] Handovers = { new Vector2(1_200.0f, 1_400.0f), new Vector2(2_500.0f, 2_800.0f), new Vector2(5_000.0f, 5_600.0f),
         new Vector2(8_500.0f, 10_000.0f) };
 
@@ -63,10 +63,12 @@ public sealed class Vegetation : IDisposable {
 
         public int Count;
 
-        // The quadtree level of the patch: grass on PatchStrewJob.TuftDepth, trees on TreeDepth, groves on the coarser ones.
+        // The quadtree level of the patch, and the body's finest: grass on the finest, trees PatchStrewJob.TreeLevels
+        // above it, groves on the coarser ones.
         public int Depth;
+        public int MaxDepth;
 
-        public bool Trees => Depth != PatchStrewJob.TuftDepth;
+        public bool Trees => Depth != MaxDepth;
 
         public void Dispose() => Plants.Release();
 
@@ -104,13 +106,14 @@ public sealed class Vegetation : IDisposable {
 
     }
 
-    /// <summary>Takes the plants of a freshly built patch at <paramref name="depth"/>, three float4s each, as PatchJob
-    /// gathers them.</summary>
-    public void Load(Plot plot, NativeArray<float4> plants, int count, int depth) {
+    /// <summary>Takes the plants of a freshly built patch at <paramref name="depth"/> of a body whose finest level is
+    /// <paramref name="maxDepth"/>, three float4s each, as PatchJob gathers them.</summary>
+    public void Load(Plot plot, NativeArray<float4> plants, int count, int depth, int maxDepth) {
 
         plot.Plants.SetData(plants.Reinterpret<float4x3>(16), 0, 0, count);
         plot.Count = count;
         plot.Depth = depth;
+        plot.MaxDepth = maxDepth;
 
     }
 
@@ -139,7 +142,7 @@ public sealed class Vegetation : IDisposable {
 
         }
 
-        int level = PatchStrewJob.TreeDepth - plot.Depth;
+        int level = plot.MaxDepth - PatchStrewJob.TreeLevels - plot.Depth;
         // Groves hand over to the finer level only where it has been built; until then they stand in for it up close.
         Vector2 fadeIn = level == 0 || !refined ? new Vector2(-2.0f, -1.0f) : Handovers[level - 1];
         Vector4 fade = new Vector4(fadeIn.x, fadeIn.y, Handovers[level].x, Handovers[level].y);
@@ -152,7 +155,7 @@ public sealed class Vegetation : IDisposable {
 
         if (level > 0) {
 
-            Pictures(plot, position, rotation, bounds, new Vector2(0.0f, Everywhere), fade, GroveCell(plot.Depth));
+            Pictures(plot, position, rotation, bounds, new Vector2(0.0f, Everywhere), fade, GroveCell(plot));
 
             return;
 
@@ -191,8 +194,9 @@ public sealed class Vegetation : IDisposable {
 
     }
 
-    // Metres across the cell each grove at depth stands for.
-    private float GroveCell(int depth) => _radiusMetres * 0.5f * Mathf.PI / (PatchJob.Quads * (float)(1L << depth)) / Mathf.Sqrt(PatchStrewJob.PlantsPerQuad(depth));
+    // Metres across the cell each of a plot's groves stands for.
+    private float GroveCell(Plot plot) =>
+        _radiusMetres * 0.5f * Mathf.PI / (PatchJob.Quads * (float)(1L << plot.Depth)) / Mathf.Sqrt(PatchStrewJob.PlantsPerQuad(plot.Depth, plot.MaxDepth, false));
 
     // The first plants of a sorted plot whose rank is under keep, with a margin for ranks not quite even.
     private static int Share(int count, float keep) => Mathf.Min(count, Mathf.CeilToInt(count * Mathf.Min(keep, 1.0f) * 1.1f) + 8);
