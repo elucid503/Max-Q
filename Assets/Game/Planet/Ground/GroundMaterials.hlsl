@@ -593,7 +593,7 @@ GroundSurface GroundMaterial(GroundVaryings input, GroundDetail detail, float3 u
     lie.upness = dot(detail.normalWS, up);
     lie.convexity = detail.occlusion - (1.0 - 0.5 * (1.0 - lie.upness * lie.upness));
     lie.noise = GroundNoise(metres, upOS, footprint);
-    lie.beach = BeachAt(-detail.waterDepth, altitude);
+    lie.beach = BeachAt(-detail.waterDepth, altitude, lie.upness);
 
     float weights[MATERIALS];
     float total = 0.0;

@@ -37,9 +37,11 @@ static const float3 Averages[MATERIALS] = {
 #define GREY_ROCK float3(0.13, 0.125, 0.115)
 #define DESERT_ROCK float3(0.24, 0.15, 0.09)
 
-// Metres over the water a beach reaches: a sea's surf and storms reach far up the shore, a lake's hardly.
+// Metres over the water a beach reaches: a sea's surf and storms reach far up the shore, a lake's hardly; and at most
+// BEACH_WIDTH inland, so a plain lying a hand over a lake's level stays what its cover makes it. Must match PatchStrewJob.
 #define SEA_BEACH 1.0
 #define LAKE_BEACH 0.3
+#define BEACH_WIDTH 60.0
 
 struct GroundCover {
 
@@ -72,12 +74,14 @@ float Warmth(float3 up, float altitude) {
 
 }
 
-// How far a spot lies in the beach band, above water metres over the nearest sheet (negative under it), at altitude.
-float BeachAt(float aboveWater, float altitude) {
+// How far a spot lies in the beach band, above water metres over the nearest sheet (negative under it), at altitude, its
+// ground facing up by upness; the slope tells how far inland its height over the water lies.
+float BeachAt(float aboveWater, float altitude, float upness) {
 
     float rise = lerp(SEA_BEACH, LAKE_BEACH, saturate(altitude / 5.0));
+    float slope = sqrt(saturate(1.0 - upness * upness)) / max(upness, 0.05);
 
-    return saturate(1.0 - aboveWater / rise);
+    return saturate(1.0 - aboveWater / max(min(rise, slope * BEACH_WIDTH), 1e-3));
 
 }
 

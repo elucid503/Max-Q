@@ -46,6 +46,9 @@ internal struct PatchStrewJob : IJobParallelFor {
     public const int PlantLength = 3 * PlantSlots;
     public const int RockLength = 3 * RockSlots;
 
+    // Metres inland the beach reaches at most; must match BEACH_WIDTH in Biome.hlsl.
+    private const double BeachWidth = 60.0;
+
     [NativeDisableUnsafePtrRestriction]
     public Terrain Terrain;
 
@@ -158,9 +161,10 @@ internal struct PatchStrewJob : IJobParallelFor {
         cover = default;
 
         double level = Terrain.WaterLevelAt(place.Direction, PatchJob.Footprint(Terrain.Radius, Depth));
+        double slope = Math.Sqrt(Math.Max(1.0 - place.Upness * place.Upness, 0.0)) / Math.Max(place.Upness, 0.05);
 
         // Nothing grows or lies in the water or on the beach the ground's materials lay above it (see Biome.hlsl).
-        if (!double.IsNaN(level) && place.Height < level + math.lerp(1.0, 0.3, math.saturate(level / 5.0))) {
+        if (!double.IsNaN(level) && place.Height < level + Math.Min(math.lerp(1.0, 0.3, math.saturate(level / 5.0)), slope * BeachWidth)) {
 
             return 0.0;
 
@@ -170,7 +174,6 @@ internal struct PatchStrewJob : IJobParallelFor {
 
         // Plants hold to about 45 degrees on vegetated ground and 35 on bare, as the ground's materials give way to rock.
         double steep = math.saturate((math.lerp(0.8, 0.7, cover.Vegetation) - place.Upness) / 0.1);
-        double slope = Math.Sqrt(Math.Max(1.0 - place.Upness * place.Upness, 0.0)) / Math.Max(place.Upness, 0.05);
         double open = (1.0 - steep) * (1.0 - cover.Snow);
 
         return kind switch {
