@@ -91,8 +91,16 @@ Shader "MaxQ/Ground" {
 
                 float3 body = WaterBody(optics, bed, path, depth, Underwater(light, look.up, look.variance));
                 float3 ice = GroundRadiance(SEA_ICE_ALBEDO, look.up, light, surface.surroundings, 1.0);
+                float structure = 0.0;
 
-                return WaterColour(look, light, reflection, body, 0.0, optics, sea, FoamStructure(coords), ice, 0.0);
+                UNITY_BRANCH
+                if (waves.foam * WhitecapCoverage(sea.wind) / max(_WaterCoverage, 1e-4) > 0.01) {
+
+                    structure = FoamStructure(coords, coordsDx, coordsDy);
+
+                }
+
+                return WaterColour(look, light, reflection, body, 0.0, optics, sea, structure, ice, 0.0);
 
             }
 

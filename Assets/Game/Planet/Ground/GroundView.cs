@@ -52,6 +52,7 @@ public sealed class GroundView : IDisposable {
     private static readonly int ParentCoverId = Shader.PropertyToID("_ParentCover");
     private static readonly int ParentRectId = Shader.PropertyToID("_ParentRect");
     private static readonly int LevelId = Shader.PropertyToID("_Level");
+    private static readonly int WaterCoarseId = Shader.PropertyToID("_WaterCoarse");
     private static readonly int TileOriginNearId = Shader.PropertyToID("_TileOriginNear");
     private static readonly int TileOriginFarId = Shader.PropertyToID("_TileOriginFar");
     private static readonly int TileOriginMacroId = Shader.PropertyToID("_TileOriginMacro");
@@ -501,6 +502,7 @@ public sealed class GroundView : IDisposable {
         if (coarse != patch.Coarse) {
 
             patch.Mesh.SetSubMesh(1, coarse ? patch.CoarseWater : patch.FineWater, MeshUpdateFlags.DontRecalculateBounds | MeshUpdateFlags.DontValidateIndices);
+            patch.Water.SetFloat(WaterCoarseId, coarse ? 1.0f : 0.0f);
             patch.Coarse = coarse;
 
         }
@@ -678,6 +680,7 @@ public sealed class GroundView : IDisposable {
             patch.CoarseWater.indexStart = patch.FineWater.indexStart + patch.FineWater.indexCount;
             patch.CoarseWater.indexCount = (int)slot.Info[PatchJob.InfoCoarseWaterIndices];
             patch.Coarse = false;
+            patch.Water.SetFloat(WaterCoarseId, 0.0f);
 
             Patch parent = node.Parent?.Patch ?? patch;
             Vector4 parentRect = node.Parent == null ? new Vector4(1.0f, 1.0f, 0.0f, 0.0f) : new Vector4(0.5f, 0.5f, 0.5f * (node.X & 1), 0.5f * (node.Y & 1));

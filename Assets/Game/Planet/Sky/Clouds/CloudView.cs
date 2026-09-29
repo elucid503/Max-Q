@@ -42,6 +42,9 @@ public sealed class CloudView : IDisposable {
     private const int LandWidth = 512;
     private const int LandHeight = 256;
 
+    // The weather is redrawn in bands of a thread group's rows, every band once each WeatherInterval.
+    private const int WeatherBands = WeatherHeight / 8;
+
     // Metres of ground height over the land map's range; matches LAND_HEIGHT_RANGE in CloudNoise.compute.
     private const double LandHeightRange = 2_000.0;
 
@@ -51,7 +54,8 @@ public sealed class CloudView : IDisposable {
     private const double DetailTile = 1.1;
 
     // Drift east (m/s at the equator), churn of heaps and edges (m/s), of the weather (tiles/s: storms change over hours,
-    // fronts over days), the cyclones' lives (s), and the redraw interval (s), too short for its steps to show.
+    // fronts over days), the cyclones' lives (s), and the interval (s) the whole map is redrawn over, too short for its
+    // steps to show.
     private const double DriftSpeed = 8.0;
     private const double ShapeChurn = 0.5;
     private const double DetailChurn = 2.0;
@@ -87,7 +91,9 @@ public sealed class CloudView : IDisposable {
     private readonly Texture2D _remap;
     private readonly Material _material;
 
+    // The sim time the weather's redraw counts from, and the bands drawn since.
     private double _forecast = double.NaN;
+    private long _forecastBands;
 
     /// <summary>Whether the clouds draw and cast shadows; the capture turns them off to time them.</summary>
     public bool Enabled { get; set; } = true;
@@ -165,20 +171,53 @@ public sealed class CloudView : IDisposable {
 
     }
 
+    // Each frame redraws the bands due since the last, so no frame draws the whole map; the first frame, or a leap in
+    // time, redraws it all at once.
     private void Forecast(double time, double drift, Vector3 sun) {
 
-        if (Math.Abs(time - _forecast) < WeatherInterval) {
+        long due = double.IsNaN(_forecast) ? 0 : (long)Math.Floor((time - _forecast) / WeatherInterval * WeatherBands);
+
+        if (double.IsNaN(_forecast) || due < _forecastBands || due - _forecastBands >= WeatherBands) {
+
+            _forecast = time;
+            _forecastBands = 0;
+            DrawWeather(time, drift, sun, 0, WeatherBands);
 
             return;
 
         }
 
-        _forecast = time;
+        int count = (int)(due - _forecastBands);
+
+        if (count == 0) {
+
+            return;
+
+        }
+
+        int first = (int)(_forecastBands % WeatherBands);
+        int head = Math.Min(count, WeatherBands - first);
+
+        DrawWeather(time, drift, sun, first, head);
+
+        if (count > head) {
+
+            DrawWeather(time, drift, sun, 0, count - head);
+
+        }
+
+        _forecastBands = due;
+
+    }
+
+    private void DrawWeather(double time, double drift, Vector3 sun, int firstBand, int bands) {
+
         _noise.SetFloat("_WeatherDrift", (float)drift);
         _noise.SetVector("_WeatherChurn", Churn(time * ChurnRate, 1.0, new Vector3(0.6f, 0.3f, 0.75f)));
         _noise.SetFloat("_WeatherPhase", (float)Wrap(time / CycloneCycle, 1.0));
         _noise.SetVector("_WeatherSun", sun);
-        _noise.Dispatch(_weatherKernel, WeatherWidth / 8, WeatherHeight / 8, 1);
+        _noise.SetInt("_WeatherFirstRow", firstBand * (WeatherHeight / WeatherBands));
+        _noise.Dispatch(_weatherKernel, WeatherWidth / 8, bands, 1);
 
     }
 

@@ -202,12 +202,15 @@ float4 WaveVariation(float2 coords) {
 
 }
 
-// Foam's structure at a point: packed bubbles at two scales, a few metres and a dozen across.
-float FoamStructure(float2 coords) {
+// Foam's structure at a point: packed bubbles at two scales, a few metres and a dozen across. Filtered to the footprint
+// taken before any branch: derivatives inside the branch that gates it read the finest mip, sparkling white far off.
+float FoamStructure(float2 coords, float2 coordsDx, float2 coordsDy) {
 
     float2 sea = (coords + _WaterPattern) / PATTERN_PERIOD;
-    float near = SAMPLE_TEXTURE2D(_WaterFoamTexture, sampler_WaterTrilinearRepeat, sea * FOAM_TILES_NEAR).r;
-    float far = SAMPLE_TEXTURE2D(_WaterFoamTexture, sampler_WaterTrilinearRepeat, sea * FOAM_TILES_FAR + 0.5).r;
+    float2 dx = coordsDx / PATTERN_PERIOD;
+    float2 dy = coordsDy / PATTERN_PERIOD;
+    float near = SAMPLE_TEXTURE2D_GRAD(_WaterFoamTexture, sampler_WaterTrilinearRepeat, sea * FOAM_TILES_NEAR, dx * FOAM_TILES_NEAR, dy * FOAM_TILES_NEAR).r;
+    float far = SAMPLE_TEXTURE2D_GRAD(_WaterFoamTexture, sampler_WaterTrilinearRepeat, sea * FOAM_TILES_FAR + 0.5, dx * FOAM_TILES_FAR, dy * FOAM_TILES_FAR).r;
 
     return 0.55 * near + 0.45 * far;
 

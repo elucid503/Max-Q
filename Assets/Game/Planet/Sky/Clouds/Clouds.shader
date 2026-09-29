@@ -129,61 +129,85 @@ Shader "Hidden/MaxQ/Clouds" {
 
             }
 
+            // Trace samples see the same clouds as a pixel where their ground lies within this share of its own (and this
+            // margin, km); across a silhouette they would carry the sky's clouds onto the ground before it, and back. A
+            // sample far off still counts a little, so a pixel no sample matches keeps a value.
+            #define CLOUD_MATCH 0.2
+            #define CLOUD_MATCH_MARGIN 0.05
+            #define CLOUD_FALLBACK 0.01
+
+            float Match(float ground, float own) {
+
+                float off = abs(ground - own) / (CLOUD_MATCH * own + CLOUD_MATCH_MARGIN);
+
+                return 1.0 / (1.0 + off * off);
+
+            }
+
             Output Frag(Varyings input) {
 
                 int2 pixel = int2(input.positionCS.xy);
                 int2 traced = int2(_CloudJitter.xy) >> 1;
                 int2 last = int2(_CloudTraceSize.xy) - 1;
-                int2 block = min(pixel >> 1, last);
                 bool fresh = all((pixel & 1) == traced);
 
-                // Fresh samples round the pixel bound its history, and their blend stands in on frames it is not traced.
-                float4 lowest = 1e9;
-                float4 highest = -1e9;
-
-                for (int y = -1; y <= 1; y++) {
-
-                    for (int x = -1; x <= 1; x++) {
-
-                        float4 neighbour = LOAD_TEXTURE2D(_CloudTrace, clamp(block + int2(x, y), 0, last));
-
-                        lowest = min(lowest, neighbour);
-                        highest = max(highest, neighbour);
-
-                    }
-
-                }
-
-                float4 current = 0.0;
-                float2 depth = 0.0;
-
-                if (fresh) {
-
-                    current = LOAD_TEXTURE2D(_CloudTrace, block);
-                    depth = LOAD_TEXTURE2D(_CloudTraceDepth, block).rg;
-
-                } else {
-
-                    float2 at = (pixel - traced) * 0.5;
-                    int2 base = int2(floor(at));
-                    float2 f = at - base;
-
-                    for (int i = 0; i < 4; i++) {
-
-                        int2 offset = int2(i & 1, i >> 1);
-                        int2 tap = clamp(base + offset, 0, last);
-                        float bilinear = (offset.x ? f.x : 1.0 - f.x) * (offset.y ? f.y : 1.0 - f.y);
-
-                        current += LOAD_TEXTURE2D(_CloudTrace, tap) * bilinear;
-                        depth += LOAD_TEXTURE2D(_CloudTraceDepth, tap).rg * bilinear;
-
-                    }
-
-                }
-
-                // Where the clouds seen through this pixel stood last frame, as the planet turned and the camera moved.
+                // The texel's light is what the air's march reads for the ray through its top-left pixel, so the samples
+                // are matched against that ray's ground. It is carried across frames from its own centre, where last
+                // frame's texel is read: from any other point the history would creep a little every frame.
+                int2 full = min(pixel * 2, int2(_SceneSize.xy) - 1);
+                ViewRay ray = ViewRayThrough((full + 0.5) * _SceneSize.zw, LOAD_TEXTURE2D_X(_SceneDepth, full).r);
                 float2 uv = (pixel * 2.0 + 1.0) * _SceneSize.zw;
                 float3 direction = normalize(ComputeWorldSpacePosition(uv, UNITY_NEAR_CLIP_VALUE, UNITY_MATRIX_I_VP) - _WorldSpaceCameraPos);
+
+                // Trace sample i went through pixel 4i + jitter: bilinear weights at this pixel, times how well each
+                // sample's ground matches. The matching ones bound the history.
+                float2 at = (full - _CloudJitter.xy) * 0.25;
+                int2 base = int2(floor(at));
+                float4 current = 0.0;
+                float cloudDepth = 0.0;
+                float total = 0.0;
+                float confidence = 0.0;
+                float4 lowest = 1e9;
+                float4 highest = -1e9;
+                float4 anyLowest = 1e9;
+                float4 anyHighest = -1e9;
+
+                for (int i = 0; i < 16; i++) {
+
+                    int2 offset = int2(i & 3, i >> 2) - 1;
+                    int2 tap = clamp(base + offset, 0, last);
+                    float4 light = LOAD_TEXTURE2D(_CloudTrace, tap);
+                    float2 depth = LOAD_TEXTURE2D(_CloudTraceDepth, tap).rg;
+                    float2 tent = saturate(1.0 - abs(at - (base + offset)));
+                    float bilinear = tent.x * tent.y;
+                    float match = Match(depth.y, ray.distance);
+                    float weight = (bilinear + CLOUD_FALLBACK) * match;
+
+                    current += light * weight;
+                    cloudDepth += depth.x * weight;
+                    total += weight;
+                    confidence += bilinear * match;
+                    anyLowest = min(anyLowest, light);
+                    anyHighest = max(anyHighest, light);
+
+                    if (match > 0.5) {
+
+                        lowest = min(lowest, light);
+                        highest = max(highest, light);
+
+                    }
+
+                }
+
+                current /= total;
+                cloudDepth /= total;
+
+                if (highest.a < lowest.a) {
+
+                    lowest = anyLowest;
+                    highest = anyHighest;
+
+                }
 
                 // A ray that misses the clouds' shell sees none, whatever its neighbours or history say, so nothing smears
                 // off the limb into space as the planet shrinks away.
@@ -191,7 +215,9 @@ Shader "Hidden/MaxQ/Clouds" {
                 bool through = shell.y > max(shell.x, 0.0);
 
                 current = through ? current : float4(0.0, 0.0, 0.0, 1.0);
-                float3 position = _WorldSpaceCameraPos + direction * depth.x;
+
+                // Where the clouds seen through this pixel stood last frame, as the planet turned and the camera moved.
+                float3 position = _WorldSpaceCameraPos + direction * cloudDepth;
                 float4 clip = mul(_CloudReprojection, float4(position, 1.0));
                 float2 previous = ComputeNormalizedDeviceCoordinatesWithZ(position, _CloudReprojection).xy;
                 float2 historyUv = previous * _SceneSize.xy / (2.0 * _CloudSize.xy);
@@ -199,27 +225,28 @@ Shader "Hidden/MaxQ/Clouds" {
                 float2 historyDepth = SAMPLE_TEXTURE2D_LOD(_CloudHistoryDepth, sampler_LinearClamp, historyUv, 0).rg;
 
                 // Carried to this frame's camera, the history's distance keeps up instead of splitting the air short.
-                historyDepth.x += depth.x - length(position - _CloudPreviousCamera);
+                historyDepth.x += cloudDepth - length(position - _CloudPreviousCamera);
 
-                // History is dropped off screen, and where the ground behind the pixel has changed, as at a ridge line.
+                // History is dropped off screen, and where the ground behind the pixel has changed, as at a ridge line. A
+                // pixel no sample matched this frame keeps its history.
                 bool valid = through && _CloudHistoryValid > 0.0 && clip.w > 0.0 && all(previous >= 0.0) && all(previous <= 1.0) &&
-                    abs(historyDepth.y - depth.y) < 0.1 * depth.y + 0.05;
+                    abs(historyDepth.y - ray.distance) < 0.1 * ray.distance + 0.05;
                 float4 spread = 0.25 * (highest - lowest);
-                float blend = valid ? (fresh ? CLOUD_BLEND : CLOUD_SPREAD) : 1.0;
+                float blend = valid ? (fresh ? CLOUD_BLEND : CLOUD_SPREAD) * saturate(confidence) : 1.0;
 
                 // The box comes from one ray per 4x4 block, which misses clouds smaller than that on most frames; clamped
                 // every frame they would blink out. History is clamped only where it may be stale: as far as the view has
                 // slid (half-resolution pixels this frame), or where the clouds it holds stand at another distance than
                 // this frame's, as when the camera pulls away. It is kept whole while the view holds nearly still.
                 float slide = length((previous - uv) * _SceneSize.xy) * 0.5;
-                float stray = abs(historyDepth.x - depth.x) / max(depth.x, 1.0);
+                float stray = abs(historyDepth.x - cloudDepth) / max(cloudDepth, 1.0);
                 float stale = max(smoothstep(CLOUD_SLIDE_START, CLOUD_SLIDE_END, slide), smoothstep(CLOUD_STRAY_START, CLOUD_STRAY_END, stray));
 
                 history = lerp(history, clamp(history, lowest - spread, highest + spread), stale);
 
                 Output output;
                 output.light = lerp(history, current, blend);
-                output.depth = float2(lerp(historyDepth.x, depth.x, blend), depth.y);
+                output.depth = float2(lerp(historyDepth.x, cloudDepth, blend), ray.distance);
 
                 return output;
 

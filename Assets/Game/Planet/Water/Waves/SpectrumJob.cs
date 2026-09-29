@@ -11,7 +11,7 @@ namespace MaxQ.Game.Planet.Water.Waves;
 /// of one cascade per work item. Each texel's Gaussian draw is fixed by its place, so a changed sea re-weights the
 /// same waves rather than raising new ones. Also sums each row's height and slope variance and mean wavelength.</summary>
 [BurstCompile]
-internal struct SpectrumJob : IJobParallelFor {
+internal struct SpectrumJob : IJobFor {
 
     public Spectrum Spectrum;
 
@@ -42,10 +42,13 @@ internal struct SpectrumJob : IJobParallelFor {
 
             double2 k = new double2(x - WaveCascades.Size / 2, y - WaveCascades.Size / 2) * step;
             double energy = Energy(k, cascade, cosine, sine, step);
+            double oppositeEnergy = Energy(-k, cascade, cosine, sine, step);
 
-            // Each wave shows at k and, conjugated, at -k, so each carries half its variance: E|h0|^2 = S dk^2 / 2.
-            double2 h = Draw(cascade, x, y) * math.sqrt(0.25 * energy);
-            double2 opposite = Draw(cascade, (WaveCascades.Size - x) % WaveCascades.Size, (WaveCascades.Size - y) % WaveCascades.Size) * math.sqrt(0.25 * Energy(-k, cascade, cosine, sine, step));
+            // Each wave shows at k and, conjugated, at -k, so each carries half its variance: E|h0|^2 = S dk^2 / 2. Most
+            // texels lie outside the cascade's band and draw nothing, so their Gaussians are never made.
+            double2 h = energy > 0.0 ? Draw(cascade, x, y) * math.sqrt(0.25 * energy) : 0.0;
+            double2 opposite = oppositeEnergy > 0.0 ?
+                Draw(cascade, (WaveCascades.Size - x) % WaveCascades.Size, (WaveCascades.Size - y) % WaveCascades.Size) * math.sqrt(0.25 * oppositeEnergy) : 0.0;
 
             Initial[row * WaveCascades.Size + x] = new float4((float)h.x, (float)h.y, (float)opposite.x, (float)opposite.y);
             sums += new double3(energy, math.lengthsq(k) * energy, energy > 0.0 ? 2.0 * math.PI_DBL / math.length(k) * energy : 0.0);

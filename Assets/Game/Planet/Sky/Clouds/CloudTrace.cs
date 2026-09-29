@@ -9,7 +9,8 @@ using UnityEngine.Rendering.Universal;
 namespace MaxQ.Game.Planet.Sky.Clouds;
 
 /// <summary>Records the clouds into the atmosphere's frame: one ray per 4x4 block through a different pixel each frame,
-/// resolved into a half-resolution history per camera that is reprojected as the camera moves and the planet turns.</summary>
+/// resolved into a half-resolution history per camera that is reprojected as the camera moves and the planet turns. The
+/// resolve weighs the rays by the ground they met, so clouds never bleed across a silhouette.</summary>
 internal sealed class CloudTrace {
 
     private static readonly int SceneDepthId = Shader.PropertyToID("_SceneDepth");
@@ -210,11 +211,14 @@ internal sealed class CloudTrace {
         using (IRasterRenderGraphBuilder builder = renderGraph.AddRasterRenderPass("Cloud Resolve", out PassData data)) {
 
             data.Material = _material;
+            data.Depth = depth;
             data.Trace = trace;
             data.TraceDepth = traceDepth;
             data.History = renderGraph.ImportTexture(history.Light(true));
             data.HistoryDepth = renderGraph.ImportTexture(history.Depth(true));
 
+            // Each texel is resolved against the ground its own ray meets.
+            builder.UseTexture(depth);
             builder.UseTexture(trace);
             builder.UseTexture(traceDepth);
             builder.UseTexture(data.History);
@@ -223,6 +227,7 @@ internal sealed class CloudTrace {
             builder.SetRenderAttachment(lightDepth, 1);
             builder.SetRenderFunc(static (PassData pass, RasterGraphContext context) => {
 
+                pass.Material.SetTexture(SceneDepthId, pass.Depth);
                 pass.Material.SetTexture(TraceId, pass.Trace);
                 pass.Material.SetTexture(TraceDepthId, pass.TraceDepth);
                 pass.Material.SetTexture(HistoryId, pass.History);

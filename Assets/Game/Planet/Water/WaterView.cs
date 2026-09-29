@@ -30,6 +30,10 @@ public sealed class WaterView : IDisposable {
     private const double Change = 0.01;
     private const double Turn = Math.PI / 180.0;
 
+    // At most one refill this often (s of real time): a fast camera would otherwise refill without pause. The cascades'
+    // weights hold the waves to the local sea meanwhile.
+    private const double RefillSeconds = 1.0;
+
     // Foam drifts at a thirtieth of the wind's speed.
     private const double FoamDrift = 0.03;
 
@@ -81,6 +85,7 @@ public sealed class WaterView : IDisposable {
     private SeaConditions _filledSea;
     private double _filledSeaHeading;
     private double _filledSwellHeading;
+    private double _refilled = double.NegativeInfinity;
 
     /// <summary>Whether the water pass draws; the capture turns it off to time the rest of the frame.</summary>
     public bool Hidden { get; set; }
@@ -144,11 +149,15 @@ public sealed class WaterView : IDisposable {
         double seaHeading = _frame.Heading(sea.WindEast, sea.WindNorth);
         double swellHeading = _frame.Heading(sea.SwellEast, sea.SwellNorth);
 
-        if ((_jumped || Changed(sea, seaHeading, swellHeading)) && !_cascades.Busy) {
+        double now = Time.unscaledTimeAsDouble;
+        bool due = now - _refilled >= RefillSeconds && Changed(sea, seaHeading, swellHeading);
+
+        if ((_jumped || due) && !_cascades.Busy) {
 
             Spectrum spectrum = Spectrum.For(sea, seaHeading, swellHeading);
 
-            _cascades.Request(spectrum);
+            _cascades.Request(spectrum, _jumped);
+            _refilled = now;
             _filledSea = sea;
             _filledSeaHeading = seaHeading;
             _filledSwellHeading = swellHeading;

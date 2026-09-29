@@ -16,8 +16,8 @@
 #define TENSION 7.4e-5
 #define LOOP_SECONDS 1024.0
 
-// Each texel's spectrum: h0(k) and h0(-k).
-Texture2DArray<float4> _Initial;
+// Each texel's spectrum: h0(k) and h0(-k), row by row, cascade by cascade.
+StructuredBuffer<float4> _Initial;
 
 // Each cascade's tile size (m) and turn from the wave frame (radians).
 float4 _CascadeSize;
@@ -63,7 +63,7 @@ void Evolve(uint3 id : SV_DispatchThreadID) {
 
     float2 k = (float2(id.xy) - HALF) * (2.0 * PI / _CascadeSize[id.z]);
     float kLength = length(k);
-    float4 initial = _Initial[id];
+    float4 initial = _Initial[(id.z * SIZE + id.y) * SIZE + id.x];
 
     // Every frequency is a whole number of cycles in the loop, so its phase stays small in single precision.
     float omega = sqrt(GRAVITY * kLength + TENSION * kLength * kLength * kLength);

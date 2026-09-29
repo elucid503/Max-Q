@@ -14,7 +14,8 @@ namespace MaxQ.Game.Planet.Water.Waves;
 /// <summary>The sea's waves on the GPU: four FFT cascades, each a tile of the sea holding one band of wavelengths, their
 /// sizes about 13.4 apart and none a multiple of another, turned against each other so their grids never line up.
 /// Fills the initial spectra on the workers when the sea changes (the same waves re-weighted, so a small change never
-/// shows), and each frame evolves, transforms and assembles the displacement, slopes and foam the surface samples.</summary>
+/// shows) on a single worker, so a refill never holds up the engine's own jobs, and each frame evolves, transforms and
+/// assembles the displacement, slopes and foam the surface samples.</summary>
 internal sealed class WaveCascades : IDisposable {
 
     public const int Size = 256;
@@ -57,7 +58,7 @@ internal sealed class WaveCascades : IDisposable {
     private readonly int _columns;
     private readonly int _assemble;
 
-    private readonly Texture2DArray _initial;
+    private readonly GraphicsBuffer _initial;
     private readonly RenderTexture _spectrumA;
     private readonly RenderTexture _spectrumB;
     private readonly RenderTexture[] _foam = new RenderTexture[2];
@@ -97,13 +98,7 @@ internal sealed class WaveCascades : IDisposable {
         _columns = shader.FindKernel("TransformColumns");
         _assemble = shader.FindKernel("Assemble");
 
-        _initial = new Texture2DArray(Size, Size, Cascades, GraphicsFormat.R32G32B32A32_SFloat, TextureCreationFlags.None) {
-
-            name = "Wave Spectrum",
-            filterMode = FilterMode.Point,
-            wrapMode = TextureWrapMode.Repeat,
-
-        };
+        _initial = new GraphicsBuffer(GraphicsBuffer.Target.Structured, Size * Size * Cascades, 4 * sizeof(float)) { name = "Wave Spectrum" };
 
         _spectrumA = CascadeTexture("Wave Transform A", GraphicsFormat.R32G32B32A32_SFloat, false);
         _spectrumB = CascadeTexture("Wave Transform B", GraphicsFormat.R32G32B32A32_SFloat, false);
@@ -118,7 +113,7 @@ internal sealed class WaveCascades : IDisposable {
 
         shader.SetVector(CascadeSizeId, new Vector4((float)Sizes[0], (float)Sizes[1], (float)Sizes[2], (float)Sizes[3]));
         shader.SetVector(CascadeAngleId, new Vector4((float)Angles[0], (float)Angles[1], (float)Angles[2], (float)Angles[3]));
-        shader.SetTexture(_evolve, InitialId, _initial);
+        shader.SetBuffer(_evolve, InitialId, _initial);
         shader.SetTexture(_assemble, DisplacementId, Displacement);
         shader.SetTexture(_assemble, DerivativesId, Derivatives);
         shader.SetTexture(_assemble, MomentsId, Moments);
@@ -137,8 +132,9 @@ internal sealed class WaveCascades : IDisposable {
 
     public static double BandHigh(int cascade) => cascade == Cascades - 1 ? double.PositiveInfinity : 0.5 * Math.PI * Size / Sizes[cascade];
 
-    /// <summary>Starts filling the waves for <paramref name="spectrum"/>; ignored while <see cref="Busy"/>.</summary>
-    public void Request(Spectrum spectrum) {
+    /// <summary>Starts filling the waves for <paramref name="spectrum"/>; ignored while <see cref="Busy"/>. An
+    /// <paramref name="urgent"/> fill, for a view that has jumped, spreads across every worker instead.</summary>
+    public void Request(Spectrum spectrum, bool urgent) {
 
         if (Busy) {
 
@@ -146,7 +142,7 @@ internal sealed class WaveCascades : IDisposable {
 
         }
 
-        _job = new SpectrumJob {
+        SpectrumJob job = new SpectrumJob {
 
             Spectrum = spectrum,
             Sizes = new double4(Sizes[0], Sizes[1], Sizes[2], Sizes[3]),
@@ -156,7 +152,9 @@ internal sealed class WaveCascades : IDisposable {
             Initial = _staging,
             Rows = _rowSums,
 
-        }.Schedule(Size * Cascades, 8);
+        };
+
+        _job = urgent ? job.ScheduleParallel(Size * Cascades, 8, default) : job.Schedule(Size * Cascades, default);
 
         Busy = true;
 
@@ -242,13 +240,7 @@ internal sealed class WaveCascades : IDisposable {
         _job.Complete();
         Busy = false;
 
-        for (int cascade = 0; cascade < Cascades; cascade++) {
-
-            _initial.SetPixelData(_staging, 0, cascade, cascade * Size * Size);
-
-        }
-
-        _initial.Apply(false, false);
+        _initial.SetData(_staging);
 
         double4 heights = 0.0;
         double4 slopes = 0.0;
@@ -299,7 +291,7 @@ internal sealed class WaveCascades : IDisposable {
         _staging.Dispose();
         _rowSums.Dispose();
         _commands.Release();
-        UnityEngine.Object.Destroy(_initial);
+        _initial.Release();
 
         foreach (RenderTexture texture in new[] { _spectrumA, _spectrumB, Displacement, Derivatives, Moments, _foam[0], _foam[1] }) {
 

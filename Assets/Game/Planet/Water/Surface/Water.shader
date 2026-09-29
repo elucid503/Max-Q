@@ -10,6 +10,7 @@ Shader "MaxQ/Water" {
         _ParentDetail ("Parent Detail", 2D) = "gray" {}
         _ParentRect ("Parent Rect", Vector) = (1, 1, 0, 0)
         _Level ("Level", Float) = 0
+        _WaterCoarse ("Coarse", Float) = 0
         _TileOriginNear ("Near Tile Origin", Vector) = (0, 0, 0, 0)
         _TileOriginFar ("Far Tile Origin", Vector) = (0, 0, 0, 0)
         _TileOriginMacro ("Macro Tile Origin", Vector) = (0, 0, 0, 0)
@@ -125,6 +126,10 @@ Shader "MaxQ/Water" {
                 float morph = MorphAt(localWS);
                 float3 up = normalize(localWS - _PlanetCentre);
 
+                // The half-resolution sheet is the parent's triangles, so the odd vertices its shores and skirts still
+                // use lie on their edges, waves and all; left to their own waves they open pinholes to the sky.
+                float shape = max(morph, _WaterCoarse);
+
                 // A skirt hangs below its edge vertex and moves with it.
                 float3 hang = up * input.parent.w;
                 WavePoint wave = Surface(localWS + hang, uv, morph, input.water.y);
@@ -135,7 +140,7 @@ Shader "MaxQ/Water" {
                 // is taken as the vertex's own, which changes over kilometres; the depth is read again only where the
                 // bottom might hold the waves down.
                 UNITY_BRANCH
-                if (morph > 0.0 && any(input.morph != 0.0)) {
+                if (shape > 0.0 && any(input.morph != 0.0)) {
 
                     float3 endA = TransformObjectToWorld(input.position + input.parent.xyz) + hang;
                     float3 endB = TransformObjectToWorld(input.position + 2.0 * input.morph - input.parent.xyz) + hang;
@@ -152,11 +157,11 @@ Shader "MaxQ/Water" {
 
                     }
 
-                    displacement = lerp(displacement, 0.5 * (WaveDisplacementWS(endA, strengthA) + WaveDisplacementWS(endB, strengthB)), morph);
+                    displacement = lerp(displacement, 0.5 * (WaveDisplacementWS(endA, strengthA) + WaveDisplacementWS(endB, strengthB)), shape);
 
                 }
 
-                float3 restWS = TransformObjectToWorld(input.position + input.morph * morph);
+                float3 restWS = TransformObjectToWorld(input.position + input.morph * shape);
 
                 WaterVaryings output;
                 output.positionWS = restWS + displacement;
@@ -233,7 +238,7 @@ Shader "MaxQ/Water" {
                 UNITY_BRANCH
                 if (waves.foam * WhitecapCoverage(sea.wind) / max(_WaterCoverage, 1e-4) > 0.01) {
 
-                    structure = FoamStructure(input.coords);
+                    structure = FoamStructure(input.coords, coordsDx, coordsDy);
 
                 }
 

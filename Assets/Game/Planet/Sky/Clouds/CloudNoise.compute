@@ -35,6 +35,9 @@ float3 _WeatherChurn;
 float _WeatherPhase;
 float3 _WeatherSun;
 
+// The first row this dispatch redraws: the map is redrawn a band at a time.
+uint _WeatherFirstRow;
+
 // Match CloudView.LandHeightRange, and CLOUD_BASE_RANGE and CLOUD_TOP in Clouds.hlsl.
 #define LAND_HEIGHT_RANGE 2.0
 #define WEATHER_BASE_RANGE 8.0
@@ -327,7 +330,8 @@ void Claim(inout float4 claims, float cover, float base, float top) {
 [numthreads(8, 8, 1)]
 void Weather(uint3 id : SV_DispatchThreadID) {
 
-    float2 uv = (id.xy + 0.5) * _WeatherSize.zw;
+    uint2 texel = uint2(id.x, id.y + _WeatherFirstRow);
+    float2 uv = (texel + 0.5) * _WeatherSize.zw;
     float latitude = PI * (0.5 - uv.y);
     float longitude = PI * (2.0 * uv.x - 1.0);
     float lat = latitude * (180.0 / PI);
@@ -400,12 +404,12 @@ void Weather(uint3 id : SV_DispatchThreadID) {
     // The finer weather varies cover between systems but leaves their cores whole.
     float cover = saturate(claims.w * lerp(0.85 + 0.3 * meso, 1.0, core));
 
-    _Weather[id.xy] = float4(cover, base / WEATHER_BASE_RANGE, top / WEATHER_TOP_RANGE, storm.y);
+    _Weather[texel] = float4(cover, base / WEATHER_BASE_RANGE, top / WEATHER_TOP_RANGE, storm.y);
 
     // Two octaves (about 50 and 25 km) sit well above the grid's 8 km, so the bilinear lookup bends the tiles smoothly.
     float4 warp = float4(Fbm(p + _WeatherChurn, 48, 2, 61u), Fbm(p + _WeatherChurn, 48, 2, 63u), Fbm(p + _WeatherChurn, 48, 2, 65u),
         Fbm(p + _WeatherChurn, 24, 2, 67u)) / 0.75;
 
-    _Warp[id.xy] = saturate(warp * 0.5 + 0.5);
+    _Warp[texel] = saturate(warp * 0.5 + 0.5);
 
 }

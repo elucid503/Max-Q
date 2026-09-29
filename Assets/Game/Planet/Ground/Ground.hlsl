@@ -13,6 +13,9 @@ float4 _TileOriginFar;
 float4 _TileOriginMacro;
 float4 _TileOriginBroad;
 float _Level;
+
+// One while the patch draws its water sheet at half resolution (GroundView.ShapeWater).
+float _WaterCoarse;
 CBUFFER_END
 
 TEXTURE2D(_Detail);
