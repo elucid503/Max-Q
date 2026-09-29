@@ -106,6 +106,17 @@ public readonly unsafe struct Terrain {
 
     }
 
+    /// <summary>Height of the water surface the ground is held against, metres, blended across the bodies near a unit
+    /// body-fixed direction as <see cref="HeightAt"/> blends them, or NaN where none is near.</summary>
+    public double HeldWaterLevelAt(Vector3d direction, double footprint) {
+
+        GridPosition(direction, out double row, out double column);
+        Reach(Mip(footprint), row, column, out double level);
+
+        return level;
+
+    }
+
     /// <summary>Metres on the body to the nearest shore, negative over water.</summary>
     public double ShoreDistanceAt(Vector3d direction) {
 

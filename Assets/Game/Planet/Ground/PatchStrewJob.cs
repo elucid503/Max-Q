@@ -157,10 +157,14 @@ internal struct PatchStrewJob : IJobParallelFor {
     // How likely a chance of a kind is to land where it falls in quad i, j, and the place and cover there.
     private double Chance(Kind kind, int i, int j, uint4 random, out Place place, out Cover cover) {
 
-        place = Locate(i, j, Unit(random.y), Unit(random.z), kind == Kind.Tree || kind == Kind.Boulder || kind == Kind.Outcrop);
+        bool footing = kind == Kind.Tree || kind == Kind.Boulder || kind == Kind.Outcrop;
+
+        place = Locate(i, j, Unit(random.y), Unit(random.z), footing);
         cover = default;
 
-        double level = Terrain.WaterLevelAt(place.Direction, PatchJob.Footprint(Terrain.Radius, Depth));
+        // The level the ground was held against where its height was found: the point's own level cell alone can be dry
+        // where a neighbour's water covers the ground, and trees would stand in it up to the cell's straight edge.
+        double level = Terrain.HeldWaterLevelAt(place.Direction, PatchJob.Footprint(Terrain.Radius, footing ? GroundView.MaxDepth : Depth));
         double slope = Math.Sqrt(Math.Max(1.0 - place.Upness * place.Upness, 0.0)) / Math.Max(place.Upness, 0.05);
 
         // Nothing grows or lies in the water or on the beach the ground's materials lay above it (see Biome.hlsl).

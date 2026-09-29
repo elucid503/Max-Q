@@ -37,9 +37,8 @@ float4x4 _CloudNoiseFromScene;
 float3 _CloudShapeOffset;
 float3 _CloudDetailOffset;
 
-// Height ranges (km) of the weather; match WEATHER_BASE_RANGE and WEATHER_TOP_RANGE in CloudNoise.compute.
+// Height range (km) of the weather's base, and its top's is CLOUD_TOP; match WEATHER_BASE_RANGE in CloudNoise.compute.
 #define CLOUD_BASE_RANGE 8.0
-#define CLOUD_TOP 16.0
 
 // Noise tiles (km): heaps and finer heaps, the formations heaps gather into and the broad swirls those gather into,
 // towers and anvils, and edge detail at two scales. No two share a ratio and axes, so their sums never repeat.
@@ -733,7 +732,14 @@ CloudTrace TraceClouds(float3 origin, float3 direction, float tMax, float jitter
         weight += absorbed;
         sampling = clamp(1.0 / cloud.extinction, CLOUD_MIN_STEP, lerp(CLOUD_THIN_STEP, CLOUD_FINE_STEP, saturate(cloud.extinction / 10.0)));
 
+        // Cloud this dense swallows the rest: what little would pass is lit as this sample and nothing behind shows, as
+        // even a sliver of the sun's glint or disk would outshine the cloud round a camera inside it.
         if (result.transmittance < 0.02) {
+
+            result.radiance += result.transmittance * light;
+            weighted += result.transmittance * at;
+            weight += result.transmittance;
+            result.transmittance = 0.0;
 
             break;
 
@@ -808,7 +814,10 @@ float2 CloudShade(float3 origin, float footprint, float jitter, int steps) {
         transmittance *= passed;
         t += stride;
 
+        // The sun's glint would show through a sliver, so dense cloud shades fully.
         if (transmittance < 0.01) {
+
+            transmittance = 0.0;
 
             break;
 

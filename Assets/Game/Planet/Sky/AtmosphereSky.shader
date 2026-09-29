@@ -50,7 +50,8 @@ Shader "Hidden/MaxQ/AtmosphereSky" {
                 int2 pixel = int2(input.positionCS.xy) * 2;
                 ViewRay ray = ViewRayThrough((pixel + 0.5) * _SceneSize.zw, LOAD_TEXTURE2D_X(_SceneDepth, pixel).r);
 
-                // Interleaved gradient noise staggers neighbouring rays' samples, so shafts in the haze blend instead of banding.
+                // Interleaved gradient noise staggers neighbouring rays' cascade samples, so terrain's shafts blend instead of
+                // banding. The shadowed stretch has SHADOW_STEPS of its own, so the rest of the ray needs fewer.
                 float jitter = frac(52.9829189 * frac(dot(input.positionCS.xy, float2(0.06711056, 0.00583715))));
                 float4 clouds = float4(0.0, 0.0, 0.0, 1.0);
                 float cloudDepth = 1e9;
@@ -65,7 +66,7 @@ Shader "Hidden/MaxQ/AtmosphereSky" {
 
                 }
 
-                Scattering scattering = Integrate(_WorldSpaceCameraPos - _PlanetCentre, ray.direction, ray.sky ? 1e9 : ray.distance, _SunDirection, 24, true, jitter, true, true,
+                Scattering scattering = Integrate(_WorldSpaceCameraPos - _PlanetCentre, ray.direction, ray.sky ? 1e9 : ray.distance, _SunDirection, 16, true, jitter, true, true,
                     cloudDepth);
                 float3 front = scattering.frontRadiance * _SunIlluminance;
 

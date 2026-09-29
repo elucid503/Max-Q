@@ -116,7 +116,8 @@ internal struct PatchSampleJob : IJobParallelFor {
             if (k >= 1 && l >= 1 && k <= PatchJob.Texels && l <= PatchJob.Texels) {
 
                 int t = (l - 1) * PatchJob.Texels + k - 1;
-                double level = Terrain.WaterLevelAt(direction, footprint / PatchJob.TexelsPerQuad);
+                // Blended as the height's level is, so ground under a neighbouring cell's water is seabed, not beach.
+                double level = Terrain.HeldWaterLevelAt(direction, footprint / PatchJob.TexelsPerQuad);
 
                 Depths[t] = double.IsNaN(level) ? -PatchJob.WaterDepthRange : level - height;
 

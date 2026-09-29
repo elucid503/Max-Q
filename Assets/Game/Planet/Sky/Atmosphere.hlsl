@@ -45,6 +45,14 @@ float3 _CloudShadowUp;
 #define CLOUD_SHADOW_SOFTNESS 0.4
 #define CLOUD_SHADOW_TEXELS 512.0
 
+// Height (km) of the clouds' shell, above which nothing shades the sun; matches WEATHER_TOP_RANGE in CloudNoise.compute.
+#define CLOUD_TOP 16.0
+
+// March steps given to the stretch of a view ray that shadows can fall on, so shafts resolve, and the finest mip of the
+// clouds' shadow they read (four texels).
+#define SHADOW_STEPS 20
+#define CLOUD_SHADOW_SHAFT_LOD 2.0
+
 // The clouds round the camera by azimuth from the sun and elevation: what they add to the sky, and how much they let through.
 TEXTURE2D(_CloudSky);
 float _CloudsOn;
@@ -206,10 +214,35 @@ float RampIntegral(float u) {
 
 }
 
-// Sunlight the clouds let through to a point, all of it sunward of their shade and off the map; lod blurs the map. The
-// shade's sunward edge is averaged over span (km before and after the point along the sun), as the map's blur never can:
-// along the sun the map holds still, so a point sample would print its jitter.
-float CloudShadow(float3 positionWS, float lod = 0.0, float2 span = float2(0.0, 0.0)) {
+// The shadow map through a cubic B-spline over its 4x4 texels in four bilinear taps: bilinear alone draws a sharp shade's
+// outline as straight-sided polygons once a texel spans many pixels, as it does on the ground.
+float2 CloudShadeSmooth(float2 uv, float lod) {
+
+    float size = CLOUD_SHADOW_TEXELS * exp2(-lod);
+    float2 position = uv * size - 0.5;
+    float2 centre = floor(position);
+    float2 f = position - centre;
+    float2 g = 1.0 - f;
+    float2 w0 = g * g * g / 6.0;
+    float2 w1 = (4.0 - 6.0 * f * f + 3.0 * f * f * f) / 6.0;
+    float2 w3 = f * f * f / 6.0;
+    float2 low = w0 + w1;
+    float2 high = 1.0 - low;
+    float2 at0 = (centre - 0.5 + w1 / low) / size;
+    float2 at1 = (centre + 1.5 + w3 / high) / size;
+
+    return low.y * (low.x * SAMPLE_TEXTURE2D_LOD(_CloudShadow, sampler_linear_clamp, at0, lod).rg +
+            high.x * SAMPLE_TEXTURE2D_LOD(_CloudShadow, sampler_linear_clamp, float2(at1.x, at0.y), lod).rg) +
+        high.y * (low.x * SAMPLE_TEXTURE2D_LOD(_CloudShadow, sampler_linear_clamp, float2(at0.x, at1.y), lod).rg +
+            high.x * SAMPLE_TEXTURE2D_LOD(_CloudShadow, sampler_linear_clamp, at1, lod).rg);
+
+}
+
+// Sunlight the clouds let through to a point, all of it sunward of their shade and off the map; lod blurs the map, and
+// smooth filters it for surfaces seen up close. The shade's sunward edge is averaged over span (km before and after the
+// point along the sun), as the map's blur never can: along the sun the map holds still, so a point sample would print its
+// jitter. The shade fades out smoothly toward the map's edge, so no line marks where it ends.
+float CloudShadow(float3 positionWS, float lod = 0.0, float2 span = float2(0.0, 0.0), bool smooth = false) {
 
     if (_CloudShadowOrigin.w <= 0.0) {
 
@@ -219,8 +252,8 @@ float CloudShadow(float3 positionWS, float lod = 0.0, float2 span = float2(0.0, 
 
     float3 offset = positionWS - _CloudShadowOrigin.xyz;
     float2 uv = float2(dot(offset, _CloudShadowRight), dot(offset, _CloudShadowUp)) * _CloudShadowOrigin.w + 0.5;
-    float2 edge = saturate((0.5 - abs(uv - 0.5)) * 16.0);
-    float2 shade = SAMPLE_TEXTURE2D_LOD(_CloudShadow, sampler_linear_clamp, uv, lod).rg;
+    float2 edge = smoothstep(0.0, 0.125, 0.5 - abs(uv - 0.5));
+    float2 shade = smooth ? CloudShadeSmooth(uv, lod) : SAMPLE_TEXTURE2D_LOD(_CloudShadow, sampler_linear_clamp, uv, lod).rg;
     float2 u = (dot(offset, _SunDirection) + span - shade.g) / CLOUD_SHADOW_SOFTNESS + 0.5;
     float width = u.y - u.x;
     float sunward = abs(width) > 1e-3 ? (RampIntegral(u.y) - RampIntegral(u.x)) / width : saturate(0.5 * (u.x + u.y));
@@ -229,23 +262,36 @@ float CloudShadow(float3 positionWS, float lod = 0.0, float2 span = float2(0.0, 
 
 }
 
-// Sun visibility past the cascades (where they reach) and the clouds; cloudLod and cloudSpan spread the clouds' shadow
-// over a march step.
-float SunShadow(float3 positionWS, float cloudLod = 0.0, float2 cloudSpan = float2(0.0, 0.0)) {
+// Sun visibility past the cascades, where they reach.
+float CascadeShadow(float3 positionWS) {
 
     #if defined(_MAIN_LIGHT_SHADOWS_CASCADE)
-    float4 coord = TransformWorldToShadowCoord(positionWS);
-
-    return lerp(MainLightRealtimeShadow(coord), 1.0, GetMainLightShadowFade(positionWS)) * CloudShadow(positionWS, cloudLod, cloudSpan);
+    return lerp(MainLightRealtimeShadow(TransformWorldToShadowCoord(positionWS)), 1.0, GetMainLightShadowFade(positionWS));
     #else
-    return CloudShadow(positionWS, cloudLod, cloudSpan);
+    return 1.0;
     #endif
+
+}
+
+// Sun visibility past the cascades and the clouds.
+float SunShadow(float3 positionWS) {
+
+    return CascadeShadow(positionWS) * CloudShadow(positionWS, 0.0, float2(0.0, 0.0), true);
 
 }
 
 float CloudShadowLod(float stretch) {
 
     return log2(max(stretch * _CloudShadowOrigin.w * CLOUD_SHADOW_TEXELS, 1.0));
+
+}
+
+// The clouds' shadow over a stretch of a view ray, seen from its middle at angle sine and cosine from the sun: the map
+// blurred to the stretch's width across the sun, and no finer than its jittered, uneroded texels can be trusted, with
+// its sunward edge averaged along it. A box over the stretch rather than a jittered point, so no pattern prints.
+float CloudShadowOver(float3 middleWS, float stretch, float sinTheta, float cosTheta) {
+
+    return CloudShadow(middleWS, max(CloudShadowLod(stretch * sinTheta), CLOUD_SHADOW_SHAFT_LOD), float2(-0.5, 0.5) * stretch * cosTheta);
 
 }
 
@@ -278,8 +324,42 @@ struct Scattering {
 
 };
 
+// The stretch of a ray from origin (relative to the centre) that shadows can fall on: below the clouds' tops and, with
+// clouds, within their shadow map, which runs on along the sun. Empty when the second is not past the first.
+float2 ShadowedStretch(float3 origin, float3 direction) {
+
+    float2 stretch = RaySphere(origin, direction, _PlanetRadius + CLOUD_TOP);
+
+    if (_CloudShadowOrigin.w <= 0.0) {
+
+        return stretch;
+
+    }
+
+    float3 offset = origin + _PlanetCentre - _CloudShadowOrigin.xyz;
+    float2 across = float2(dot(offset, _CloudShadowRight), dot(offset, _CloudShadowUp));
+    float2 along = float2(dot(direction, _CloudShadowRight), dot(direction, _CloudShadowUp));
+    float2 rate = 1.0 / (abs(along) > 1e-6 ? along : 1e-6);
+    float2 first = (-0.5 / _CloudShadowOrigin.w - across) * rate;
+    float2 second = (0.5 / _CloudShadowOrigin.w - across) * rate;
+    float2 enter = min(first, second);
+    float2 leave = max(first, second);
+
+    return float2(max(stretch.x, max(enter.x, enter.y)), min(stretch.y, min(leave.x, leave.y)));
+
+}
+
+// Where step f (0 to 1) of a stretch ends, crowding toward the camera when the stretch starts there.
+float StepEnd(float from, float to, float f, bool crowd) {
+
+    return from + (to - from) * (crowd ? f * f : f);
+
+}
+
 // Light scattered toward origin per unit of sun illuminance, and transmittance, over steps crowding toward an origin
-// inside the air. Shadows (looked up at jitter of each step) cast shafts; fog adds each step's exact stretch of haze.
+// inside the air. Shadows cast shafts: the stretch they can fall on gets SHADOW_STEPS of its own and the rest of the ray
+// shares steps; the cascades are looked up at jitter of each step, the clouds' shadow over the whole of it. Fog adds each
+// step's exact stretch of haze.
 Scattering Integrate(float3 origin, float3 direction, float tMax, float3 sun, int steps, bool multiScatter, float jitter = 0.3, bool shadows = false, bool fog = false,
     float split = 1e9) {
 
@@ -301,16 +381,56 @@ Scattering Integrate(float3 origin, float3 direction, float tMax, float3 sun, in
     }
 
     float cosTheta = dot(direction, sun);
+    float sinTheta = sqrt(saturate(1.0 - cosTheta * cosTheta));
     float rayleighPhase = RayleighPhase(cosTheta);
     float miePhase = MiePhase(cosTheta);
     bool inside = top.x <= 0.0;
     float previous = start;
     float2 haze = fog && _FogDensity > 0.0 ? RaySphere(origin, direction, _PlanetRadius + _FogTop) : -1.0;
 
-    for (int i = 0; i < steps; i++) {
+    // The ray splits into the air before the shadowed stretch, the stretch, and the air after it.
+    float shadedFrom = start;
+    float shadedTo = start;
 
-        float f = (i + 1.0) / steps;
-        float t = start + (end - start) * (inside ? f * f : f);
+    if (shadows) {
+
+        float2 stretch = ShadowedStretch(origin, direction);
+
+        if (stretch.y > stretch.x) {
+
+            shadedFrom = clamp(stretch.x, start, end);
+            shadedTo = clamp(stretch.y, shadedFrom, end);
+
+        }
+
+    }
+
+    float before = shadedFrom - start;
+    float after = end - shadedTo;
+    int shadedSteps = shadedTo > shadedFrom ? SHADOW_STEPS : 0;
+    int beforeSteps = before > 0.0 ? clamp((int)round(steps * before / max(before + after, 1e-6)), 1, after > 0.0 ? steps - 1 : steps) : 0;
+    int afterSteps = after > 0.0 ? steps - beforeSteps : 0;
+    int total = beforeSteps + shadedSteps + afterSteps;
+
+    for (int i = 0; i < total; i++) {
+
+        bool shaded = i >= beforeSteps && i < beforeSteps + shadedSteps;
+        float t;
+
+        if (i < beforeSteps) {
+
+            t = StepEnd(start, shadedFrom, (i + 1.0) / beforeSteps, inside);
+
+        } else if (shaded) {
+
+            t = StepEnd(shadedFrom, shadedTo, (i - beforeSteps + 1.0) / shadedSteps, inside && beforeSteps == 0);
+
+        } else {
+
+            t = StepEnd(shadedTo, end, (i - beforeSteps - shadedSteps + 1.0) / afterSteps, inside && shadedTo == start);
+
+        }
+
         float dt = t - previous;
         float3 p = origin + direction * (previous + 0.5 * dt);
         float r = length(p);
@@ -319,9 +439,9 @@ Scattering Integrate(float3 origin, float3 direction, float tMax, float3 sun, in
         Medium medium = SampleMedium(r - _PlanetRadius);
         float3 sunlight = SunTransmittance(p, sun) * FogSunTransmittance(p, sun);
 
-        if (shadows) {
+        if (shaded) {
 
-            sunlight *= SunShadow(origin + direction * (previous + jitter * dt) + _PlanetCentre, CloudShadowLod(dt), float2(-jitter, 1.0 - jitter) * dt * cosTheta);
+            sunlight *= CascadeShadow(origin + direction * (previous + jitter * dt) + _PlanetCentre) * CloudShadowOver(p + _PlanetCentre, dt, sinTheta, cosTheta);
 
         }
 
@@ -332,12 +452,14 @@ Scattering Integrate(float3 origin, float3 direction, float tMax, float3 sun, in
 
         if (inHaze > 0.0) {
 
-            float3 q = origin + direction * (max(previous, haze.x) + 0.5 * inHaze);
+            float hazeFrom = max(previous, haze.x);
+            float3 q = origin + direction * (hazeFrom + 0.5 * inHaze);
             float3 hazeLight = SunTransmittance(q, sun) * FogSunTransmittance(q, sun);
 
-            if (shadows) {
+            // The haze's shafts are looked up as the air's, so the two blend rather than band.
+            if (shaded) {
 
-                hazeLight *= SunShadow(q + _PlanetCentre, CloudShadowLod(inHaze), float2(-0.5, 0.5) * inHaze * cosTheta);
+                hazeLight *= CascadeShadow(origin + direction * (hazeFrom + jitter * inHaze) + _PlanetCentre) * CloudShadowOver(q + _PlanetCentre, inHaze, sinTheta, cosTheta);
 
             }
 

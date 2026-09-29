@@ -38,7 +38,7 @@ float3 _WeatherSun;
 // The first row this dispatch redraws: the map is redrawn a band at a time.
 uint _WeatherFirstRow;
 
-// Match CloudView.LandHeightRange, and CLOUD_BASE_RANGE and CLOUD_TOP in Clouds.hlsl.
+// Match CloudView.LandHeightRange, CLOUD_BASE_RANGE in Clouds.hlsl and CLOUD_TOP in Atmosphere.hlsl.
 #define LAND_HEIGHT_RANGE 2.0
 #define WEATHER_BASE_RANGE 8.0
 #define WEATHER_TOP_RANGE 16.0
