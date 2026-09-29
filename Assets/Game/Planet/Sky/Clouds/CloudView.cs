@@ -27,8 +27,9 @@ public sealed class CloudView : IDisposable {
     private static readonly int ShadowRightId = Shader.PropertyToID("_CloudShadowRight");
     private static readonly int ShadowUpId = Shader.PropertyToID("_CloudShadowUp");
 
+    // Match CLOUD_SHAPE_TEXELS and CLOUD_DETAIL_TEXELS in Clouds.hlsl.
     private const int ShapeTexels = 128;
-    private const int DetailTexels = 32;
+    private const int DetailTexels = 64;
 
     // Mips of the shape ranked back onto its sharp values, in bins of its 8-bit values; the levels match
     // CLOUD_SHAPE_LEVELS in Clouds.hlsl.
@@ -44,9 +45,10 @@ public sealed class CloudView : IDisposable {
     // Metres of ground height over the land map's range; matches LAND_HEIGHT_RANGE in CloudNoise.compute.
     private const double LandHeightRange = 2_000.0;
 
-    // Tile sizes (km) of the heaps and of the detail; match CLOUD_SHAPE_SIZE and CLOUD_DETAIL_SIZE in Clouds.hlsl.
-    private const double ShapeTile = 5.0;
-    private const double DetailTile = 0.7;
+    // Tile sizes (km) of the heaps and of the detail; match CLOUD_SHAPE_SIZE and CLOUD_DETAIL_SIZE in Clouds.hlsl. Their
+    // churn is passed in tiles, so each pair's second tiling can wrap with the first.
+    private const double ShapeTile = 6.1;
+    private const double DetailTile = 1.1;
 
     // Drift east (m/s at the equator), churn of heaps and edges (m/s), of the weather (tiles/s: storms change over hours,
     // fronts over days), the cyclones' lives (s), and the redraw interval (s), too short for its steps to show.
@@ -154,8 +156,8 @@ public sealed class CloudView : IDisposable {
 
         Shader.SetGlobalMatrix(BodyFromSceneId, Matrix4x4.Rotate(toBody));
         Shader.SetGlobalMatrix(NoiseFromSceneId, Matrix4x4.Rotate(Quaternion.AngleAxis((float)(drift * 180.0 / Math.PI), Vector3.up) * toBody));
-        Shader.SetGlobalVector(ShapeOffsetId, Churn(time * ShapeChurn / MapSpace.MetresPerUnit, ShapeTile, new Vector3(0.3f, 1.0f, 0.2f)));
-        Shader.SetGlobalVector(DetailOffsetId, Churn(time * DetailChurn / MapSpace.MetresPerUnit, DetailTile, new Vector3(0.5f, 1.0f, -0.3f)));
+        Shader.SetGlobalVector(ShapeOffsetId, Churn(time * ShapeChurn / MapSpace.MetresPerUnit / ShapeTile, 1.0, new Vector3(0.3f, 1.0f, 0.2f)));
+        Shader.SetGlobalVector(DetailOffsetId, Churn(time * DetailChurn / MapSpace.MetresPerUnit / DetailTile, 1.0, new Vector3(0.5f, 1.0f, -0.3f)));
         Shader.SetGlobalFloat(CloudsOnId, Enabled ? 1.0f : 0.0f);
 
         Forecast(time, drift, toBody * _sun);

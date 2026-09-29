@@ -1,4 +1,5 @@
-// Clouds carved from tiling noise where the weather puts them (Schneider 2015), lit after Hillaire (2016); units are km.
+// Clouds carved from tiling noise where the weather puts them (Schneider 2015), lit after Hillaire (2016) with the light
+// scattered many times diffusing through them; units are km.
 #ifndef MAXQ_CLOUDS_INCLUDED
 #define MAXQ_CLOUDS_INCLUDED
 
@@ -6,7 +7,7 @@
 
 // CloudNoise.compute's weather: cover, base, top and anvil cover; row 0 at the north pole, column 0 at 180 W.
 TEXTURE2D(_CloudWeather);
-// Its offset through the noise and the mask between the heap tilings, laid out the same way.
+// Its offset through the noise and the finer heaps' share, laid out the same way.
 TEXTURE2D(_CloudWarp);
 TEXTURE3D(_CloudShape);
 TEXTURE3D(_CloudDetail);
@@ -20,6 +21,10 @@ TEXTURE2D(_CloudShapeRemap);
 // Mips the remap covers; matches CloudView.RemapLevels.
 #define CLOUD_SHAPE_LEVELS 6.0
 
+// Texels across the shape and detail tiles; match CloudView.ShapeTexels and DetailTexels.
+#define CLOUD_SHAPE_TEXELS 128.0
+#define CLOUD_DETAIL_TEXELS 64.0
+
 SAMPLER(sampler_linear_repeatU_clampV);
 SAMPLER(sampler_trilinear_repeat);
 SAMPLER(sampler_point_repeat);
@@ -27,6 +32,8 @@ SAMPLER(sampler_point_repeat);
 // Scene directions to the body-fixed frame, and to the noise's frame, which drifts east with the weather.
 float4x4 _CloudBodyFromScene;
 float4x4 _CloudNoiseFromScene;
+
+// How far the heaps and the detail have churned, in tiles.
 float3 _CloudShapeOffset;
 float3 _CloudDetailOffset;
 
@@ -34,35 +41,52 @@ float3 _CloudDetailOffset;
 #define CLOUD_BASE_RANGE 8.0
 #define CLOUD_TOP 16.0
 
-// Noise tiles (km): heaps, a second heap tiling, the groups heaps gather into within the weather's clusters, towers and
-// anvils, edge detail.
-#define CLOUD_SHAPE_SIZE 5.0
-#define CLOUD_SHAPE_OTHER_SIZE 7.3
+// Noise tiles (km): heaps and finer heaps, the formations heaps gather into and the broad swirls those gather into,
+// towers and anvils, and edge detail at two scales. No two share a ratio and axes, so their sums never repeat.
+#define CLOUD_SHAPE_SIZE 6.1
+#define CLOUD_FINE_SIZE 2.6
 #define CLOUD_FORMATION_SIZE 19.0
+#define CLOUD_BROAD_SIZE 43.0
 #define CLOUD_STORM_SIZE 30.0
-#define CLOUD_DETAIL_SIZE 0.7
+#define CLOUD_DETAIL_SIZE 1.1
+#define CLOUD_DETAIL_FINE_SIZE 0.47
 
-// Formations' share of the shape under sparse and crowded cover; only once the heaps blur past the remap's mips
-// (footprints in km) do the formations take over entirely, keeping the cover the heaps had.
-#define CLOUD_FORMATION_NEAR 0.5
-#define CLOUD_FORMATION_CROWDED 0.85
+// Shares of the finer tiling in each pair: the heaps' varies from region to region with the weather's warp.
+#define CLOUD_FINE_LEAST 0.25
+#define CLOUD_FINE_MOST 0.5
+#define CLOUD_BROAD 0.35
+#define CLOUD_DETAIL_FINE 0.35
+
+// Formations' share of the shape under sparse and crowded cover. As the heaps blur past the remap's mips (footprints in
+// km), the finer heaps fade first, then the formations take over entirely, keeping the cover the heaps had.
+#define CLOUD_FORMATION_SPARSE 0.3
+#define CLOUD_FORMATION_CROWDED 0.5
+#define CLOUD_FINE_FADE_START 0.35
+#define CLOUD_FINE_FADE_END 0.65
 #define CLOUD_HEAPS_FADE_START 0.8
-#define CLOUD_HEAPS_FADE_END 1.6
+#define CLOUD_HEAPS_FADE_END 1.5
 
 // Share by which the formations swell and shrink the weather's covers.
 #define CLOUD_COVER_SWELL 0.35
 
-// Weather cover over which a column passes into a cloud system. Its top surface, as shares of the layer: the lowest it
-// sinks, the swells' rise, the heaps' on the swells (together reaching the layer's top), and the soft skin over it.
-#define CLOUD_SOLID_START 0.8
-#define CLOUD_SOLID_END 0.95
-#define CLOUD_SOLID_FLOOR 0.45
-#define CLOUD_SOLID_SWELL 0.3
-#define CLOUD_SOLID_LUMPS 0.25
-#define CLOUD_SOLID_SOFTNESS 0.12
+// Share of a layer over which cloud rises from its flat base.
+#define CLOUD_BASE_RISE 0.05
 
-// Farthest (km) a system's body is counted toward the sun; past a few hundred metres it is dark anyway.
-#define CLOUD_SYSTEM_REACH 10.0
+// Weather cover over which heaps close into a deck. Its body rises from the base to a top (shares of the layer) that
+// swells with the formations, softened over its skin; above it heaps carved at a fixed share roll the deck's top.
+#define CLOUD_DECK_START 0.78
+#define CLOUD_DECK_END 0.95
+#define CLOUD_DECK_CARVE 0.3
+#define CLOUD_BODY_FLOOR 0.3
+#define CLOUD_BODY_SWELL 0.3
+#define CLOUD_BODY_SOFTNESS 0.15
+
+// An anvil hangs from the tropopause as one sheet, reaching down a share of its depth that the storm noise varies and
+// that thins to nothing at its edge, softened over its underside and its top.
+#define ANVIL_SHEET_LEAST 0.45
+#define ANVIL_SHEET_MOST 1.15
+#define ANVIL_UNDERSIDE 0.2
+#define ANVIL_SKIN 0.05
 
 // The second tiling of each pair is turned off the first's axes, so the two never line up into rows.
 static const float3x3 CLOUD_TURN = float3x3(0.8, 0.36, 0.48, 0.0, 0.8, -0.6, -0.6, 0.48, 0.64);
@@ -78,6 +102,16 @@ static const float3x3 CLOUD_TURN = float3x3(0.8, 0.36, 0.48, 0.0, 0.8, -0.6, -0.
 
 #define CLOUD_EXTINCTION 40.0
 #define ANVIL_EXTINCTION 6.0
+
+// Light scattered many times diffuses through a cloud, fading with the depth toward the sun as a slab's diffuse
+// transmission does, 1 / (1 + 0.75 (1 - g) depth), rather than exponentially. Its radiance per unit extinction and sun
+// illuminance where it enters, and the fading; the second order's share; and the fringe that has yet to gather it,
+// thinner than CLOUD_GATHER (km) of the densest cloud, and its least share there.
+#define CLOUD_DIFFUSE 0.2
+#define CLOUD_DIFFUSION 0.07
+#define CLOUD_SECOND_ORDER 0.5
+#define CLOUD_GATHER 0.04
+#define CLOUD_FRINGE 0.3
 
 // View-ray steps (km): clear air grows them with distance; where cloud may lie they halve toward about one optical depth.
 #define CLOUD_MIN_STEP 0.04
@@ -120,7 +154,7 @@ float NoiseLod(float footprint, float tile, float texels) {
 // The shape's mip for a footprint (km) over a tile (km), short of the coarsest mips, which hold too few values to rank.
 float ShapeLod(float footprint, float tile) {
 
-    return min(NoiseLod(footprint, tile, 128.0), CLOUD_SHAPE_LEVELS - 1.0);
+    return min(NoiseLod(footprint, tile, CLOUD_SHAPE_TEXELS), CLOUD_SHAPE_LEVELS - 1.0);
 
 }
 
@@ -149,7 +183,7 @@ float ShapeNoise(float3 uvw, float lod) {
 // only climbs with the value, so it bounds the ranked noise too.
 float ShapeBound(float3 uvw, float radius, float tile, float lod) {
 
-    return ShapeRemap(SAMPLE_TEXTURE3D_LOD(_CloudShapeBound, sampler_point_repeat, uvw, clamp(ceil(NoiseLod(radius, tile, 128.0)), 0.0, 7.0)).r, lod);
+    return ShapeRemap(SAMPLE_TEXTURE3D_LOD(_CloudShapeBound, sampler_point_repeat, uvw, clamp(ceil(NoiseLod(radius, tile, CLOUD_SHAPE_TEXELS)), 0.0, 7.0)).r, lod);
 
 }
 
@@ -161,10 +195,23 @@ float SoftEdge(float density) {
 
 }
 
-// Two tilings mixed by a mask are rescaled to keep their spread.
+// Two tilings mixed by a share are rescaled to keep their spread.
 float Stretch(float value, float mix) {
 
     return saturate(0.5 + (value - 0.5) * rsqrt(mix * mix + (1.0 - mix) * (1.0 - mix)));
+
+}
+
+// Where the heaps' two tilings read the noise: the finer one turned twice, off the first's axes and the formations'.
+float3 HeapUvw(float3 q) {
+
+    return q / CLOUD_SHAPE_SIZE + _CloudShapeOffset;
+
+}
+
+float3 FineUvw(float3 q) {
+
+    return mul(CLOUD_TURN, mul(CLOUD_TURN, q)) / CLOUD_FINE_SIZE + 0.21 + _CloudShapeOffset;
 
 }
 
@@ -185,20 +232,23 @@ struct CloudColumn {
     float3 q;
     float3 warp;
     float cover;
-    // How far the column stands inside a cloud system, 0 to 1, and how high the system's top rolls there, 0 to 1.
-    float solid;
+    // How far the heaps have closed into a deck, 0 to 1, and how high its body swells there, 0 to 1.
+    float fill;
     float swell;
     float bottom;
     float top;
     float anvil;
+    // Kilometres the anvil's sheet hangs below the tropopause at its fullest, and the lowest it reaches here.
+    float anvilDepth;
     float anvilBottom;
     float anvilTop;
     float deep;
     float stratiform;
-    float mix;
-    // The formations' noise here, held for the whole step so the bounds test what CloudIn draws, and their share of it.
+    // The formations' noise here, held for the whole step so the bounds test what CloudIn draws; their share of the shape,
+    // and the finer heaps' share of the heaps.
     float formation;
     float formed;
+    float fine;
     // The footprint (km) the step is seen at, which the view's samples and the bounds both blur and rank the noise by.
     float footprint;
 
@@ -228,8 +278,14 @@ CloudColumn ColumnAt(float3 p, float footprint) {
     column.altitude = length(p) - _PlanetRadius;
     column.q = mul((float3x3)_CloudNoiseFromScene, p) + CLOUD_LEAN * column.altitude + column.warp;
 
-    // The weather's organisation keeps the one tiling from showing, as its clusters and gaps never repeat.
-    column.formation = ShapeNoise(mul(CLOUD_TURN, column.q) / CLOUD_FORMATION_SIZE + 0.53, ShapeLod(footprint, CLOUD_FORMATION_SIZE));
+    // The weather's organisation keeps the heaps' tilings from showing, as its clusters and gaps never repeat; the
+    // formations swirl within broader ones, so even from orbit, where they alone are left, no tile shows.
+    float3 turned = mul(CLOUD_TURN, column.q);
+    float3 formationUvw = turned / CLOUD_FORMATION_SIZE + 0.53;
+    float formationLod = ShapeLod(footprint, CLOUD_FORMATION_SIZE);
+    float broad = ShapeNoise(mul(CLOUD_TURN, turned) / CLOUD_BROAD_SIZE + 0.71, ShapeLod(footprint, CLOUD_BROAD_SIZE));
+
+    column.formation = Stretch(lerp(ShapeNoise(formationUvw, formationLod), broad, CLOUD_BROAD), CLOUD_BROAD);
 
     // Covers swell and shrink with the formations, so the edges they carve wander instead of following the weather
     // grid's straight interpolation where the noise sits at its peak.
@@ -239,38 +295,140 @@ CloudColumn ColumnAt(float3 p, float footprint) {
     column.top = max(weather.b * CLOUD_TOP, column.bottom + 0.1);
     column.anvil = saturate(weather.a * bulge);
     column.anvilTop = Tropopause(sinLatitude);
-    column.anvilBottom = column.anvilTop - 0.5 - 2.5 * weather.a;
+    column.anvilDepth = 0.5 + 2.5 * weather.a;
+    column.anvilBottom = column.anvilTop - column.anvilDepth * ANVIL_SHEET_MOST * column.anvil;
 
     // Deep columns are storm towers; shallow ones under full cover spread into decks.
     column.deep = saturate((column.top - column.bottom - 3.0) / 5.0);
+    column.cover = saturate(weather.r * bulge);
 
-    // A cloud system: its heaps have closed up into one mass. Its cover holds whole, so only the edges wander. Storm
-    // towers stay towers.
-    column.solid = smoothstep(CLOUD_SOLID_START, CLOUD_SOLID_END, weather.r) * (1.0 - column.deep);
-    column.cover = saturate(weather.r * lerp(bulge, 1.0, column.solid));
+    // Under full cover the heaps close into a deck, whose body holds whole whatever the cover's swelling, so only its edges
+    // wander. Storm towers stay towers.
+    column.fill = smoothstep(CLOUD_DECK_START, CLOUD_DECK_END, weather.r) * (1.0 - column.deep);
 
-    // The noise shapes a height here, which wants smooth domes rather than the ranked noise's steep-sided plateaus, so it
-    // is read unranked a mip softer. The swells span kilometres, so the step's middle stands for all of it.
-    column.swell = column.solid > 0.0 ?
-        smoothstep(0.15, 0.85, ShapeRaw(mul(CLOUD_TURN, column.q) / CLOUD_FORMATION_SIZE + 0.53, ShapeLod(footprint, CLOUD_FORMATION_SIZE) + 1.0)) : 0.0;
+    // The body's top is a height, which wants smooth domes rather than the ranked noise's steep-sided plateaus, so it is
+    // read unranked a mip softer. The swells span kilometres, so the step's middle stands for all of it.
+    column.swell = column.fill > 0.0 ? smoothstep(0.15, 0.85, ShapeRaw(formationUvw, formationLod + 1.0)) : 0.0;
     column.stratiform = (1.0 - column.deep) * smoothstep(0.55, 0.85, column.cover);
-    column.mix = smoothstep(0.3, 0.7, warp.a);
 
-    // Where cover crowds, the formations shape most of the cloud, so neighbouring heaps merge into masses instead of
+    // Where cover crowds, the formations shape more of the cloud, so neighbouring heaps merge into masses instead of
     // standing apart; where it thins, lone heaps keep their own shapes.
-    float crowded = lerp(CLOUD_FORMATION_NEAR, CLOUD_FORMATION_CROWDED, smoothstep(0.35, 0.75, column.cover));
+    float crowded = lerp(CLOUD_FORMATION_SPARSE, CLOUD_FORMATION_CROWDED, smoothstep(0.35, 0.75, column.cover));
 
     column.formed = lerp(crowded, 1.0, smoothstep(CLOUD_HEAPS_FADE_START, CLOUD_HEAPS_FADE_END, footprint));
+    column.fine = lerp(CLOUD_FINE_LEAST, CLOUD_FINE_MOST, warp.a) * (1.0 - smoothstep(CLOUD_FINE_FADE_START, CLOUD_FINE_FADE_END, footprint));
     column.footprint = footprint;
 
     return column;
 
 }
 
-// A system's top as a share of its layer, with its heaps standing lumps high (0 to 1).
-float SystemSurface(CloudColumn column, float lumps) {
+// The shape the cover carves from the heaps' two tilings, given their values or their bounds: at unrelated scales and
+// axes their sum never repeats, and heaps of every size stand in it, gathered into the formations.
+float HeapShape(CloudColumn column, float first, float second) {
 
-    return CLOUD_SOLID_FLOOR + CLOUD_SOLID_SWELL * column.swell + CLOUD_SOLID_LUMPS * lumps * (0.4 + 0.6 * column.swell);
+    float heaps = Stretch(lerp(first, second, column.fine), column.fine);
+
+    return Stretch(lerp(heaps, column.formation, column.formed), column.formed);
+
+}
+
+// A deck's unbroken body at h (0 to 1 up the layer).
+float DeckBody(float h, float swell) {
+
+    float top = CLOUD_BODY_FLOOR + CLOUD_BODY_SWELL * swell;
+
+    return saturate(h / CLOUD_BASE_RISE) * saturate((top - h) / CLOUD_BODY_SOFTNESS);
+
+}
+
+// The body's most between heights lo and hi: it plateaus, so at the point of the span nearest its plateau.
+float DeckBodyMost(float lo, float hi, float swell) {
+
+    float plateauTop = CLOUD_BODY_FLOOR + CLOUD_BODY_SWELL * swell - CLOUD_BODY_SOFTNESS;
+
+    return DeckBody(max(lo, min(hi, clamp(lo, CLOUD_BASE_RISE, plateauTop))), swell);
+
+}
+
+// Low and towering cloud at h (0 to 1 up the layer), the noise blurred to a footprint (km).
+float TowerDensity(CloudColumn column, float h, float footprint) {
+
+    float3 q = column.q;
+    float shape = column.formation;
+
+    if (column.formed < 1.0) {
+
+        float first = ShapeNoise(HeapUvw(q), ShapeLod(footprint, CLOUD_SHAPE_SIZE));
+        float second = column.fine > 0.0 ? ShapeNoise(FineUvw(q), ShapeLod(footprint, CLOUD_FINE_SIZE)) : 0.5;
+
+        shape = HeapShape(column, first, second);
+
+    }
+
+    if (column.deep > 0.0) {
+
+        shape = lerp(shape, ShapeNoise(q / CLOUD_STORM_SIZE, ShapeLod(footprint, CLOUD_STORM_SIZE)), 0.6 * column.deep);
+
+    }
+
+    // Profiles peak rather than plateau, so heaps round off: cumulus narrowing up from a flat base, decks full low down
+    // and rolling off above.
+    float cumulus = saturate(h / CLOUD_BASE_RISE) * sqrt(saturate(1.0 - h));
+    float deck = saturate(h / (2.0 * CLOUD_BASE_RISE)) * saturate((1.0 - h) / 0.55);
+
+    // In a deck the heaps stand on its body, carved at a fixed share so they roll its top instead of filling the layer
+    // to a flat lid, as carving at full cover would.
+    float carve = lerp(1.0 - column.cover, CLOUD_DECK_CARVE, column.fill);
+    float body = column.fill > 0.0 ? column.fill * DeckBody(h, column.swell) : 0.0;
+
+    return saturate((shape * lerp(cumulus, deck, column.stratiform) + body - carve) / max(1.0 - carve, 1e-3));
+
+}
+
+// Anvil at the column's point: one sheet whose underside the storm noise lowers and raises, flat along the tropopause.
+float AnvilDensity(CloudColumn column, float footprint) {
+
+    float below = (column.anvilTop - column.altitude) / column.anvilDepth;
+    float storm = ShapeNoise(column.q / CLOUD_STORM_SIZE + 0.37, ShapeLod(footprint, CLOUD_STORM_SIZE));
+    float sheet = column.anvil * lerp(ANVIL_SHEET_LEAST, ANVIL_SHEET_MOST, storm);
+
+    return saturate((sheet - below) / ANVIL_UNDERSIDE) * saturate(below / ANVIL_SKIN);
+
+}
+
+// Edge detail at the column's point: two tilings at unrelated scales and axes, so its billows never line up in rows.
+float DetailNoise(float3 q, float footprint) {
+
+    float first = SAMPLE_TEXTURE3D_LOD(_CloudDetail, sampler_trilinear_repeat, q / CLOUD_DETAIL_SIZE + _CloudDetailOffset,
+        NoiseLod(footprint, CLOUD_DETAIL_SIZE, CLOUD_DETAIL_TEXELS)).r;
+    float second = SAMPLE_TEXTURE3D_LOD(_CloudDetail, sampler_trilinear_repeat, mul(CLOUD_TURN, q) / CLOUD_DETAIL_FINE_SIZE + 0.61 + _CloudDetailOffset,
+        NoiseLod(footprint, CLOUD_DETAIL_FINE_SIZE, CLOUD_DETAIL_TEXELS)).r;
+
+    return Stretch(lerp(first, second, CLOUD_DETAIL_FINE), CLOUD_DETAIL_FINE);
+
+}
+
+// Density eroded by detail, resolved 0 to 1. Unresolved detail erodes by its expectation over an even spread (a softened
+// threshold) rather than by its mean, which would cut thin cloud outright, so cover holds at every distance.
+float Eroded(float density, float detail, float resolved) {
+
+    if (density <= 0.0) {
+
+        return 0.0;
+
+    }
+
+    float expected = (density < CLOUD_EROSION ? density * density / (2.0 * CLOUD_EROSION) : density - 0.5 * CLOUD_EROSION) /
+        (1.0 - 0.5 * CLOUD_EROSION);
+
+    if (resolved > 0.0) {
+
+        expected = lerp(expected, saturate(CloudRemap(density, CLOUD_EROSION * detail, 1.0, 0.0, 1.0)), resolved);
+
+    }
+
+    return expected;
 
 }
 
@@ -281,7 +439,6 @@ CloudPoint CloudIn(CloudColumn column, float footprint, float detail) {
     cloud.extinction = 0.0;
     cloud.height = 0.0;
 
-    float3 q = column.q;
     float towerGap = column.cover > 0.004 ? LayerGap(column.altitude, column.bottom, column.top) : CLOUD_TOP;
     float anvilGap = column.anvil > 0.004 ? LayerGap(column.altitude, column.anvilBottom, column.anvilTop) : CLOUD_TOP;
 
@@ -293,97 +450,24 @@ CloudPoint CloudIn(CloudColumn column, float footprint, float detail) {
 
     }
 
-    float stormLod = ShapeLod(footprint, CLOUD_STORM_SIZE);
+    float h = (column.altitude - column.bottom) / (column.top - column.bottom);
+    float tower = towerGap <= 0.0 ? TowerDensity(column, h, footprint) : 0.0;
+    float anvil = anvilGap <= 0.0 ? AnvilDensity(column, footprint) : 0.0;
 
-    if (towerGap <= 0.0) {
+    if (tower <= 0.0 && anvil <= 0.0) {
 
-        float h = (column.altitude - column.bottom) / (column.top - column.bottom);
-        float3 turned = mul(CLOUD_TURN, q);
-        float density = 0.0;
-
-        // Open cloud: heaps carved from the noise by the cover.
-        if (column.solid < 1.0) {
-
-            // Profiles peak rather than plateau, so heaps round off: cumulus on a flat base, decks swelling in the middle.
-            float cumulus = saturate(h / 0.06) * sqrt(saturate(1.0 - h));
-            float deck = sqrt(saturate(4.0 * h * (1.0 - h)));
-            float shape = column.formation;
-
-            // Heaps gather into the formations; far off, the formations alone are left.
-            if (column.formed < 1.0) {
-
-                float first = ShapeNoise((q + _CloudShapeOffset) / CLOUD_SHAPE_SIZE, ShapeLod(footprint, CLOUD_SHAPE_SIZE));
-                float second = ShapeNoise(turned / CLOUD_SHAPE_OTHER_SIZE + 0.21, ShapeLod(footprint, CLOUD_SHAPE_OTHER_SIZE));
-                float heaps = Stretch(lerp(first, second, column.mix), column.mix);
-
-                shape = Stretch(lerp(heaps, column.formation, column.formed), column.formed);
-
-            }
-
-            if (column.deep > 0.0) {
-
-                shape = lerp(shape, ShapeNoise(q / CLOUD_STORM_SIZE, stormLod), 0.6 * column.deep);
-
-            }
-
-            density = saturate(CloudRemap(shape * lerp(cumulus, deck, column.stratiform), 1.0 - column.cover, 1.0, 0.0, 1.0));
-
-        }
-
-        // A system: whole below a top that is a surface, not heaps carved one by one, which at full cover would show the
-        // noise's finest cells as an even cobble of identical puffs. The surface rolls with the formations and heaps where
-        // it rises, smooth where it sinks, so its lumps come in every size.
-        if (column.solid > 0.0) {
-
-            float lumps = smoothstep(0.15, 0.85, lerp(ShapeRaw((q + _CloudShapeOffset) / CLOUD_SHAPE_SIZE, ShapeLod(footprint, CLOUD_SHAPE_SIZE) + 1.0),
-                ShapeRaw(turned / CLOUD_SHAPE_OTHER_SIZE + 0.21, ShapeLod(footprint, CLOUD_SHAPE_OTHER_SIZE) + 1.0), column.mix));
-            float closed = saturate((SystemSurface(column, lumps) - h) / CLOUD_SOLID_SOFTNESS) * saturate(h / 0.06);
-
-            density = lerp(density, closed, column.solid);
-
-        }
-
-        // Wisps along the base, billows above. Unresolved detail erodes by its expectation over an even spread (a softened
-        // threshold) rather than by its mean, which would cut thin cloud outright, so cover holds at every distance.
-        if (density > 0.0) {
-
-            float resolved = detail * saturate((0.5 * CLOUD_DETAIL_SIZE - footprint) / (0.4 * CLOUD_DETAIL_SIZE));
-            float expected = (density < CLOUD_EROSION ? density * density / (2.0 * CLOUD_EROSION) : density - 0.5 * CLOUD_EROSION) /
-                (1.0 - 0.5 * CLOUD_EROSION);
-
-            if (resolved > 0.0) {
-
-                float fine = SAMPLE_TEXTURE3D_LOD(_CloudDetail, sampler_trilinear_repeat, (q + _CloudDetailOffset) / CLOUD_DETAIL_SIZE,
-                    NoiseLod(footprint, CLOUD_DETAIL_SIZE, 32.0)).r;
-                float eroded = saturate(CloudRemap(density, CLOUD_EROSION * lerp(fine, 1.0 - fine, saturate(4.0 * h)), 1.0, 0.0, 1.0));
-
-                expected = lerp(expected, eroded, resolved);
-
-            }
-
-            density = expected;
-
-        }
-
-        cloud.extinction = SoftEdge(density) * CLOUD_EXTINCTION;
-        cloud.height = h;
+        return cloud;
 
     }
 
-    if (anvilGap <= 0.0) {
+    // Wisps along the base, billows above; the anvil's ice frays into fibres.
+    float resolved = detail * saturate((0.5 * CLOUD_DETAIL_SIZE - footprint) / (0.4 * CLOUD_DETAIL_SIZE));
+    float fine = resolved > 0.0 ? DetailNoise(column.q, footprint) : 0.5;
+    float towerExtinction = SoftEdge(Eroded(tower, lerp(fine, 1.0 - fine, saturate(4.0 * h)), resolved)) * CLOUD_EXTINCTION;
+    float anvilExtinction = SoftEdge(Eroded(anvil, fine, resolved)) * ANVIL_EXTINCTION;
 
-        float h = (column.altitude - column.anvilBottom) / (column.anvilTop - column.anvilBottom);
-        float shape = ShapeNoise(q / CLOUD_STORM_SIZE + 0.37, stormLod);
-        float density = SoftEdge(saturate(CloudRemap(shape * saturate(h / 0.35) * saturate((1.0 - h) / 0.15), 1.0 - column.anvil, 1.0, 0.0, 1.0)));
-
-        if (density * ANVIL_EXTINCTION > cloud.extinction) {
-
-            cloud.extinction = density * ANVIL_EXTINCTION;
-            cloud.height = 1.0;
-
-        }
-
-    }
+    cloud.extinction = towerExtinction + anvilExtinction;
+    cloud.height = towerExtinction >= anvilExtinction ? saturate(h) : 1.0;
 
     return cloud;
 
@@ -397,111 +481,80 @@ bool CloudPossible(CloudColumn column, float radius, float spread, out float gap
     float margin = 0.05 + 0.05 * (radius + spread);
     float towerGap = column.cover > 0.004 ? LayerGap(column.altitude, column.bottom, column.top) : CLOUD_TOP;
     float anvilGap = column.anvil > 0.004 ? LayerGap(column.altitude, column.anvilBottom, column.anvilTop) : CLOUD_TOP;
-    float3 q = column.q;
-
-    // The lean moves the noise up to 0.27 km per km climbed, and a blurred lookup reaches about three footprints, so the
-    // bounds must reach that much farther.
-    float wide = 1.3 * radius + 3.0 * column.footprint;
-    float stormLod = ShapeLod(column.footprint, CLOUD_STORM_SIZE);
-
-    // A system holds cloud from its base up to the highest its surface reaches here, and none above.
-    float systemGap = column.solid > 0.0 ?
-        LayerGap(column.altitude, column.bottom, column.bottom + (column.top - column.bottom) * SystemSurface(column, 1.0)) : CLOUD_TOP;
-
-    if (column.solid >= 1.0) {
-
-        towerGap = systemGap;
-
-    }
 
     gap = min(towerGap, anvilGap);
 
-    if (systemGap <= reach) {
+    // An anvil is one sheet wherever it spreads.
+    if (anvilGap <= reach) {
 
         return true;
 
     }
 
-    if (towerGap <= reach && column.solid < 1.0) {
+    if (towerGap > reach) {
 
-        float shape = column.formation;
-
-        if (column.formed < 1.0) {
-
-            float firstLod = ShapeLod(column.footprint, CLOUD_SHAPE_SIZE);
-            float secondLod = ShapeLod(column.footprint, CLOUD_SHAPE_OTHER_SIZE);
-            float highest = max(ShapeBound((q + _CloudShapeOffset) / CLOUD_SHAPE_SIZE, wide, CLOUD_SHAPE_SIZE, firstLod),
-                ShapeBound(mul(CLOUD_TURN, q) / CLOUD_SHAPE_OTHER_SIZE + 0.21, wide, CLOUD_SHAPE_OTHER_SIZE, secondLod));
-
-            shape = Stretch(lerp(Stretch(highest, column.mix), column.formation, column.formed), column.formed);
-
-        }
-
-        if (column.deep > 0.0) {
-
-            shape = max(shape, ShapeBound(q / CLOUD_STORM_SIZE, wide, CLOUD_STORM_SIZE, stormLod));
-
-        }
-
-        if (shape > 1.0 - saturate(column.cover + margin)) {
-
-            return true;
-
-        }
+        return false;
 
     }
 
-    return anvilGap <= reach && ShapeBound(q / CLOUD_STORM_SIZE + 0.37, wide, CLOUD_STORM_SIZE, stormLod) > 1.0 - saturate(column.anvil + margin);
+    // The lean moves the noise up to 0.27 km per km climbed, and a blurred lookup reaches about three footprints, so the
+    // bounds must reach that much farther.
+    float3 q = column.q;
+    float wide = 1.3 * radius + 3.0 * column.footprint;
+    float shape = column.formation;
 
-}
+    if (column.formed < 1.0) {
 
-// Optical depth toward the sun from inside a system: its body is whole below its surface, so the depth is the path up to
-// the surface's mean, its skin half counted. The swells span kilometres, so the column's stands for the whole path.
-float SystemSunDepth(CloudColumn column, float3 p) {
+        float first = ShapeBound(HeapUvw(q), wide, CLOUD_SHAPE_SIZE, ShapeLod(column.footprint, CLOUD_SHAPE_SIZE));
+        float second = column.fine > 0.0 ? ShapeBound(FineUvw(q), wide, CLOUD_FINE_SIZE, ShapeLod(column.footprint, CLOUD_FINE_SIZE)) : 0.5;
 
+        shape = HeapShape(column, first, second);
+
+    }
+
+    if (column.deep > 0.0) {
+
+        shape = max(shape, ShapeBound(q / CLOUD_STORM_SIZE, wide, CLOUD_STORM_SIZE, ShapeLod(column.footprint, CLOUD_STORM_SIZE)));
+
+    }
+
+    // The profiles never pass one; a deck's body is at its most over the heights the step spans.
     float thickness = column.top - column.bottom;
-    float surface = column.bottom + thickness * (SystemSurface(column, 0.5) - 0.5 * CLOUD_SOLID_SOFTNESS);
-    float muSun = dot(p, _SunDirection) / length(p);
+    float body = column.fill > 0.0 ?
+        column.fill * DeckBodyMost((column.altitude - reach - column.bottom) / thickness, (column.altitude + reach - column.bottom) / thickness, column.swell) : 0.0;
+    float carve = lerp(1.0 - column.cover, CLOUD_DECK_CARVE, column.fill);
 
-    return CLOUD_EXTINCTION * min(max(surface - column.altitude, 0.0) / max(muSun, 0.05), CLOUD_SYSTEM_REACH);
+    return shape + body > carve - margin;
 
 }
 
 // Optical depth toward the sun over tripling steps, each sampled at jitter within its middle half so no contours print.
-// A step a third of the footprint or finer shows nothing, so it folds into the next, reaching as far. Inside a system
-// with no anvil over it the depth is known outright: marched, it would hang on whether one long step lands inside the
-// system's top or above it, which toward the sun swings the light a hundredfold from frame to frame.
+// A step a third of the footprint or finer shows nothing, so it folds into the next, reaching as far.
 float CloudSunDepth(CloudColumn column, float3 p, float footprint, float detail, int steps, float jitter) {
 
-    float system = column.anvil > 0.004 ? 0.0 : column.solid;
     float depth = 0.0;
+    float from = 0.0;
+    float t = 0.0;
+    float stride = CLOUD_LIGHT_STEP;
 
-    if (system < 1.0) {
+    for (int i = 0; i < steps; i++) {
 
-        float from = 0.0;
-        float t = 0.0;
-        float stride = CLOUD_LIGHT_STEP;
+        t += stride;
 
-        for (int i = 0; i < steps; i++) {
+        if (i == steps - 1 || 3.0 * stride >= footprint) {
 
-            t += stride;
+            float span = t - from;
 
-            if (i == steps - 1 || 3.0 * stride >= footprint) {
-
-                float span = t - from;
-
-                depth += CloudIn(Moved(column, p + _SunDirection * (from + (0.25 + 0.5 * jitter) * span)), max(footprint, 0.25 * span), i < 2 ? detail : 0.0).extinction * span;
-                from = t;
-
-            }
-
-            stride *= 3.0;
+            depth += CloudIn(Moved(column, p + _SunDirection * (from + (0.25 + 0.5 * jitter) * span)), max(footprint, 0.25 * span), i < 2 ? detail : 0.0).extinction * span;
+            from = t;
 
         }
 
+        stride *= 3.0;
+
     }
 
-    return system > 0.0 ? lerp(depth, SystemSunDepth(column, p), system) : depth;
+    return depth;
 
 }
 
@@ -513,7 +566,17 @@ float HenyeyGreenstein(float g, float cosTheta) {
 
 }
 
-// Radiance per unit extinction: sunlight with Wrenninge's multiple-scattering octaves, plus the sky above and ground below.
+// The droplets' forward peak and faint backscatter, flattened by spread as light scatters again.
+float CloudPhase(float cosTheta, float spread) {
+
+    return 0.7 * HenyeyGreenstein(0.8 * spread, cosTheta) + 0.3 * HenyeyGreenstein(-0.3 * spread, cosTheta);
+
+}
+
+// Radiance per unit extinction: sunlight scattered once and twice (Wrenninge's octaves), which keeps the forward peak that
+// silvers edges toward the sun, and many times, which diffuses round the whole cloud so no side of it goes black and its
+// sunlit side shines white; plus the sky above and ground below. A thin fringe has yet to gather the diffused light, so
+// heaps seen from the sun's side are outlined by their edges.
 float3 CloudLight(CloudColumn column, float3 p, float cosTheta, CloudPoint cloud, float footprint, float detail, int lightSteps, float jitter) {
 
     float r = length(p);
@@ -524,23 +587,10 @@ float3 CloudLight(CloudColumn column, float3 p, float cosTheta, CloudPoint cloud
     if (any(sun > 0.0)) {
 
         float depth = CloudSunDepth(column, p, footprint, detail, lightSteps, jitter);
-        float energy = 1.0;
-        float reach = 1.0;
-        float spread = 1.0;
-        float octaves = 0.0;
+        float scattered = CloudPhase(cosTheta, 1.0) * exp(-depth) + CLOUD_SECOND_ORDER * CloudPhase(cosTheta, 0.5) * exp(-0.5 * depth);
+        float gathered = lerp(CLOUD_FRINGE, 1.0, 1.0 - exp(-cloud.extinction * CLOUD_GATHER));
 
-        for (int i = 0; i < 4; i++) {
-
-            float phase = 0.7 * HenyeyGreenstein(0.8 * spread, cosTheta) + 0.3 * HenyeyGreenstein(-0.3 * spread, cosTheta);
-
-            octaves += energy * phase * exp(-depth * reach);
-            energy *= 0.55;
-            reach *= 0.4;
-            spread *= 0.55;
-
-        }
-
-        light = sun * octaves;
+        light = sun * (scattered + gathered * CLOUD_DIFFUSE / (1.0 + CLOUD_DIFFUSION * depth));
 
     }
 

@@ -25,7 +25,7 @@ RWTexture2D<float4> _Weather;
 float4 _WeatherSize;
 
 // Per cell, laid out as the weather is: an offset through the noise (over -1 to 1 of CLOUD_WARP in Clouds.hlsl) and the
-// mask between its two heap tilings. Neither repeats round the planet, so the tiles never line up from orbit.
+// finer heap tiling's share of the heaps, so some regions raise bigger heaps than others. Neither repeats round the planet.
 RWTexture2D<float4> _Warp;
 
 // How far east the weather has drifted (radians), its offset through the noise as it churns, its cyclones' stage of life
@@ -152,11 +152,13 @@ void Shape(uint3 id : SV_DispatchThreadID) {
 
 }
 
+// Billows some 275 m across over CLOUD_DETAIL_SIZE in Clouds.hlsl, and finer; with fewer cells a side, the tile's handful
+// of billows would repeat in rows.
 [numthreads(4, 4, 4)]
 void Detail(uint3 id : SV_DispatchThreadID) {
 
     float3 p = (id + 0.5) / _Size;
-    float cells = 0.625 * (1.0 - Worley(p, 2, 21u)) + 0.25 * (1.0 - Worley(p, 4, 22u)) + 0.125 * (1.0 - Worley(p, 8, 23u));
+    float cells = 0.625 * (1.0 - Worley(p, 4, 21u)) + 0.25 * (1.0 - Worley(p, 8, 22u)) + 0.125 * (1.0 - Worley(p, 16, 23u));
 
     // Likewise from about 0.12 to 0.67.
     _Volume[id] = saturate((cells - 0.12) / 0.55);
