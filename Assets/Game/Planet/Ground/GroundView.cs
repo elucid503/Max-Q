@@ -49,6 +49,10 @@ public sealed class GroundView : IDisposable {
     private static readonly int BuildSlots = Math.Clamp(JobsUtility.JobWorkerCount / 2, 3, 12);
     private const int Capacity = 2_400;
 
+    // Finished builds handed over in one frame: each uploads a mesh and two mipped textures, and a burst of them all
+    // landing together (a jump, a fast pass low over the ground) would stall the frame. The rest wait a frame in their slots.
+    private const int CollectsPerFrame = 3;
+
     private static readonly int DetailId = Shader.PropertyToID("_Detail");
     private static readonly int ParentDetailId = Shader.PropertyToID("_ParentDetail");
     private static readonly int CoverId = Shader.PropertyToID("_Cover");
@@ -146,6 +150,8 @@ public sealed class GroundView : IDisposable {
         public SubMeshDescriptor FineWater;
         public SubMeshDescriptor CoarseWater;
         public bool Coarse;
+        public bool HasWater;
+        public bool SheetShown;
 
     }
 
@@ -186,11 +192,13 @@ public sealed class GroundView : IDisposable {
     private readonly Comparison<Node> _byPriority;
     private readonly Vector4[] _morphs;
     private readonly int _standInId;
+    private readonly int _standInSphereId;
 
     private Vector3d _camera;
     private Vector3 _sunward;
     private int _frame;
     private int _patchCount;
+    private int _collectFrom;
 
     public CelestialBody Body => _body;
 
@@ -200,10 +208,6 @@ public sealed class GroundView : IDisposable {
     /// <summary>How far the last draw scaled the body down about the eye to stand within reach; one when drawn true.</summary>
     public double Scale { get; private set; } = 1.0;
 
-    /// <summary>Scene depth where the stand-in (air included) begins; <see cref="NoStandIn"/> when drawn true.</summary>
-    public float StandInDepth { get; private set; } = NoStandIn;
-
-    public const float NoStandIn = 1e30f;
 
     /// <summary>Keeps selecting and streaming but draws nothing; the capture uses it to time the ground.</summary>
     public bool Hidden { get; set; }
@@ -252,8 +256,10 @@ public sealed class GroundView : IDisposable {
         _waterTemplate = water;
         _root = new GameObject(body.Name).transform;
         _standInId = Shader.PropertyToID($"_{body.Name}StandIn");
+        _standInSphereId = Shader.PropertyToID($"_{body.Name}StandInSphere");
         MaxDepth = MaxDepthFor(_terrain);
         Shader.SetGlobalFloat(_standInId, 1.0f);
+        Shader.SetGlobalVector(_standInSphereId, Vector4.zero);
 
         for (int i = 0; i < _builds.Length; i++) {
 
@@ -306,7 +312,8 @@ public sealed class GroundView : IDisposable {
 
     private double RangeOf(int depth) => Range * _terrain.Radius * 0.5 * Math.PI / (1L << depth);
 
-    /// <summary>The body stands in when its centre is farther than <paramref name="reach"/> (scene units).</summary>
+    /// <summary>The body stands in when its centre is farther than <paramref name="reach"/> (scene units); shaders read the
+    /// sphere it stands in within, air and highest ground included, as _&lt;body&gt;StandInSphere (zero when drawn true).</summary>
     public void Draw(double time, Camera camera, Vector3 sunward, double reach, double airThickness) {
 
         _frame++;
@@ -316,9 +323,15 @@ public sealed class GroundView : IDisposable {
         Vector3d cameraSim = MapSpace.Origin + new Vector3d(cameraScene.x, cameraScene.z, cameraScene.y) * MapSpace.MetresPerUnit;
         double centreDistance = (cameraSim - bodyPosition).Length / MapSpace.MetresPerUnit;
 
+        // The air and clouds tell a stand-in's pixels by their rays meeting its sphere, never by the scene's depth: scaled
+        // down so far, its ground and air lie within a sliver of the depth range, which the depth cannot resolve.
         Scale = Math.Min(1.0, reach / centreDistance);
-        StandInDepth = Scale < 1.0 ? (float)(Scale * (centreDistance - (_terrain.Radius + airThickness) / MapSpace.MetresPerUnit)) : NoStandIn;
         Shader.SetGlobalFloat(_standInId, (float)Scale);
+
+        Vector3 sphere = StandIn(MapSpace.ToScene(bodyPosition));
+        float sphereRadius = (float)(Scale * (_terrain.Radius + Math.Max(_terrain.Highest, 0.0) + airThickness) / MapSpace.MetresPerUnit);
+
+        Shader.SetGlobalVector(_standInSphereId, Scale < 1.0 ? new Vector4(sphere.x, sphere.y, sphere.z, sphereRadius) : Vector4.zero);
 
         _camera = _body.ToBodyFixed(cameraSim - bodyPosition, time);
         _sunward = sunward * (float)(ShadowReach / MapSpace.MetresPerUnit);
@@ -509,6 +522,18 @@ public sealed class GroundView : IDisposable {
 
             patch.Renderer.enabled = !Hidden;
             patch.Renderer.shadowCastingMode = shadows;
+
+            // A stand-in's seas are shaded by its ground, filtered to the pixel; a sheet so far off would only fight the
+            // bed for depth.
+            bool sheet = patch.HasWater && Scale >= 1.0;
+
+            if (sheet != patch.SheetShown) {
+
+                patch.Renderer.sharedMaterials = sheet ? patch.Both : patch.GroundOnly;
+                patch.SheetShown = sheet;
+
+            }
+
             ShapeWater(node);
             patch.Transform.SetPositionAndRotation(StandIn(MapSpace.ToScene(bodyPosition + _body.FromBodyFixed(patch.Centre, time))), rotation);
             patch.Transform.localScale = scale;
@@ -663,13 +688,28 @@ public sealed class GroundView : IDisposable {
 
     private void Collect(bool wait) {
 
-        foreach (Build slot in _builds) {
+        int collected = 0;
+        int start = _collectFrom;
+
+        // Round the slots from where the last frame stopped, so none waits behind the others.
+        for (int i = 0; i < _builds.Length; i++) {
+
+            if (!wait && collected >= CollectsPerFrame) {
+
+                return;
+
+            }
+
+            Build slot = _builds[(start + i) % _builds.Length];
 
             if (slot.Node == null || (!wait && !slot.Handle.IsCompleted)) {
 
                 continue;
 
             }
+
+            collected++;
+            _collectFrom = (start + i + 1) % _builds.Length;
 
             slot.Handle.Complete();
 
@@ -715,7 +755,9 @@ public sealed class GroundView : IDisposable {
 
             patch.Centre = node.Direction * _terrain.Radius;
             patch.Object.name = $"{node.Face}/{node.Depth}/{node.X},{node.Y}";
-            patch.Renderer.sharedMaterials = slot.Info[PatchJob.InfoWaterIndices] > 0 ? patch.Both : patch.GroundOnly;
+            patch.HasWater = slot.Info[PatchJob.InfoWaterIndices] > 0;
+            patch.SheetShown = patch.HasWater;
+            patch.Renderer.sharedMaterials = patch.HasWater ? patch.Both : patch.GroundOnly;
             patch.FineWater = patch.Mesh.GetSubMesh(1);
             patch.CoarseWater = patch.FineWater;
             patch.CoarseWater.indexStart = patch.FineWater.indexStart + patch.FineWater.indexCount;

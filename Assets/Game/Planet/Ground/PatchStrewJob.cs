@@ -280,7 +280,7 @@ internal struct PatchStrewJob : IJobParallelFor {
 
             float tall = (0.6f + 0.4f * cover.Vegetation) * math.lerp(0.5f, 1.0f, math.saturate(cover.Warmth / 0.4f));
 
-            shape = new float4(tall, 0.0f, 0.0f, 0.0f);
+            shape = new float4(tall, cover.Forest, 0.0f, 0.0f);
 
         } else {
 

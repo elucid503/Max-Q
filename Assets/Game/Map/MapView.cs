@@ -37,9 +37,9 @@ namespace MaxQ.Game.Map {
         [SerializeField] private ComputeShader _waves;
         [SerializeField] private Shader _waterCopy;
         [SerializeField] private Material _skyMaterial;
+        [SerializeField] private Shader _cameraMotion;
 
         private static readonly int GroundNoiseId = Shader.PropertyToID("_GroundNoise");
-        private static readonly int StandInDepthId = Shader.PropertyToID("_StandInDepth");
 
         // Tab's destinations (degrees, metres, local solar hours): over the Alps, and over Hadley Rille at lunar morning.
         private static readonly (double Latitude, double Longitude, double Altitude, double Heading, double Pitch, double SolarHour) TerraSite =
@@ -80,6 +80,7 @@ namespace MaxQ.Game.Map {
         private Sun _sun;
         private FreeCamera _freeCamera;
         private Camera _camera;
+        private CameraMotion _motion;
 
         private void Awake() {
 
@@ -92,12 +93,12 @@ namespace MaxQ.Game.Map {
 
             _camera = Camera.main;
             _freeCamera = new FreeCamera(_camera);
+            _motion = new CameraMotion(_cameraMotion);
 
             _clouds = new CloudView(_terra, _cloudShader, _cloudNoise, MapSpace.Direction(Sunward));
             _atmosphere = new Atmosphere(_terra, _clouds, _atmosphereTables, _atmosphereSky, _exposure, MapSpace.Direction(Sunward), SunIlluminance);
             _groundNoise = GroundNoise.Create();
             Shader.SetGlobalTexture(GroundNoiseId, _groundNoise);
-            Shader.SetGlobalFloat(StandInDepthId, GroundView.NoStandIn);
 
             Vegetation vegetation = new Vegetation(_grassMaterial, _treeMaterial, (float)(_terra.Radius / MapSpace.MetresPerUnit));
             _terraGround = new GroundView(_terra, _groundMaterial, _waterMaterial, _rockMaterial, vegetation);
@@ -117,6 +118,7 @@ namespace MaxQ.Game.Map {
 
         private void OnDestroy() {
 
+            _motion?.Dispose();
             _terraGround?.Dispose();
             _seleneGround?.Dispose();
             _water?.Dispose();
@@ -142,6 +144,9 @@ namespace MaxQ.Game.Map {
             _freeCamera.Update(_time, dt);
 
             CelestialBody body = _freeCamera.Body;
+
+            _motion.Update(body, _time);
+
             GroundView beneath = body == _terra ? _terraGround : _seleneGround;
             Vector3 camera = _camera.transform.position;
             Vector3 sunward = MapSpace.Direction(Sunward);
@@ -149,7 +154,6 @@ namespace MaxQ.Game.Map {
 
             _terraGround.Draw(_time, _camera, sunward, body == _terra ? double.PositiveInfinity : reach, Atmosphere.AirThickness);
             _seleneGround.Draw(_time, _camera, sunward, body == _selene ? double.PositiveInfinity : reach, 0.0);
-            Shader.SetGlobalFloat(StandInDepthId, Math.Min(_terraGround.StandInDepth, _seleneGround.StandInDepth));
 
             float? airlessStops = null;
 
@@ -174,6 +178,10 @@ namespace MaxQ.Game.Map {
         /// <summary>Flies the free camera to a place on Terra and sets the clock to a local solar time there (hours).</summary>
         internal void Look(double latitude, double longitude, double altitude, double heading, double pitch, double solarHour) =>
             Look(_terra, latitude, longitude, altitude, heading, pitch, solarHour);
+
+        /// <summary>The same over Selene.</summary>
+        internal void LookFromSelene(double latitude, double longitude, double altitude, double heading, double pitch, double solarHour) =>
+            Look(_selene, latitude, longitude, altitude, heading, pitch, solarHour);
 
         private void Visit(CelestialBody body) {
 

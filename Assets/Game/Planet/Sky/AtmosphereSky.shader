@@ -26,6 +26,10 @@ Shader "Hidden/MaxQ/AtmosphereSky" {
         TEXTURE2D(_CloudDepth);
         float4 _CloudSize;
 
+        // This frame's step through the golden-ratio sequence, which walks each ray's jitter so the antialiasing
+        // averages it rather than printing it as a fixed pattern.
+        float _AtmosphereJitter;
+
         ENDHLSL
 
         Pass {
@@ -53,7 +57,7 @@ Shader "Hidden/MaxQ/AtmosphereSky" {
 
                 // Interleaved gradient noise staggers neighbouring rays' cascade samples, so terrain's shafts blend instead of
                 // banding. The shadowed stretch has SHADOW_STEPS of its own, so the rest of the ray needs fewer.
-                float jitter = frac(52.9829189 * frac(dot(input.positionCS.xy, float2(0.06711056, 0.00583715))));
+                float jitter = frac(52.9829189 * frac(dot(input.positionCS.xy, float2(0.06711056, 0.00583715))) + _AtmosphereJitter);
                 float4 clouds = float4(0.0, 0.0, 0.0, 1.0);
                 float cloudDepth = 1e9;
 
@@ -130,45 +134,100 @@ Shader "Hidden/MaxQ/AtmosphereSky" {
             // The sun seen from Terra spans the same half degree it does from Earth.
             #define SUN_COS_RADIUS 0.99998931
 
+            // The eye adapts locally to a body standing in the sky as it looks at it: however far the exposure climbs for
+            // the night ground round the camera, the body and its air keep at most this many stops over daylight's, so a
+            // sunlit planet in the lunar night shows its seas, land and clouds rather than a white disk.
+            #define STAND_IN_STOPS 0.5
+
+            // The sine of the angle the air's planet spans below which, seen from afar, its pixels march at full resolution.
+            #define SMALL_PLANET 0.15
+
+            // A far planet, standing in or not, is too few pixels across for the half-resolution march to draw its limb or
+            // its air's halo, so its pixels march their own air at full resolution through the clouds' history, read
+            // bilinearly. However far the camera, the planet covers little of the view, so this costs little.
+            bool OnSmallPlanet(float3 direction) {
+
+                float3 origin = _WorldSpaceCameraPos - _PlanetCentre;
+                float2 air = RaySphere(origin, direction, TopRadius() * 1.02);
+
+                return TopRadius() < SMALL_PLANET * length(origin) && air.y > max(air.x, 0.0);
+
+            }
+
+            void MarchStandIn(float2 uv, float2 positionCS, ViewRay ray, out float3 inscatter, out float3 transmittance) {
+
+                float4 clouds = float4(0.0, 0.0, 0.0, 1.0);
+                float cloudDepth = 1e9;
+
+                if (_CloudSize.x > 0.0) {
+
+                    // History texel i holds the ray through pixel 2i.
+                    float2 at = ((uv * _SceneSize.xy - 0.5) * 0.5 + 0.5) * _CloudSize.zw;
+
+                    clouds = SAMPLE_TEXTURE2D_LOD(_CloudLight, sampler_LinearClamp, at, 0);
+                    cloudDepth = SAMPLE_TEXTURE2D_LOD(_CloudDepth, sampler_LinearClamp, at, 0).r;
+
+                }
+
+                float jitter = frac(52.9829189 * frac(dot(positionCS, float2(0.06711056, 0.00583715))) + _AtmosphereJitter);
+                Scattering scattering = Integrate(_WorldSpaceCameraPos - _PlanetCentre, ray.direction, ray.reach, _SunDirection, 16, true, jitter, true, true,
+                    cloudDepth);
+                float3 front = scattering.frontRadiance * _SunIlluminance;
+
+                inscatter = front + scattering.frontTransmittance * clouds.rgb + clouds.a * (scattering.radiance * _SunIlluminance - front);
+                transmittance = scattering.transmittance * clouds.a;
+
+            }
+
             float4 Frag(Varyings input) : SV_Target {
 
                 float2 uv = input.texcoord;
                 float3 scene = SAMPLE_TEXTURE2D_X_LOD(_BlitTexture, sampler_PointClamp, uv, 0).rgb;
                 ViewRay ray = ViewRayAt(uv);
-
-                // The surface's own slope in distance: the gentler side, as a silhouette's steep side belongs behind it.
-                float2 pixel = _SceneSize.zw;
-                float slopeX = min(abs(ViewRayAt(uv + float2(pixel.x, 0.0)).distance - ray.distance), abs(ViewRayAt(uv - float2(pixel.x, 0.0)).distance - ray.distance));
-                float slopeY = min(abs(ViewRayAt(uv + float2(0.0, pixel.y)).distance - ray.distance), abs(ViewRayAt(uv - float2(0.0, pixel.y)).distance - ray.distance));
-                float tolerance = 1e-3 * ray.distance + 3.0 * max(slopeX, slopeY);
-
-                // Bilinear over the nearest samples (sample i marched through pixel 2i), weighed down where their
-                // distance strays beyond the slope, so air from behind a ridge never bleeds onto it.
-                float2 texel = (uv * _SceneSize.xy - 0.5) * 0.5;
-                int2 base = int2(floor(texel));
-                float2 f = texel - base;
+                float standIn = max(StandInCover(ray.direction, _TerraStandInSphere), StandInCover(ray.direction, _SeleneStandInSphere));
                 float3 inscatter = 0.0;
                 float3 transmittance = 0.0;
-                float total = 0.0;
 
-                for (int i = 0; i < 4; i++) {
+                UNITY_BRANCH
+                if (standIn > 0.0 || OnSmallPlanet(ray.direction)) {
 
-                    int2 offset = int2(i & 1, i >> 1);
-                    int2 at = clamp(base + offset, 0, int2(_AtmosphereSize.xy) - 1);
-                    float4 marched = LOAD_TEXTURE2D_X(_AtmosphereInscatter, at);
-                    float bilinear = (offset.x ? f.x : 1.0 - f.x) * (offset.y ? f.y : 1.0 - f.y);
-                    float weight = (bilinear + 1e-4) / (1.0 + abs(marched.a - ray.distance) / max(tolerance, 1e-6));
+                    MarchStandIn(uv, input.positionCS.xy, ray, inscatter, transmittance);
 
-                    inscatter += marched.rgb * weight;
-                    transmittance += LOAD_TEXTURE2D_X(_AtmosphereTransmittance, at).rgb * weight;
-                    total += weight;
+                } else {
+
+                    // The surface's own slope in distance: the gentler side, as a silhouette's steep side belongs behind it.
+                    float2 pixel = _SceneSize.zw;
+                    float slopeX = min(abs(ViewRayAt(uv + float2(pixel.x, 0.0)).distance - ray.distance), abs(ViewRayAt(uv - float2(pixel.x, 0.0)).distance - ray.distance));
+                    float slopeY = min(abs(ViewRayAt(uv + float2(0.0, pixel.y)).distance - ray.distance), abs(ViewRayAt(uv - float2(0.0, pixel.y)).distance - ray.distance));
+                    float tolerance = 1e-3 * ray.distance + 3.0 * max(slopeX, slopeY);
+
+                    // Bilinear over the nearest samples (sample i marched through pixel 2i), weighed down where their
+                    // distance strays beyond the slope, so air from behind a ridge never bleeds onto it.
+                    float2 texel = (uv * _SceneSize.xy - 0.5) * 0.5;
+                    int2 base = int2(floor(texel));
+                    float2 f = texel - base;
+                    float total = 0.0;
+
+                    for (int i = 0; i < 4; i++) {
+
+                        int2 offset = int2(i & 1, i >> 1);
+                        int2 at = clamp(base + offset, 0, int2(_AtmosphereSize.xy) - 1);
+                        float4 marched = LOAD_TEXTURE2D_X(_AtmosphereInscatter, at);
+                        float bilinear = (offset.x ? f.x : 1.0 - f.x) * (offset.y ? f.y : 1.0 - f.y);
+                        float weight = (bilinear + 1e-4) / (1.0 + abs(marched.a - ray.distance) / max(tolerance, 1e-6));
+
+                        inscatter += marched.rgb * weight;
+                        transmittance += LOAD_TEXTURE2D_X(_AtmosphereTransmittance, at).rgb * weight;
+                        total += weight;
+
+                    }
+
+                    inscatter /= total;
+                    transmittance /= total;
 
                 }
 
-                inscatter /= total;
-                transmittance /= total;
-
-                float exposure = _Exposure[0];
+                float exposure = lerp(_Exposure[0], min(_Exposure[0], exp2(STAND_IN_STOPS)), standIn);
 
                 if (!ray.sky) {
 

@@ -29,6 +29,7 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
     private static readonly int CloudLightId = Shader.PropertyToID("_CloudLight");
     private static readonly int CloudDepthId = Shader.PropertyToID("_CloudDepth");
     private static readonly int CloudSizeId = Shader.PropertyToID("_CloudSize");
+    private static readonly int JitterId = Shader.PropertyToID("_AtmosphereJitter");
 
     // Pixels per histogram sample along each axis, and threads per group along each; must match Exposure.compute.
     private const int ExposureStride = 4;
@@ -58,6 +59,8 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
         public TextureHandle Depth;
         public TextureHandle First;
         public TextureHandle Second;
+        public TextureHandle CloudLight;
+        public TextureHandle CloudDepth;
         public int Pass;
 
     }
@@ -135,6 +138,7 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
         _material.SetVector(SceneSizeId, sceneSize);
         _material.SetVector(SizeId, new Vector4(half.width, half.height, 1.0f / half.width, 1.0f / half.height));
         _material.SetVector(CloudSizeId, cloudSize);
+        _material.SetFloat(JitterId, (float)(Time.frameCount * 0.6180339887498949 % 1.0));
 
         using (IRasterRenderGraphBuilder builder = renderGraph.AddRasterRenderPass("Atmosphere March", out PassData data)) {
 
@@ -183,6 +187,8 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
             data.Depth = depth;
             data.First = inscatter;
             data.Second = transmittance;
+            data.CloudLight = cloudLight;
+            data.CloudDepth = cloudDepth;
             data.Pass = CompositePass;
 
             builder.UseTexture(source);
@@ -190,11 +196,24 @@ internal sealed class AtmospherePass : ScriptableRenderPass {
             builder.UseTexture(inscatter);
             builder.UseTexture(transmittance);
             builder.UseBuffer(exposure);
+
+            // A stand-in body's pixels march their own air through the clouds (see MarchStandIn), and its shadow.
+            builder.UseAllGlobalTextures(true);
+
+            if (clouds) {
+
+                builder.UseTexture(cloudLight);
+                builder.UseTexture(cloudDepth);
+
+            }
+
             builder.SetRenderAttachment(target, 0);
             builder.SetRenderFunc(static (PassData pass, RasterGraphContext context) => {
 
                 pass.Material.SetTexture(InscatterId, pass.First);
                 pass.Material.SetTexture(TransmittanceId, pass.Second);
+                pass.Material.SetTexture(CloudLightId, pass.CloudLight.IsValid() ? pass.CloudLight : Texture2D.blackTexture);
+                pass.Material.SetTexture(CloudDepthId, pass.CloudDepth.IsValid() ? pass.CloudDepth : Texture2D.blackTexture);
                 Draw(pass, context);
 
             });

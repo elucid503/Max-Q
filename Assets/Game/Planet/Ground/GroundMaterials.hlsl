@@ -322,7 +322,8 @@ Tiling TilingOf(float3 metres, float3 dx, float3 dy, float tile, float4 origin, 
 
 // The macro sample is filtered to texels of at least this many metres: the materials' textures magnified fifty times
 // would otherwise show as smeared copies of their finest grain, where all it should carry is how colour and relief wander.
-// So blurred, its repeats hardly show, and it is laid plainly.
+// Laid plainly, its repeats would still print a lattice across open sand and ice from kilometres off, so it is laid
+// stochastically too.
 #define MACRO_TEXEL 2.4
 
 Tiling Blurred(Tiling tiling) {
@@ -355,7 +356,7 @@ Layer SampleSlice(int slice, float3 average, int repeats, int material, float3 m
 
     float4 mean = float4(average, 0.5);
     Tiling macroTiling = Blurred(TilingOf(macroMetres, dx, dy, MACRO_TILE, _TileOriginMacro, 1, LayoutSeed(material, 0)));
-    Layer macro = Triplanar(slice, macroTiling, false, false, mean, normalOS, sharpWeights, sampler_trilinear_repeat);
+    Layer macro = Triplanar(slice, macroTiling, true, true, mean, normalOS, sharpWeights, sampler_trilinear_repeat);
 
     UNITY_BRANCH
     if (detail <= 0.0) {
@@ -364,9 +365,9 @@ Layer SampleSlice(int slice, float3 average, int repeats, int material, float3 m
 
     }
 
-    // The far sample is laid plainly: under the near one it only breaks up its tone, and past it the blurred macro
-    // sample's colour, wandering on its own longer repeat, hides the far one's.
-    Layer far = Triplanar(slice, TilingOf(metres, dx, dy, FAR_TILE, _TileOriginFar, 1, LayoutSeed(material, 1)), false, false, mean,
+    // The far sample's grain is laid stochastically, as its repeat is only a few pixels wide out to its fade and would
+    // print as a weave; its normals, which only relieve the shading, are laid plainly.
+    Layer far = Triplanar(slice, TilingOf(metres, dx, dy, FAR_TILE, _TileOriginFar, 1, LayoutSeed(material, 1)), true, false, mean,
         macro.normalOS, sharpWeights, sampler_trilinear_repeat);
     Layer near = far;
     float3 grain = far.albedo / max(average, 1e-3);
@@ -465,6 +466,10 @@ struct GroundSurface {
     float3 normalWS;
     float snow;
     float3 surroundings;
+
+    // How much of the ground seen lies under the trees' crowns (see UnderCanopy), and their colour.
+    float canopy;
+    float3 leaves;
 
 };
 
@@ -630,6 +635,10 @@ GroundSurface GroundMaterial(GroundVaryings input, GroundDetail detail, float3 u
     surface.surroundings = surface.albedo;
     surface.normalWS = detail.normalWS;
     surface.snow = weights[SNOW] / max(total, 1e-4);
+
+    // Past CANOPY_FULL the canopy's top is drawn instead, in open sky.
+    surface.canopy = forest * (1.0 - smoothstep(CANOPY_START, CANOPY_FULL, distance));
+    surface.leaves = canopy;
 
     float macro = 1.0 - smoothstep(MACRO_START, MACRO_END, distance);
 

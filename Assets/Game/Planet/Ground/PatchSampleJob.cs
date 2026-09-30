@@ -1,5 +1,6 @@
 using System;
 
+using MaxQ.Game.Planet.Ground.Regolith;
 using MaxQ.Sim.Numerics;
 using MaxQ.Sim.Surface;
 
@@ -135,7 +136,7 @@ internal struct PatchSampleJob : IJobParallelFor {
                     CoverTexels[4 * t] = Unorm((float)maria);
                     CoverTexels[4 * t + 1] = Unorm((float)freshness);
                     CoverTexels[4 * t + 2] = Unorm((float)steepness);
-                    CoverTexels[4 * t + 3] = 0;
+                    CoverTexels[4 * t + 3] = Unorm(Mottling.At(direction, radius, footprint / PatchJob.TexelsPerQuad));
 
                     continue;
 

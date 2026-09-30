@@ -273,16 +273,16 @@ float CascadeShadow(float3 positionWS) {
 
 }
 
-// Sun visibility past the cascades and the clouds.
-float SunShadow(float3 positionWS) {
-
-    return CascadeShadow(positionWS) * CloudShadow(positionWS, 0.0, float2(0.0, 0.0), true);
-
-}
-
 float CloudShadowLod(float stretch) {
 
     return log2(max(stretch * _CloudShadowOrigin.w * CLOUD_SHADOW_TEXELS, 1.0));
+
+}
+
+// Sun visibility past the cascades and the clouds, the clouds' shade filtered over footprint (km, the pixel's width).
+float SunShadow(float3 positionWS, float footprint = 0.0) {
+
+    return CascadeShadow(positionWS) * CloudShadow(positionWS, CloudShadowLod(footprint), float2(0.0, 0.0), true);
 
 }
 

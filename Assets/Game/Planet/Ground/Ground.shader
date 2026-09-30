@@ -41,6 +41,8 @@ Shader "MaxQ/Ground" {
             #include "GroundMaterials.hlsl"
             #include "../Water/Surface/WaterSurface.hlsl"
 
+            #define TREE_SHADOWS 150.0
+
             // The water's optics where the ground lies under it.
             WaterOptics OpticsHere(GroundVaryings input, GroundDetail detail) {
 
@@ -73,7 +75,7 @@ Shader "MaxQ/Ground" {
             float3 DistantWater(GroundVaryings input, GroundDetail detail, Sunlight light, GroundSurface surface, float2 coords, float2 coordsDx, float2 coordsDy) {
 
                 SeaState sea = SeaStateAt(input.positionWS, input.water.y);
-                float4 weights = CascadeWeights(sea) * WaveVariation(coords);
+                float4 weights = CascadeWeights(sea) * WaveVariation(coords, max(length(coordsDx), length(coordsDy)));
                 WaveSurface waves = SampleWaves(coords, coordsDx, coordsDy, weights, WhitecapCoverage(sea.wind) > 1e-5);
                 WaterLook look = LookAtWater(input.positionWS, waves, light.up);
                 WaterOptics optics = OpticsHere(input, detail);
@@ -116,20 +118,23 @@ Shader "MaxQ/Ground" {
                 float2 uvDx = ddx(input.uv);
                 float2 uvDy = ddy(input.uv);
                 GroundDetail detail = SampleDetail(input.uv, input.morph, uvDx, uvDy);
-                Sunlight light = SunlightAt(input.positionWS);
+                Sunlight light = SunlightAt(input.positionWS, footprint / 1000.0);
 
                 // The coast gives way to the water over at least a pixel, so it never steps along the pixels.
                 float coast = max(fwidth(detail.waterDepth), 0.1);
 
                 GroundSurface surface = GroundMaterial(input, detail, light.up, footprint, metresDx, metresDy, uvDx, uvDy);
 
-                // Under the sheet, the bed; the sheet covers it where its level stands over the mesh.
+                // Under the sheet, the bed; the sheet covers it where its level stands over the mesh. A stand-in draws no sheet.
                 UNITY_BRANCH
-                if (detail.waterDepth > 0.0 && input.water.x > 0.0) {
+                if (detail.waterDepth > 0.0 && input.water.x > 0.0 && GROUND_STAND_IN >= 1.0) {
 
                     return float4(BedRadiance(detail, light, OpticsHere(input, detail), surface.albedo), 1.0);
 
                 }
+
+                // Trees cast their own shadows only out to TREE_SHADOWS (Vegetation.TreeNear).
+                UnderCanopy(light, surface.canopy, surface.leaves, smoothstep(0.8 * TREE_SHADOWS, 1.15 * TREE_SHADOWS, length(input.positionWS - _WorldSpaceCameraPos) * 1000.0));
 
                 float3 ground = GroundRadiance(surface.albedo, surface.normalWS, light, surface.surroundings, detail.occlusion);
 

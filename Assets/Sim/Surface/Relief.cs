@@ -4,9 +4,10 @@ using MaxQ.Sim.Numerics;
 
 namespace MaxQ.Sim.Surface;
 
-/// <summary>Procedural ground detail below the survey's resolution: gullies that run down the survey's slopes between
-/// sharp-crested spurs and branch off one another, over gently rolling ground whose roughness follows how steep the survey
-/// says the land is, and on steep ground, bands of cliff over aprons of scree.</summary>
+/// <summary>Procedural ground detail below the survey's resolution: ridged ranges on its mountains, gullies that run down
+/// its slopes between sharp-crested spurs and branch off one another, over gently rolling ground whose roughness follows
+/// how steep the survey says the land is, and on steep ground, bands of cliff over aprons of scree. Regions tens of
+/// kilometres across run from subdued to craggy, so no two ranges or plains look alike.</summary>
 public static class Relief {
 
     // The survey carries everything above ~2 km; detail starts just below that and halves down to a metre.
@@ -42,23 +43,51 @@ public static class Relief {
     private const double BandHeight = 40.0;
     private const double BandWarpWavelength = 3_000.0;
     private const double BandRippleWavelength = 700.0;
-    private const double CliffSlopeStart = 0.3;
-    private const double CliffSlopeFull = 0.9;
+    private const double CliffSlopeStart = 0.22;
+    private const double CliffSlopeFull = 0.7;
     private const double CliffShare = 0.45;
     private const double CliffStrength = 0.8;
 
+    // Ruggedness: a factor from RuggedLeast to RuggedMost on the relief and the cliffs' slope, over regions this wide.
+    private const double RuggedWavelength = 48_000.0;
+    private const double RuggedLeast = 0.55;
+    private const double RuggedMost = 1.8;
+
+    // Ranges: ridged crests over the survey's mountains, too fine for its posts, from RangeWavelength down; amplitude over
+    // wavelength, reached where the survey is steeper than RangeSlopeFull.
+    private const double RangeWavelength = 8_192.0;
+    private const int RangeOctaves = 2;
+    private const double RangeRatio = 0.014;
+    private const double RangeSlopeStart = 0.02;
+    private const double RangeSlopeFull = 0.15;
+
+    // The mean of a squared ridge, taken off so ranges raise crests and cut valleys without lifting the ground.
+    private const double RidgeMean = 0.6;
+
+    /// <summary>How craggy the region round body-fixed <paramref name="position"/> is: a factor on the relief, near 1.</summary>
+    public static double Ruggedness(Vector3d position) {
+
+        Vector3d p = position / RuggedWavelength;
+        Vector3d q = position / (0.37 * RuggedWavelength);
+        double n = 0.7 * Noise(p.X, p.Y, p.Z, 101u) + 0.3 * Noise(q.X + 5.3, q.Y, q.Z, 102u);
+
+        return RuggedLeast * Math.Pow(RuggedMost / RuggedLeast, SmoothStep(-0.5, 0.5, n));
+
+    }
+
     /// <summary>Detail height in metres at body-fixed <paramref name="position"/>, keeping only wavelengths the
     /// <paramref name="footprint"/> (sample spacing, metres) can carry; a zero footprint keeps them all.
-    /// <paramref name="gradient"/> is the survey's uphill slope there, rise over run along the ground.</summary>
-    public static double Detail(Vector3d position, double footprint, Vector3d gradient) {
+    /// <paramref name="gradient"/> is the survey's uphill slope there, rise over run along the ground, and
+    /// <paramref name="rugged"/> the region's <see cref="Ruggedness"/>.</summary>
+    public static double Detail(Vector3d position, double footprint, Vector3d gradient, double rugged = 1.0) {
 
         Vector3d up = position.Normalized;
         double slope = gradient.Length;
-        double rolling = LongestWavelength * (FlatRatio + RollingShare * SlopeRatio * slope);
-        double eroded = LongestWavelength * (1.0 - RollingShare) * SlopeRatio * slope;
+        double rolling = rugged * LongestWavelength * (FlatRatio + RollingShare * SlopeRatio * slope);
+        double eroded = rugged * LongestWavelength * (1.0 - RollingShare) * SlopeRatio * slope;
 
         double wavelength = LongestWavelength;
-        double sum = 0.0;
+        double sum = Ranges(position, footprint, slope, rugged);
 
         for (int octave = 0; octave < Octaves; octave++) {
 
@@ -87,6 +116,38 @@ public static class Relief {
 
             rolling *= Gain;
             eroded *= Gain;
+            wavelength *= 0.5;
+
+        }
+
+        return sum;
+
+    }
+
+    // Ridged, warped crests: sharp where the noise crosses zero, so they wind into ranges and spurs rather than blobs.
+    private static double Ranges(Vector3d position, double footprint, double slope, double rugged) {
+
+        double amplitude = rugged * RangeRatio * RangeWavelength * SmoothStep(RangeSlopeStart, RangeSlopeFull, slope);
+        double wavelength = RangeWavelength;
+        double sum = 0.0;
+
+        for (int octave = 0; octave < RangeOctaves && amplitude > 0.0; octave++) {
+
+            double weight = footprint <= 0.0 ? 1.0 : Saturate(wavelength / footprint - 1.0);
+
+            if (weight <= 0.0) {
+
+                break;
+
+            }
+
+            Vector3d p = position / wavelength;
+            Vector3d w = p * 0.5;
+            double bend = 0.6 * Noise(w.X + 17.1, w.Y, w.Z, 111u + (uint)octave);
+            double ridge = 1.0 - Math.Abs(Noise(p.X + bend, p.Y - bend, p.Z + 0.5 * bend, 121u + (uint)octave));
+
+            sum += weight * amplitude * (ridge * ridge - RidgeMean);
+            amplitude *= Gain;
             wavelength *= 0.5;
 
         }
@@ -125,10 +186,11 @@ public static class Relief {
 
     /// <summary>Cliff bands: <paramref name="height"/> (metres, at body-fixed <paramref name="position"/>) regraded into
     /// strata of benches, scree aprons and cliffs with sharp rims, as far as <paramref name="slope"/> (the survey's rise over
-    /// run) is steep and <paramref name="footprint"/> can carry a band; a zero footprint keeps them all.</summary>
-    public static double Strata(Vector3d position, double height, double slope, double footprint) {
+    /// run) is steep and <paramref name="footprint"/> can carry a band; a zero footprint keeps them all. Craggier regions
+    /// (<paramref name="rugged"/>) break into cliffs on gentler slopes.</summary>
+    public static double Strata(Vector3d position, double height, double slope, double footprint, double rugged = 1.0) {
 
-        double strength = CliffStrength * SmoothStep(CliffSlopeStart, CliffSlopeFull, slope);
+        double strength = CliffStrength * SmoothStep(CliffSlopeStart, CliffSlopeFull, slope * rugged);
 
         // A band's cliff is a few metres across along the ground; coarser samples see the slope it averages to.
         double spacing = BandHeight / Math.Max(slope, CliffSlopeStart);

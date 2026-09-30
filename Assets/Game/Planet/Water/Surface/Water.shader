@@ -100,7 +100,10 @@ Shader "MaxQ/Water" {
                 // The sheet stands at its water's level, which tells a lake from the sea.
                 wave.sea.swellHeight *= abs(length(positionWS - _PlanetCentre) - _PlanetRadius) * 1000.0 < LAKE_LEVEL ? 1.0 : 0.0;
                 wave.height = length(float2(wave.sea.seaHeight, wave.sea.swellHeight)) * (1.0 - wave.sea.ice);
-                wave.weights = CascadeWeights(wave.sea) * WaveVariation(FrameCoords(positionWS));
+                // A vertex has no derivatives; it stands for about as much sea as a pixel spans at its distance.
+                float footprint = length(positionWS - _WorldSpaceCameraPos) * 1000.0 * 2.0 / (UNITY_MATRIX_P._m11 * _ScreenParams.y);
+
+                wave.weights = CascadeWeights(wave.sea) * WaveVariation(FrameCoords(positionWS), footprint);
                 wave.displacement = WaveDisplacementWS(positionWS, Strength(wave.weights, wave.depth, shoreDistance, wave.height));
 
                 return wave;
@@ -193,6 +196,7 @@ Shader "MaxQ/Water" {
 
                 float2 coordsDx = ddx(input.coords);
                 float2 coordsDy = ddy(input.coords);
+                float footprint = PixelFootprint(input.positionWS) / 1000.0;
                 GroundDetail detail = SampleDetail(input.uv, input.state.w);
 
                 SeaState sea = (SeaState)0;
@@ -208,7 +212,7 @@ Shader "MaxQ/Water" {
                 light.up = normalize(input.positionWS - _PlanetCentre);
                 light.direct = input.sun;
                 light.sky = input.sky;
-                light.shadow = SunShadow(input.positionWS);
+                light.shadow = SunShadow(input.positionWS, footprint);
 
                 WaterLook look = LookAtWater(input.positionWS, waves, light.up);
                 float3 reflected = reflect(-look.view, look.normal);

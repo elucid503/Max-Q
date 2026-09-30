@@ -194,11 +194,18 @@ float4 CascadeWeights(SeaState sea) {
 // How much stronger or weaker each cascade's waves run here than on average: smooth noise at kilometre scales, a
 // different lattice for each, so the sea's texture changes across a view as a real sea's does with gusts and currents.
 // The finest cascade takes the longest's noise turned over.
-float4 WaveVariation(float2 coords) {
+// Past the variation's finest cells (m) it would alias, a pixel or vertex landing on a strong or a calm patch at random,
+// which from orbit prints as speckled glint; by the coarsest it has settled to its mean.
+#define VARIATION_FINEST 250.0
+#define VARIATION_COARSEST 2500.0
+
+// The cascades' strengths at coords, seen at footprint (m, the width a pixel or vertex stands for).
+float4 WaveVariation(float2 coords, float footprint) {
 
     float3 noise = SAMPLE_TEXTURE2D_LOD(_WaterFoamTexture, sampler_WaterLinearRepeat, (coords + _WaterPattern) / PATTERN_PERIOD, 0.0).gba;
+    float settled = smoothstep(VARIATION_FINEST, VARIATION_COARSEST, footprint);
 
-    return 1.0 + WAVE_VARIATION * (2.0 * float4(noise, 1.0 - noise.x) - 1.0);
+    return 1.0 + WAVE_VARIATION * (1.0 - settled) * (2.0 * float4(noise, 1.0 - noise.x) - 1.0);
 
 }
 

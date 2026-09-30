@@ -37,6 +37,22 @@ public readonly unsafe struct Terrain {
     private const double WanderSlope = 0.002;
     private const int WanderOctaves = 8;
 
+    // Islands: in archipelagos this wide, drowned hills this wide and finer rise through sea shallower than IslandDepth
+    // where their noise tops IslandThreshold, climbing IslandRise over the water for each unit of it past there, as off the
+    // coasts where islands are too small for the survey's posts.
+    private const double ArchipelagoWavelength = 60_000.0;
+    private const double IslandWavelength = 6_000.0;
+    private const int IslandOctaves = 4;
+    private const double IslandDepth = 30.0;
+    private const double IslandThreshold = 0.5;
+    private const double IslandRise = 30.0;
+
+    // Below the threshold, the share of a unit over which the hills sink back into the floor.
+    private const double IslandFoot = 0.3;
+
+    // Metres of relief the bounds allow above and below the survey's extremes.
+    private const double ReliefMargin = 600.0;
+
     private readonly IntPtr _heights;
     private readonly IntPtr _levels;
     private readonly IntPtr _shore;
@@ -74,8 +90,8 @@ public readonly unsafe struct Terrain {
         _surveyRadius = surveyRadius;
         _spacing = 2.0 * Math.PI * radius / columns;
         Radius = radius;
-        Lowest = deepest * VerticalScale - 200.0 - (maria == IntPtr.Zero ? 0.0 : Craters.Deepest);
-        Highest = highest * VerticalScale + 200.0;
+        Lowest = deepest * VerticalScale - ReliefMargin - (maria == IntPtr.Zero ? 0.0 : Craters.Deepest);
+        Highest = highest * VerticalScale + ReliefMargin;
 
     }
 
@@ -115,7 +131,8 @@ public readonly unsafe struct Terrain {
 
         Vector3d gradient = Gradient(direction);
         double slope = gradient.Length;
-        double relief = Relief.Strata(position, survey + Relief.Detail(position, footprint, gradient), slope, footprint) - survey;
+        double rugged = Relief.Ruggedness(position);
+        double relief = Relief.Strata(position, survey + Relief.Detail(position, footprint, gradient, rugged), slope, footprint, rugged) - survey;
         double reach = Reach(mip, row, column, out double level);
 
         if (reach <= 0.0) {
@@ -126,7 +143,7 @@ public readonly unsafe struct Terrain {
 
         // Near water the ground is kept against its level: the coastline wanders, and the relief never carries the ground
         // across the waterline. Wherever a level cell holds, fully; past a body's reach, less and less.
-        double held = level + Held(survey - level + Wander(position, direction, slope, footprint), relief);
+        double held = level + Held(survey - level + Wander(position, direction, slope, footprint) + Islands(position, level, level - survey, footprint), relief);
 
         return survey + relief + (held - survey - relief) * reach;
 
@@ -371,6 +388,58 @@ public readonly unsafe struct Terrain {
         }
 
         return sum * fade * Math.Max(slope, WanderSlope);
+
+    }
+
+    // Metres to raise the sea floor by where islands break through it: hills gathered into archipelagos, whose height over
+    // the water is their noise's past the threshold, whatever the depth. So every shore climbs steeply through the
+    // waterline, rather than a wide flat lifted to just awash, where the beach's edge would wander across it at random.
+    // Only the sea has them; a lake's level is its own.
+    private static double Islands(Vector3d position, double level, double depth, double footprint) {
+
+        if (depth <= 0.0 || depth >= IslandDepth || Math.Abs(level) >= 2.0) {
+
+            return 0.0;
+
+        }
+
+        Vector3d a = position / ArchipelagoWavelength;
+        double archipelago = Smooth((Relief.Noise(a.X, a.Y, a.Z, 131u) - 0.1) / 0.15) * (1.0 - Smooth(Math.Abs(level) / 2.0));
+
+        if (archipelago <= 0.0) {
+
+            return 0.0;
+
+        }
+
+        double wavelength = IslandWavelength;
+        double amplitude = 1.0;
+        double sum = 0.0;
+
+        for (int octave = 0; octave < IslandOctaves; octave++) {
+
+            double weight = footprint <= 0.0 ? 1.0 : Math.Min(Math.Max(wavelength / footprint - 1.0, 0.0), 1.0);
+
+            if (weight <= 0.0) {
+
+                break;
+
+            }
+
+            Vector3d p = position / wavelength;
+
+            sum += weight * amplitude * Relief.Noise(p.X, p.Y, p.Z, 141u + (uint)octave);
+            amplitude *= 0.5;
+            wavelength *= 0.5;
+
+        }
+
+        double past = (sum / 0.7 - IslandThreshold) / (1.0 - IslandThreshold);
+
+        // Eased in over the first metre, so the floor meets the coast without a step, and out toward IslandDepth.
+        double hold = archipelago * Smooth((past + IslandFoot) / IslandFoot) * Smooth(depth) * (1.0 - Smooth((depth - 0.7 * IslandDepth) / (0.3 * IslandDepth)));
+
+        return hold * Math.Max(depth + IslandRise * past, 0.0);
 
     }
 

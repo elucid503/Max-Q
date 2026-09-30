@@ -19,7 +19,8 @@ public sealed class Capture : MonoBehaviour {
     private const int TimedFrames = 60;
     private const int AdaptFrames = 240;
 
-    // Where the free camera hovers (metres above the ground), where it looks (degrees), and the local solar time (hours).
+    // Where the free camera hovers (metres above the ground), where it looks (degrees), and the local solar time (hours);
+    // over Selene where the name starts with "selene-".
     private static readonly (string Name, double Latitude, double Longitude, double Altitude, double Heading, double Pitch, double SolarHour)[] Shots = {
 
         ("terra-5000km", 5.0, 20.0, 5_000_000.0, 0.0, -90.0, 11.0),
@@ -62,6 +63,9 @@ public sealed class Capture : MonoBehaviour {
         ("cumulonimbus-maine-3km", 43.0, -71.0, 3_000.0, 60.0, 6.0, 15.0),
         ("stratocumulus-above-6km", 49.6, -131.6, 6_000.0, 90.0, -15.0, 10.0),
         ("cyclone-orbit-400km", -50.0, 110.0, 400_000.0, 0.0, -60.0, 12.0),
+        ("terra-far-70000km", 20.0, 0.0, 70_000_000.0, 0.0, -90.0, 15.0),
+        ("selene-terra-night-2m", 25.0, 0.0, 2.0, 180.0, 65.0, 2.0),
+        ("selene-terra-day-2m", 25.0, 0.0, 2.0, 180.0, 65.0, 9.0),
 
     };
 
@@ -126,11 +130,14 @@ public sealed class Capture : MonoBehaviour {
 
             }
 
-            view.Look(latitude, longitude, altitude, heading, pitch, solarHour);
+            Action look = name.StartsWith("selene-") ? () => view.LookFromSelene(latitude, longitude, altitude, heading, pitch, solarHour) :
+                () => view.Look(latitude, longitude, altitude, heading, pitch, solarHour);
+
+            look();
 
             yield return Settle(view);
 
-            yield return Save(view, name, () => view.Look(latitude, longitude, altitude, heading, pitch, solarHour));
+            yield return Save(view, name, look);
 
         }
 

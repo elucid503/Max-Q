@@ -48,7 +48,7 @@ public sealed class ReliefTests {
         }
 
         Assert.That(steep, Is.GreaterThan(flat * 20.0));
-        Assert.That(Relief.Detail(p, 5_000.0, uphill * 0.4), Is.EqualTo(0.0));
+        Assert.That(Relief.Detail(p, 20_000.0, uphill * 0.4), Is.EqualTo(0.0));
 
     }
 

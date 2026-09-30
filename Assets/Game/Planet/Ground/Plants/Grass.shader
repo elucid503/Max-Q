@@ -14,7 +14,7 @@ Shader "MaxQ/Grass" {
         #include "../Biome.hlsl"
 
         // As PatchStrewJob writes them: position (km from the patch origin) and rank; aridity, warmth and a random
-        // number; height as a share of full.
+        // number; height as a share of full, and the forest's share of the ground.
         struct Plant {
 
             float4 position;
@@ -42,6 +42,7 @@ Shader "MaxQ/Grass" {
             float3 normalWS : TEXCOORD1;
             float3 colour : TEXCOORD2;
             float along : TEXCOORD3;
+            float forest : TEXCOORD4;
 
         };
 
@@ -114,6 +115,7 @@ Shader "MaxQ/Grass" {
             output.colour = BladeColour(plant.climate.x, plant.climate.y) * lerp(0.75, 1.2, Hash(seed, blade + 173u)) *
                 lerp(float3(1.0, 1.0, 1.0), float3(1.25, 1.1, 0.6), t * t * plant.climate.z);
             output.along = t;
+            output.forest = plant.shape.y;
 
             return output;
 
@@ -143,6 +145,9 @@ Shader "MaxQ/Grass" {
                 n = dot(n, toCamera) < 0.0 ? -n : n;
 
                 Sunlight light = SunlightAt(input.positionWS);
+
+                // Every tuft stands well within the trees' own shadows.
+                UnderCanopy(light, input.forest, input.colour, 0.0);
 
                 // The tuft hides the sky from the roots; the sun shows through a blade lit from behind.
                 float occlusion = lerp(0.55, 1.0, input.along);

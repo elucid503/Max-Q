@@ -14,8 +14,8 @@ struct Sunlight {
 };
 
 // Sun and skylight arriving at a point on the ground, both already dimmed and coloured by the air above it; direct is
-// before the ground's own shadows, which shadow carries.
-Sunlight SunlightAt(float3 positionWS) {
+// before the ground's own shadows, which shadow carries, the clouds' filtered over footprint (km, the pixel's width).
+Sunlight SunlightAt(float3 positionWS, float footprint = 0.0) {
 
     float3 fromCentre = positionWS - _PlanetCentre;
     float r = max(length(fromCentre), _PlanetRadius + 1e-3);
@@ -23,10 +23,27 @@ Sunlight SunlightAt(float3 positionWS) {
     Sunlight light;
     light.up = fromCentre / length(fromCentre);
     light.direct = _SunIlluminance * SunTransmittance(light.up * r, _SunDirection) * FogSunTransmittance(fromCentre, _SunDirection);
-    light.shadow = SunShadow(positionWS);
+    light.shadow = SunShadow(positionWS, footprint);
     light.sky = _SunIlluminance * SkyIrradiance(r, dot(light.up, _SunDirection));
 
     return light;
+
+}
+
+// Under a stand of trees only the canopy's gaps show the sky; the rest comes down through and off the leaves, dim and
+// tinted by them. Canopy is the share of the ground under crowns, leaves their colour; where the trees' own shadows no
+// longer reach (distant, 0 to 1), the sun reaches the ground only through the gaps too.
+#define CANOPY_CLOSURE 0.85
+#define CANOPY_GAP 0.2
+#define LEAF_PASSED 0.5
+
+void UnderCanopy(inout Sunlight light, float canopy, float3 leaves, float distant) {
+
+    float closed = canopy * CANOPY_CLOSURE;
+    float3 above = light.direct * saturate(dot(light.up, _SunDirection)) + light.sky;
+
+    light.sky = light.sky * lerp(1.0, CANOPY_GAP, closed) + closed * LEAF_PASSED * leaves * above;
+    light.shadow *= lerp(1.0, CANOPY_GAP, closed * distant);
 
 }
 

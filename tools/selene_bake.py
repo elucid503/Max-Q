@@ -28,6 +28,18 @@ MARE_SMOOTH = 70.0
 MARE_HIGH = 500.0
 MARE_LOW = -1_000.0
 
+# Noise (in share of the cut) that makes the maria's shores wander, at scales (cells) from embayments tens of kilometres
+# across down to a few, weighted so the broad ones lead; and the last blur (cells) that softens the shores. It works only
+# along the shores, so no stray maria sprout in the highlands.
+MARE_WANDER = 0.3
+WANDER_SCALES = ((24.0, 0.6), (8.0, 0.3), (3.0, 0.1))
+MARE_SOFTEN = 7.0
+
+# Cells: smooth lowlands smaller than this are only crater floors, not maria, and highland gaps smaller than this within a
+# mare are flooded craters, whose walls the steepness brightens instead.
+MARE_SMALLEST = 5_000
+HOLE_LARGEST = 2_000
+
 # Slopes (rise over run) over which regolith starts and finishes sliding off.
 STEEP_START = 0.12
 STEEP_FULL = 0.4
@@ -65,10 +77,38 @@ def maria(height):
     # Near the poles a cell spans little ground east to west, so the relief reads smooth; no maria lie there anyway.
     share = smoothstep(MARE_ROUGH, MARE_SMOOTH, rough) * smoothstep(MARE_HIGH, MARE_LOW, low) * smoothstep(72.0, 62.0, np.abs(latitude))[:, None]
 
-    # Blurred then cut again: craters punched through a mare stay mare, and its shores come out smooth.
-    share = smoothstep(0.22, 0.5, wrapped(ndimage.gaussian_filter, share, sigma=7.0))
+    # Blurred then cut again: craters punched through a mare stay mare. Cut through noise, its shores wander into bays and
+    # headlands as lava flooding the lowlands leaves them, instead of the blur's rounded blobs.
+    blurred = wrapped(ndimage.gaussian_filter, share, sigma=7.0)
+    shore = 4.0 * blurred * (1.0 - blurred)
+    mare = smoothstep(0.22, 0.5, blurred + MARE_WANDER * shore * wander(share.shape)) > 0.5
+    mare = without_small(mare, MARE_SMALLEST)
+    mare = ~without_small(~mare, HOLE_LARGEST)
 
-    return wrapped(ndimage.gaussian_filter, share, sigma=1.0)
+    return wrapped(ndimage.gaussian_filter, mare.astype(np.float32), sigma=MARE_SOFTEN)
+
+
+def without_small(mask, cells):
+
+    labels, count = ndimage.label(mask)
+    sizes = np.bincount(labels.ravel(), minlength=count + 1)
+    keep = sizes >= cells
+    keep[0] = False
+
+    return keep[labels]
+
+
+def wander(shape):
+
+    random = np.random.default_rng(11)
+    field = np.zeros(shape, dtype=np.float32)
+
+    for sigma, weight in WANDER_SCALES:
+
+        noise = wrapped(ndimage.gaussian_filter, random.standard_normal(shape).astype(np.float32), sigma=sigma)
+        field += weight * noise / noise.std()
+
+    return field
 
 
 def steepness(height):

@@ -195,8 +195,8 @@ public static class ProjectSetup {
 
         UniversalAdditionalCameraData cameraData = cameraObject.AddComponent<UniversalAdditionalCameraData>();
         cameraData.renderPostProcessing = true;
-        cameraData.antialiasing = AntialiasingMode.SubpixelMorphologicalAntiAliasing;
-        cameraData.antialiasingQuality = AntialiasingQuality.High;
+        // Temporal: distant ridges and crater rims are thinner than a pixel, which only accumulating jittered frames resolves.
+        cameraData.antialiasing = AntialiasingMode.TemporalAntiAliasing;
 
         // Sunlit ground, a daylit sky and the sun's disk span a wide range; neutral tonemapping keeps hues.
         VolumeProfile profile = LoadOrCreate($"{Rendering}/Map Volume.asset", () => ScriptableObject.CreateInstance<VolumeProfile>());
@@ -231,6 +231,7 @@ public static class ProjectSetup {
         view.FindProperty("_waves").objectReferenceValue = AssetDatabase.LoadAssetAtPath<ComputeShader>($"{Water}/Waves/Waves.compute");
         view.FindProperty("_waterCopy").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>($"{Water}/Surface/WaterCopy.shader");
         view.FindProperty("_skyMaterial").objectReferenceValue = sky;
+        view.FindProperty("_cameraMotion").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>("Assets/Game/Map/CameraMotion.shader");
         view.ApplyModifiedPropertiesWithoutUndo();
 
         EditorSceneManager.SaveScene(EditorSceneManager.GetActiveScene(), ScenePath);

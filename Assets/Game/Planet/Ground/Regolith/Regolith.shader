@@ -71,7 +71,7 @@ Shader "MaxQ/Regolith" {
                 float distance = length(input.positionWS - _WorldSpaceCameraPos) * 1000.0;
                 float3 up = normalize(input.positionWS - _SeleneCentre);
                 float2 tone = GroundNoise(metres, TransformWorldToObjectDir(up), footprint);
-                float3 albedo = RegolithAlbedo(cover.r, cover.g, cover.b) * (0.88 + 0.24 * tone.x) * (0.94 + 0.12 * tone.y);
+                float3 albedo = RegolithAlbedo(cover.r, cover.g, cover.b, cover.a) * (0.88 + 0.24 * tone.x) * (0.94 + 0.12 * tone.y);
                 float3 normalWS = detail.normalWS;
                 float macro = 1.0 - smoothstep(MACRO_START, MACRO_END, distance);
 
@@ -99,7 +99,7 @@ Shader "MaxQ/Regolith" {
 
                 float shadow = CascadeShadow(input.positionWS);
 
-                return float4(RegolithRadiance(min(albedo, 0.9), normalWS, input.positionWS, shadow, detail.occlusion), 1.0);
+                return float4(RegolithRadiance(min(albedo, 0.9), normalWS, input.positionWS, shadow, detail.occlusion, UnresolvedRoughness(footprint)), 1.0);
 
             }
 

@@ -19,7 +19,7 @@ public sealed class Vegetation : IDisposable {
     // Metres: grass is drawn within GrassReach, every tuft within GrassDense and a share falling with the square of
     // distance past it; trees in their near detail within TreeNear, their far detail within TreeFar and as pictures past
     // it, each at its own distance jittered by up to Jitter either way, and the near ones cast shadows. Must match
-    // Grass.shader and Tree.shader.
+    // Grass.shader and Tree.shader, and TreeNear TREE_SHADOWS in Ground.shader.
     private const float GrassReach = 50.0f;
     private const float GrassDense = 12.0f;
     private const float TreeNear = 150.0f;

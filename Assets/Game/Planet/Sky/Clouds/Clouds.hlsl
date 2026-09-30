@@ -82,7 +82,7 @@ float3 _CloudDetailOffset;
 
 // An anvil hangs from the tropopause as one sheet, reaching down a share of its depth that the storm noise varies and
 // that thins to nothing at its edge, softened over its underside and its top.
-#define ANVIL_SHEET_LEAST 0.45
+#define ANVIL_SHEET_LEAST 0.6
 #define ANVIL_SHEET_MOST 1.15
 #define ANVIL_UNDERSIDE 0.2
 #define ANVIL_SKIN 0.05
@@ -100,7 +100,7 @@ static const float3x3 CLOUD_TURN = float3x3(0.8, 0.36, 0.48, 0.0, 0.8, -0.6, -0.
 #define CLOUD_LEAN float3(0.23, 0.0, 0.14)
 
 #define CLOUD_EXTINCTION 40.0
-#define ANVIL_EXTINCTION 6.0
+#define ANVIL_EXTINCTION 18.0
 
 // Light scattered many times diffuses through a cloud, fading with the depth toward the sun as a slab's diffuse
 // transmission does, 1 / (1 + 0.75 (1 - g) depth), rather than exponentially. Its radiance per unit extinction and sun
@@ -119,6 +119,11 @@ static const float3x3 CLOUD_TURN = float3x3(0.8, 0.36, 0.48, 0.0, 0.8, -0.6, -0.
 #define CLOUD_FINE_STEP 0.1
 #define CLOUD_THIN_STEP 0.3
 #define CLOUD_REFINES 3
+
+// View steps (km) past which the detail changes from sample to sample, printing as grain across thin cloud; by the end
+// the edges erode by the detail's expectation alone.
+#define CLOUD_STEP_DETAIL_START 0.1
+#define CLOUD_STEP_DETAIL_END 0.3
 #define CLOUD_LIGHT_STEP 0.08
 #define CLOUD_SHADE_REREAD 1.5
 #define CLOUD_GROUND_ALBEDO 0.25
@@ -294,7 +299,7 @@ CloudColumn ColumnAt(float3 p, float footprint) {
     column.top = max(weather.b * CLOUD_TOP, column.bottom + 0.1);
     column.anvil = saturate(weather.a * bulge);
     column.anvilTop = Tropopause(sinLatitude);
-    column.anvilDepth = 0.5 + 2.5 * weather.a;
+    column.anvilDepth = 1.0 + 3.0 * weather.a;
     column.anvilBottom = column.anvilTop - column.anvilDepth * ANVIL_SHEET_MOST * column.anvil;
 
     // Deep columns are storm towers; shallow ones under full cover spread into decks.
@@ -431,8 +436,9 @@ float Eroded(float density, float detail, float resolved) {
 
 }
 
-// Cloud at the column's point, the noise blurred to a footprint (km); detail 0 erodes the edges by the detail's expectation alone.
-CloudPoint CloudIn(CloudColumn column, float footprint, float detail) {
+// Cloud at the column's point, the noise blurred to a footprint (km), the sample standing for span (km) along the ray;
+// detail 0 erodes the edges by the detail's expectation alone.
+CloudPoint CloudIn(CloudColumn column, float footprint, float detail, float span) {
 
     CloudPoint cloud;
     cloud.extinction = 0.0;
@@ -460,7 +466,9 @@ CloudPoint CloudIn(CloudColumn column, float footprint, float detail) {
     }
 
     // Wisps along the base, billows above; the anvil's ice frays into fibres.
-    float resolved = detail * saturate((0.5 * CLOUD_DETAIL_SIZE - footprint) / (0.4 * CLOUD_DETAIL_SIZE));
+    // Blurring the detail instead would erode by its mean, cutting thin cloud outright.
+    float stepped = 1.0 - smoothstep(CLOUD_STEP_DETAIL_START, CLOUD_STEP_DETAIL_END, span);
+    float resolved = detail * stepped * saturate((0.5 * CLOUD_DETAIL_SIZE - footprint) / (0.4 * CLOUD_DETAIL_SIZE));
     float fine = resolved > 0.0 ? DetailNoise(column.q, footprint) : 0.5;
     float towerExtinction = SoftEdge(Eroded(tower, lerp(fine, 1.0 - fine, saturate(4.0 * h)), resolved)) * CLOUD_EXTINCTION;
     float anvilExtinction = SoftEdge(Eroded(anvil, fine, resolved)) * ANVIL_EXTINCTION;
@@ -544,7 +552,7 @@ float CloudSunDepth(CloudColumn column, float3 p, float footprint, float detail,
 
             float span = t - from;
 
-            depth += CloudIn(Moved(column, p + _SunDirection * (from + (0.25 + 0.5 * jitter) * span)), max(footprint, 0.25 * span), i < 2 ? detail : 0.0).extinction * span;
+            depth += CloudIn(Moved(column, p + _SunDirection * (from + (0.25 + 0.5 * jitter) * span)), max(footprint, 0.25 * span), i < 2 ? detail : 0.0, 0.0).extinction * span;
             from = t;
 
         }
@@ -621,6 +629,17 @@ float CloudHash(uint2 texel, uint frame) {
     v.x += v.y * v.z;
 
     return (v.x & 0xFFFFFFu) / 16777216.0;
+
+}
+
+// A sample's place within its step: interleaved gradient noise (Jimenez 2014) spreads neighbouring texels evenly over the
+// step, and the golden ratio walks each through it frame by frame, so the history settles in a few frames instead of the
+// many white noise needs, and no grain is left to shimmer.
+float CloudJitter(uint2 texel, uint frame) {
+
+    float spatial = frac(52.9829189 * frac(dot(float2(texel), float2(0.06711056, 0.00583715))));
+
+    return frac(spatial + 0.61803399 * frame);
 
 }
 
@@ -711,7 +730,7 @@ CloudTrace TraceClouds(float3 origin, float3 direction, float tMax, float jitter
 
         column = Moved(column, p);
 
-        CloudPoint cloud = CloudIn(column, footprint, erode);
+        CloudPoint cloud = CloudIn(column, footprint, erode, stride);
 
         t += stride;
 
@@ -796,7 +815,7 @@ float2 CloudShade(float3 origin, float footprint, float jitter, int steps) {
 
         }
 
-        CloudPoint cloud = CloudIn(column, footprint, 0.0);
+        CloudPoint cloud = CloudIn(column, footprint, 0.0, 0.0);
 
         if (cloud.extinction <= 0.0) {
 

@@ -46,17 +46,50 @@ Shader "Hidden/MaxQ/Clouds" {
             #pragma vertex Vert
             #pragma fragment Frag
 
+            // Clouds seen from far off (a pixel spanning this many km where the ray meets their shell) are far finer than
+            // the block, so one ray is a coin toss between cloud and none: the block is traced through CLOUD_SUPERSAMPLE of
+            // its pixels, spread across it, and the ray stands for their mean. Only a far planet's few blocks pay for it.
+            #define CLOUD_SUPERSAMPLE_FOOTPRINT 2.0
+            #define CLOUD_SUPERSAMPLE 4
+
             Output Frag(Varyings input) {
 
                 int2 texel = int2(input.positionCS.xy);
-                int2 pixel = min(texel * 4 + int2(_CloudJitter.xy), int2(_SceneSize.xy) - 1);
+                int2 last = int2(_SceneSize.xy) - 1;
+                int2 pixel = min(texel * 4 + int2(_CloudJitter.xy), last);
+                float3 origin = _WorldSpaceCameraPos - _PlanetCentre;
                 ViewRay ray = ViewRayThrough((pixel + 0.5) * _SceneSize.zw, LOAD_TEXTURE2D_X(_SceneDepth, pixel).r);
-                float jitter = CloudHash(uint2(texel), uint(_CloudJitter.z));
-                CloudTrace clouds = TraceClouds(_WorldSpaceCameraPos - _PlanetCentre, ray.direction, ray.reach, jitter, _CloudPixelAngle, 96, 4, true);
+                float jitter = CloudJitter(uint2(texel), uint(_CloudJitter.z));
+                float shell = max(RaySphere(origin, ray.direction, _PlanetRadius + CLOUD_TOP).x, 0.0);
+                int rays = shell * _CloudPixelAngle > CLOUD_SUPERSAMPLE_FOOTPRINT ? CLOUD_SUPERSAMPLE : 1;
+                float3 radiance = 0.0;
+                float transmittance = 0.0;
+                float depth = 0.0;
+
+                for (int i = 0; i < rays; i++) {
+
+                    // The other pixels of the block's 2x2 lattice this frame; the jitter walks the lattice over the rounds.
+                    int2 at = i == 0 ? pixel : min(texel * 4 + ((int2(_CloudJitter.xy) + 2 * int2(i & 1, i >> 1)) & 3), last);
+                    ViewRay through = ray;
+
+                    if (i > 0) {
+
+                        through = ViewRayThrough((at + 0.5) * _SceneSize.zw, LOAD_TEXTURE2D_X(_SceneDepth, at).r);
+
+                    }
+
+                    CloudTrace clouds = TraceClouds(origin, through.direction, through.reach, i == 0 ? jitter : CloudJitter(uint2(texel) * 2u + uint2(i & 1, i >> 1),
+                        uint(_CloudJitter.z)), _CloudPixelAngle, 96, 4, true);
+
+                    radiance += clouds.radiance;
+                    transmittance += clouds.transmittance;
+                    depth += clouds.depth;
+
+                }
 
                 Output output;
-                output.light = float4(clouds.radiance, clouds.transmittance);
-                output.depth = float2(clouds.depth, ray.distance);
+                output.light = float4(radiance, transmittance) / rays;
+                output.depth = float2(depth / rays, ray.distance);
 
                 return output;
 
@@ -79,6 +112,12 @@ Shader "Hidden/MaxQ/Clouds" {
             // only the traced quarter updated, noisy light would print as a lattice of every other pixel.
             #define CLOUD_BLEND 0.15
             #define CLOUD_SPREAD 0.03
+
+            // Clouds seen from orbit are far finer than a pixel, so each ray sees cloud or none; the history averages them
+            // over this many times as many frames once a pixel spans CLOUD_FAR_FOOTPRINT (km), and flickers far less.
+            #define CLOUD_FAR_HOLD 3.0
+            #define CLOUD_NEAR_FOOTPRINT 2.0
+            #define CLOUD_FAR_FOOTPRINT 30.0
 
             // Half-resolution pixels the view slides in a frame before its history is clamped, and fully; likewise the share
             // by which the history's cloud distance strays from this frame's.
@@ -232,7 +271,8 @@ Shader "Hidden/MaxQ/Clouds" {
                 bool valid = through && _CloudHistoryValid > 0.0 && clip.w > 0.0 && all(previous >= 0.0) && all(previous <= 1.0) &&
                     abs(historyDepth.y - ray.distance) < 0.1 * ray.distance + 0.05;
                 float4 spread = 0.25 * (highest - lowest);
-                float blend = valid ? (fresh ? CLOUD_BLEND : CLOUD_SPREAD) * saturate(confidence) : 1.0;
+                float hold = lerp(1.0, CLOUD_FAR_HOLD, smoothstep(CLOUD_NEAR_FOOTPRINT, CLOUD_FAR_FOOTPRINT, cloudDepth * _CloudPixelAngle));
+                float blend = valid ? (fresh ? CLOUD_BLEND : CLOUD_SPREAD) * saturate(confidence) / hold : 1.0;
 
                 // The box comes from one ray per 4x4 block, which misses clouds smaller than that on most frames; clamped
                 // every frame they would blink out. History is clamped only where it may be stale: as far as the view has
