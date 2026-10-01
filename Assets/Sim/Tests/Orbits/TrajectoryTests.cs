@@ -4,7 +4,9 @@ using System.Collections.Generic;
 using MaxQ.Sim.Bodies;
 using MaxQ.Sim.Numerics;
 using MaxQ.Sim.Orbits;
+using MaxQ.Sim.Tests.Vessels;
 using MaxQ.Sim.Vessels;
+using MaxQ.Sim.Vessels.Parts;
 
 using NUnit.Framework;
 
@@ -116,12 +118,12 @@ public sealed class TrajectoryTests {
 
         (Orbit orbit, double departure) = Transfer(500_000.0, 3_000_000.0);
 
-        Vessel vessel = new Vessel("Probe", _terra, orbit, departure);
+        Vessel vessel = new Vessel("Probe", new Part[] { ReferenceCraft.Capsule() }, _terra, orbit, departure, QuaternionD.Identity);
 
         vessel.Advance(499_000.0);
 
         Assert.That(vessel.Body, Is.SameAs(_selene));
-        Assert.That(Vector3d.Distance(vessel.PositionAt(499_000.0), _selene.PositionAt(499_000.0)), Is.LessThan(_selene.SoiRadius));
+        Assert.That(Vector3d.Distance(vessel.RootPosition, _selene.PositionAt(499_000.0)), Is.LessThan(_selene.SoiRadius));
 
     }
 
