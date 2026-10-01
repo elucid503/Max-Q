@@ -13,7 +13,9 @@ patched conics, 1/5 Earth scale. Personal project, never distributed. Successor 
     survey with 5' water levels, plus procedural relief and cliff strata; the coast is wherever the ground crosses the
     level; Selene's is LOLA's heights with procedural craters down to about a metre (`Craters.cs`) and baked maria; Burst-compatible,
     so the renderer and physics share it), `Ocean/` the procedural sea state (climatological
-    wind belts, swell, ice) and the directional wave spectrum, `Vessels/` vessels, `Compatibility/` polyfills.
+    wind belts, swell, ice) and the directional wave spectrum, `Vessels/` vessels (a rigid stack coasting exactly on its
+    conic, integrated under power; `Motion/` mass properties and the rigid body, `Parts/` tanks, skirts, rings, capsule,
+    `Propulsion/` engine, RCS ring and its mixer), `Compatibility/` polyfills.
   - `Tests/` - assembly `MaxQ.Sim.Tests`, EditMode tests mirroring the sim folders.
 - `Assets/Game/` - assembly `MaxQ.Game`. Rendering, input, UI. No physics.
   - `Map/` the scene and its free camera (Tab flies it between Terra and Selene), `Planet/`
@@ -30,6 +32,9 @@ patched conics, 1/5 Earth scale. Personal project, never distributed. Successor 
     lakes, owned by `WaterView`: `Waves/` FFT cascades on a body-fixed wave frame, `Surface/` the water pass and sheet
     shader (sky and screen-space reflections, refraction, Jerlov water column, foam, a soft waterline, shelter from the
     shore distance)),
+    `Vessels/` drawing and flying the vessel: `Craft/` the part catalogue and craft files (JSON) parsed into sim parts,
+    `Hull/` the procedural part meshes, `Plume/` the layered exhaust plumes and RCS jets (Waterfall-style, defined in the
+    catalogue), `Flight/` the pilot's keys and the chase camera, `VesselLight` eclipse, earthshine and reflections on its URP Lit;
     `Diagnostics/` capture tooling (`-only <text>[,<text>...]` filters shots), `Editor/` setup, build, tile and foliage atlas baking,
     `Scenes/`, `Settings/` (pipeline, materials, UI panel), `Art/`.
 - Colour space is Linear; lighting is in physical units with auto-exposure, so never tune colours by eye in gamma.

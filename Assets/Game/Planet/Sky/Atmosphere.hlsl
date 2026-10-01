@@ -262,11 +262,20 @@ float CloudShadow(float3 positionWS, float lod = 0.0, float2 span = float2(0.0, 
 
 }
 
+// Occluders standing further than this (km) above what they would shade are orbiting vessels: smaller than the sun's
+// disc seen from the ground, their umbra ends long before it, so they shade nothing there.
+#define SHADOW_OCCLUDER_REACH 20.0
+
 // Sun visibility past the cascades, where they reach.
 float CascadeShadow(float3 positionWS) {
 
     #if defined(_MAIN_LIGHT_SHADOWS_CASCADE)
-    return lerp(MainLightRealtimeShadow(TransformWorldToShadowCoord(positionWS)), 1.0, GetMainLightShadowFade(positionWS));
+    float4 coord = TransformWorldToShadowCoord(positionWS);
+    float depthPerKm = abs(dot(_MainLightWorldToShadow[ComputeCascadeIndex(positionWS)][2].xyz, _SunDirection));
+    float occluder = SAMPLE_TEXTURE2D_LOD(_MainLightShadowmapTexture, sampler_PointClamp, coord.xy, 0).r;
+    float shadow = abs(coord.z - occluder) > SHADOW_OCCLUDER_REACH * depthPerKm ? 1.0 : MainLightRealtimeShadow(coord);
+
+    return lerp(shadow, 1.0, GetMainLightShadowFade(positionWS));
     #else
     return 1.0;
     #endif

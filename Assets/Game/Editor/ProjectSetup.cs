@@ -19,6 +19,7 @@ public static class ProjectSetup {
     private const string ScenePath = "Assets/Game/Scenes/Map.unity";
     private const string Sky = "Assets/Game/Planet/Sky";
     private const string Water = "Assets/Game/Planet/Water";
+    private const string Vessels = "Assets/Game/Vessels";
 
     // Slice order of the ground material arrays; GroundMaterials.hlsl names the same slices, Regolith.shader the last.
     private static readonly string[] GroundMaterials = { "grass", "forest", "soil", "sand", "rock", "snow", "regolith" };
@@ -62,6 +63,23 @@ public static class ProjectSetup {
         boulderTemplate.SetTexture("_GroundNormal", groundTemplate.GetTexture("_GroundNormal"));
         Material boulder = SaveMaterial(boulderTemplate, "Boulder");
 
+        (Texture2D detailAlbedo, Texture2D detailNormal) = HullTextures.Bake(Materials);
+        Material[] finishes = {
+
+            SaveMaterial(Hull(new Color(0.8f, 0.8f, 0.78f), 0.0f, 0.45f, detailAlbedo, detailNormal), "Hull Paint"),
+            SaveMaterial(Hull(new Color(0.9f, 0.9f, 0.91f), 1.0f, 0.62f, detailAlbedo, detailNormal), "Hull Metal"),
+            SaveMaterial(Hull(new Color(0.045f, 0.045f, 0.05f), 0.0f, 0.35f, detailAlbedo, detailNormal), "Hull Dark"),
+
+        };
+
+        // PICA-style ablator, charcoal and matte; window panes, near black and glassy.
+        Material shield = SaveMaterial(Hull(new Color(0.055f, 0.048f, 0.042f), 0.0f, 0.12f, detailAlbedo, detailNormal), "Heat Shield");
+        Material glass = SaveMaterial(Hull(new Color(0.02f, 0.022f, 0.026f), 0.0f, 0.95f, null, null), "Window");
+
+        // Every jet layer shares one material, and every engine's exhaust another; their looks come from the catalogue.
+        Material plume = SaveMaterial(new Material(Shader.Find("MaxQ/Plume")), "Plume");
+        Material exhaust = SaveMaterial(new Material(Shader.Find("MaxQ/Exhaust")), "Exhaust");
+
         // Stars dimmed so only the brightest show at daylight exposure.
         Material sky = new Material(Shader.Find("Skybox/Panoramic"));
         sky.SetTexture("_MainTex", AssetDatabase.LoadAssetAtPath<Texture2D>($"{Art}/Sky/stars.png"));
@@ -69,7 +87,7 @@ public static class ProjectSetup {
         sky.SetFloat("_Exposure", 0.05f);
         sky = SaveMaterial(sky, "Sky");
 
-        BuildScene(sky, ground, water, rock, grass, tree, regolith, boulder);
+        BuildScene(sky, ground, water, rock, grass, tree, regolith, boulder, finishes, shield, glass, plume, exhaust);
 
         AssetDatabase.SaveAssets();
         Debug.Log("Max-Q setup complete");
@@ -184,7 +202,8 @@ public static class ProjectSetup {
 
     }
 
-    private static void BuildScene(Material sky, Material ground, Material water, Material rock, Material grass, Material tree, Material regolith, Material boulder) {
+    private static void BuildScene(Material sky, Material ground, Material water, Material rock, Material grass, Material tree, Material regolith, Material boulder,
+        Material[] finishes, Material shield, Material glass, Material plume, Material exhaust) {
 
         EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
@@ -232,10 +251,65 @@ public static class ProjectSetup {
         view.FindProperty("_waterCopy").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>($"{Water}/Surface/WaterCopy.shader");
         view.FindProperty("_skyMaterial").objectReferenceValue = sky;
         view.FindProperty("_cameraMotion").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>("Assets/Game/Map/CameraMotion.shader");
+
+        SerializedProperty art = view.FindProperty("_vesselArt");
+        art.FindPropertyRelative("Catalogue").objectReferenceValue = AssetDatabase.LoadAssetAtPath<TextAsset>($"{Vessels}/Craft/Catalogue.json");
+        art.FindPropertyRelative("Craft").objectReferenceValue = AssetDatabase.LoadAssetAtPath<TextAsset>($"{Vessels}/Craft/Stack.json");
+        art.FindPropertyRelative("Shield").objectReferenceValue = shield;
+        art.FindPropertyRelative("Glass").objectReferenceValue = glass;
+        art.FindPropertyRelative("Plume").objectReferenceValue = plume;
+        art.FindPropertyRelative("Exhaust").objectReferenceValue = exhaust;
+        Fill(art.FindPropertyRelative("Finishes"), finishes);
+        Fill(art.FindPropertyRelative("Models"), VesselModels());
+
         view.ApplyModifiedPropertiesWithoutUndo();
 
         EditorSceneManager.SaveScene(EditorSceneManager.GetActiveScene(), ScenePath);
         EditorBuildSettings.scenes = new[] { new EditorBuildSettingsScene(ScenePath, true) };
+
+    }
+
+    // URP's Lit, white-based, with the hull's tiling detail on a 2 m square.
+    private static Material Hull(Color colour, float metallic, float smoothness, Texture2D detailAlbedo, Texture2D detailNormal) {
+
+        Material material = new Material(Shader.Find("Universal Render Pipeline/Lit"));
+
+        material.SetColor("_BaseColor", colour);
+        material.SetFloat("_Metallic", metallic);
+        material.SetFloat("_Smoothness", smoothness);
+        material.SetTexture("_DetailAlbedoMap", detailAlbedo);
+        material.SetTexture("_DetailNormalMap", detailNormal);
+        material.SetFloat("_DetailAlbedoMapScale", 1.0f);
+        material.SetFloat("_DetailNormalMapScale", 1.0f);
+        material.SetTextureScale("_DetailAlbedoMap", new Vector2(0.5f, 0.5f));
+        if (detailAlbedo != null) {
+
+            material.EnableKeyword("_DETAIL_MULX2");
+
+        }
+
+        return material;
+
+    }
+
+    // Every model imported under the vessel art, found by the catalogue by file name.
+    private static Object[] VesselModels() {
+
+        string[] guids = AssetDatabase.FindAssets("t:GameObject", new[] { $"{Art}/Vessel" });
+
+        return System.Array.ConvertAll(guids, guid => (Object)AssetDatabase.LoadAssetAtPath<GameObject>(AssetDatabase.GUIDToAssetPath(guid)));
+
+    }
+
+    private static void Fill(SerializedProperty array, Object[] values) {
+
+        array.arraySize = values.Length;
+
+        for (int i = 0; i < values.Length; i++) {
+
+            array.GetArrayElementAtIndex(i).objectReferenceValue = values[i];
+
+        }
 
     }
 

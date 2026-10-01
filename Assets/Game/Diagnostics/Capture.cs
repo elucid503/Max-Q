@@ -4,6 +4,8 @@ using System.Collections.Generic;
 using System.IO;
 
 using MaxQ.Game.Map;
+using MaxQ.Sim.Numerics;
+using MaxQ.Sim.Vessels;
 
 using UnityEngine;
 
@@ -66,6 +68,34 @@ public sealed class Capture : MonoBehaviour {
         ("terra-far-70000km", 20.0, 0.0, 70_000_000.0, 0.0, -90.0, 15.0),
         ("selene-terra-night-2m", 25.0, 0.0, 2.0, 180.0, 65.0, 2.0),
         ("selene-terra-day-2m", 25.0, 0.0, 2.0, 180.0, 65.0, 9.0),
+
+    };
+
+    // What the pilot does before a vessel shot: nothing, settle the propellant on the RCS and light the engine, pulse the
+    // RCS, or stage and back the capsule away.
+    private enum Act {
+
+        Coast,
+        Burn,
+        Pulse,
+        Separate,
+
+    }
+
+    // Vessels 150 km up: where over Terra and which way they travel (degrees), the local solar time (hours), where the chase
+    // camera sits (degrees round from the motion and down, metres off), and what the pilot does first.
+    private static readonly (string Name, double Latitude, double Longitude, double Azimuth, double SolarHour, double Heading, double Pitch, double Distance, Act Act)[]
+        VesselShots = {
+
+        ("vessel-coast-45m", 31.0, 24.0, 55.0, 10.5, 200.0, 12.0, 45.0, Act.Coast),
+        ("vessel-above-70m", 31.0, 24.0, 55.0, 10.5, 120.0, 55.0, 70.0, Act.Coast),
+        ("vessel-burn-60m", 31.0, 24.0, 55.0, 10.5, 95.0, 8.0, 60.0, Act.Burn),
+        ("vessel-burn-bell-40m", 31.0, 24.0, 55.0, 10.5, 20.0, 12.0, 40.0, Act.Burn),
+        ("vessel-burn-sunward-80m", 10.0, -30.0, 90.0, 16.5, 180.0, 5.0, 80.0, Act.Burn),
+        ("vessel-night-burn-60m", 0.0, 60.0, 90.0, 0.5, 160.0, 10.0, 60.0, Act.Burn),
+        ("vessel-rcs-25m", 31.0, 24.0, 55.0, 10.5, 230.0, 10.0, 25.0, Act.Pulse),
+        ("vessel-separation-40m", 31.0, 24.0, 55.0, 10.5, 110.0, 10.0, 40.0, Act.Separate),
+        ("vessel-terminator-50m", 20.0, 100.0, 90.0, 18.4, 200.0, 10.0, 50.0, Act.Coast),
 
     };
 
@@ -141,8 +171,98 @@ public sealed class Capture : MonoBehaviour {
 
         }
 
+        foreach ((string name, double latitude, double longitude, double azimuth, double solarHour, double heading, double pitch, double distance, Act act) in VesselShots) {
+
+            if (_only != null && !Array.Exists(_only, name.Contains)) {
+
+                continue;
+
+            }
+
+            void Fly() => view.Fly(latitude, longitude, azimuth, solarHour, heading, pitch, distance);
+
+            Fly();
+
+            yield return Settle(view);
+
+            double[] gpu = new double[1];
+
+            yield return MeasureGpu(gpu);
+            _timings.Add($"{name}: frame {gpu[0]:F2} ms GPU; settled in {_settleSeconds:F1} s");
+
+            // From the start again, so the act plays out the same however long the timing took.
+            Fly();
+
+            yield return Perform(view, act);
+
+            ScreenCapture.CaptureScreenshot(Path.Combine(_directory, name + ".png"));
+
+            yield return null;
+            yield return null;
+
+            view.ScriptedControls = null;
+
+        }
+
         File.WriteAllLines(Path.Combine(_directory, "timings.txt"), _timings);
         Application.Quit();
+
+    }
+
+    private static IEnumerator Perform(MapView view, Act act) {
+
+        switch (act) {
+
+            case Act.Burn:
+
+                view.ScriptedControls = new Controls(0.0, Vector3d.Zero, Vector3d.UnitZ);
+
+                yield return Wait(4.0f);
+
+                view.ScriptedControls = new Controls(1.0, Vector3d.Zero, Vector3d.Zero);
+
+                yield return Wait(3.0f);
+
+                break;
+
+            case Act.Pulse:
+
+                view.ScriptedControls = new Controls(0.0, new Vector3d(1.0, 0.0, 0.6), new Vector3d(0.4, 0.0, 0.0));
+
+                yield return Wait(1.0f);
+
+                break;
+
+            case Act.Separate:
+
+                yield return Wait(0.5f);
+
+                view.Stage();
+                view.ScriptedControls = new Controls(0.0, Vector3d.Zero, Vector3d.UnitZ);
+
+                yield return Wait(2.5f);
+
+                break;
+
+            default:
+
+                yield return Wait(0.5f);
+
+                break;
+
+        }
+
+    }
+
+    private static IEnumerator Wait(float seconds) {
+
+        float end = Time.realtimeSinceStartup + seconds;
+
+        while (Time.realtimeSinceStartup < end) {
+
+            yield return null;
+
+        }
 
     }
 

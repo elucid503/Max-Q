@@ -28,7 +28,9 @@ public sealed class Engine : Part {
     // Chamber fraction below which a stopping engine counts as out.
     private const double Extinguished = 0.005;
 
-    private bool _armed = true;
+    /// <summary>After a failed start, the engine tries again this long later while the throttle stays open.</summary>
+    public const double RetrySeconds = 1.0;
+
     private double _phaseSeconds;
 
     /// <summary>Vacuum thrust at full throttle, N.</summary>
@@ -71,7 +73,7 @@ public sealed class Engine : Part {
     /// <summary>Deflection as tangents of the nozzle's lean towards body X and Y.</summary>
     public Vector3d Deflection { get; private set; }
 
-    /// <summary>The last start died for want of settled propellant; cleared by the next attempt.</summary>
+    /// <summary>The last start died for want of settled propellant; cleared once one lights.</summary>
     public bool StartFailed { get; private set; }
 
     /// <summary>The engine ran its tanks dry.</summary>
@@ -91,22 +93,14 @@ public sealed class Engine : Part {
 
         _phaseSeconds += dt;
 
-        if (throttle <= 0.0) {
-
-            _armed = true;
-
-        }
-
         switch (Phase) {
 
             case EnginePhase.Off:
 
-                if (_armed && throttle > 0.0 && fed) {
+                if (throttle > 0.0 && fed && (!StartFailed || _phaseSeconds >= RetrySeconds)) {
 
                     Enter(EnginePhase.Starting);
-                    StartFailed = false;
                     Flameout = false;
-                    _armed = false;
 
                 }
 
@@ -127,6 +121,7 @@ public sealed class Engine : Part {
 
                     } else {
 
+                        StartFailed = false;
                         Enter(EnginePhase.Running);
 
                     }

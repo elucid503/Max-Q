@@ -22,6 +22,7 @@ public sealed class CameraMotion : IDisposable {
     private static readonly int CentreId = Shader.PropertyToID("_MotionCentre");
     private static readonly int ShiftId = Shader.PropertyToID("_MotionShift");
     private static readonly int TurnId = Shader.PropertyToID("_MotionTurn");
+    private static readonly int KeepId = Shader.PropertyToID("_MotionKeep");
 
     private readonly Material _material;
     private readonly Pass _pass;
@@ -29,6 +30,7 @@ public sealed class CameraMotion : IDisposable {
     // The body's centre from the scene's origin (sim axes, metres) and its rotation, this frame and when last drawn.
     private Vector3d _offset;
     private double _rotation;
+    private double _keep;
     private Vector3d _previousOffset;
     private double _previousRotation;
     private Matrix4x4 _previousViewProjection;
@@ -94,11 +96,14 @@ public sealed class CameraMotion : IDisposable {
 
     }
 
-    /// <summary>The camera is over <paramref name="body"/> at sim <paramref name="time"/>; call after the origin moves.</summary>
-    public void Update(CelestialBody body, double time) {
+    /// <summary>The camera is over <paramref name="body"/> at sim <paramref name="time"/>; call after the origin moves.
+    /// Pixels nearer than <paramref name="keep"/> metres are a vessel riding with the camera, whose own motion URP has
+    /// already drawn.</summary>
+    public void Update(CelestialBody body, double time, double keep = 0.0) {
 
         _offset = body.PositionAt(time) - MapSpace.Origin;
         _rotation = body.RotationAt(time);
+        _keep = keep;
 
     }
 
@@ -134,6 +139,7 @@ public sealed class CameraMotion : IDisposable {
         _material.SetVector(CentreId, MapSpace.Direction(_offset / MapSpace.MetresPerUnit));
         _material.SetVector(ShiftId, MapSpace.Direction((_previousOffset - _offset) / MapSpace.MetresPerUnit));
         _material.SetMatrix(TurnId, turned);
+        _material.SetFloat(KeepId, (float)(_keep / MapSpace.MetresPerUnit));
 
         _previousOffset = _offset;
         _previousRotation = _rotation;

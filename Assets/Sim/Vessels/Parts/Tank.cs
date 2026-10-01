@@ -5,8 +5,9 @@ using MaxQ.Sim.Vessels.Motion;
 namespace MaxQ.Sim.Vessels.Parts;
 
 /// <summary>A procedural bipropellant tank: a barrel closed by ellipsoidal domes, oxidiser below a common bulkhead and fuel
-/// above. The bulkhead sits wherever both run dry together. The bottom node is the aft dome's apex, where an engine
-/// mounts; the top node is the barrel's top, so the forward dome stands up inside whatever stacks above.</summary>
+/// above. The bulkhead sits wherever both run dry together. The bottom node is the aft dome's apex (or the flat aft
+/// bulkhead), where an engine mounts; the top node is the barrel's top, so the forward dome stands up inside whatever
+/// stacks above.</summary>
 public sealed class Tank : Part {
 
     // Acceleration below which the liquid is taken as floating free, and how fast it then drifts off the outlets.
@@ -25,6 +26,9 @@ public sealed class Tank : Part {
     /// <summary>Depth over radius of every dome: aft, forward and the common bulkhead.</summary>
     public double DomeRatio { get; init; }
 
+    /// <summary>Whether the aft end is a flat bulkhead rather than a dome.</summary>
+    public bool FlatBottom { get; init; }
+
     /// <summary>Oxidiser over fuel by mass.</summary>
     public double MixtureRatio { get; init; }
 
@@ -36,10 +40,13 @@ public sealed class Tank : Part {
 
     public double DomeDepth => DomeRatio * Radius;
 
-    public override double Height => DomeDepth + BarrelLength;
+    /// <summary>Depth of the aft dome: nothing when the bottom is flat.</summary>
+    public double AftDomeDepth => FlatBottom ? 0.0 : DomeDepth;
+
+    public override double Height => AftDomeDepth + BarrelLength;
 
     /// <summary>Height of the common bulkhead's rim above the bottom node.</summary>
-    public double BulkheadHeight => DomeDepth + OxidiserVolume / CrossSection;
+    public double BulkheadHeight => AftDomeDepth + (OxidiserVolume - AftDomeVolume + DomeVolume) / CrossSection;
 
     public double OxidiserCapacity => OxidiserVolume * OxidiserDensity;
     public double FuelCapacity => FuelVolume * FuelDensity;
@@ -61,13 +68,15 @@ public sealed class Tank : Part {
     /// <summary>How fully the propellant lies settled over the outlets, 0 floating free to 1 settled.</summary>
     public double Settled { get; private set; }
 
-    public double DryMass => WallArealDensity * (2.0 * Math.PI * Radius * BarrelLength + 3.0 * DomeArea);
+    public double DryMass => WallArealDensity * (2.0 * Math.PI * Radius * BarrelLength + 2.0 * DomeArea + AftArea);
 
     public double Fill => (Oxidiser + Fuel) / (OxidiserCapacity + FuelCapacity);
 
     private double CrossSection => Math.PI * Radius * Radius;
     private double DomeVolume => 2.0 / 3.0 * CrossSection * DomeDepth;
-    private double TotalVolume => CrossSection * BarrelLength + 2.0 * DomeVolume;
+    private double AftDomeVolume => FlatBottom ? 0.0 : DomeVolume;
+    private double AftArea => FlatBottom ? CrossSection : DomeArea;
+    private double TotalVolume => CrossSection * BarrelLength + DomeVolume + AftDomeVolume;
     private double OxidiserVolume => TotalVolume * OxidiserShare;
     private double FuelVolume => TotalVolume - OxidiserVolume;
 
@@ -94,7 +103,7 @@ public sealed class Tank : Part {
     }
 
     /// <summary>Whether the bulkhead clears the aft dome; a barrel too short for its oxidiser cannot be built.</summary>
-    public bool IsValid => Radius > 0.0 && BarrelLength >= 0.0 && DomeRatio > 0.0 && DomeRatio <= 1.0 && BulkheadHeight - DomeDepth >= DomeDepth
+    public bool IsValid => Radius > 0.0 && BarrelLength >= 0.0 && DomeRatio > 0.0 && DomeRatio <= 1.0 && BulkheadHeight - DomeDepth >= AftDomeDepth
         && BulkheadHeight <= Height;
 
     internal void Draw(double oxidiser, double fuel) {
@@ -128,15 +137,16 @@ public sealed class Tank : Part {
     internal override MassProperties AddTo(MassProperties sum) {
 
         double h = DomeDepth;
+        double aft = AftDomeDepth;
         double top = Height;
         double bulkhead = BulkheadHeight;
         double radius = Radius;
         double wall = WallArealDensity;
         double domeMass = wall * DomeArea;
 
-        sum = sum.AddShell(wall * 2.0 * Math.PI * radius * BarrelLength, Station + h + 0.5 * BarrelLength, radius, BarrelLength);
+        sum = sum.AddShell(wall * 2.0 * Math.PI * radius * BarrelLength, Station + aft + 0.5 * BarrelLength, radius, BarrelLength);
 
-        sum = AddDome(sum, 0.5 * h);
+        sum = FlatBottom ? sum.AddCylinder(wall * CrossSection, Station, radius, 0.0) : AddDome(sum, 0.5 * h);
         sum = AddDome(sum, bulkhead - 0.5 * h);
         sum = AddDome(sum, top + 0.5 * h);
 
@@ -144,7 +154,7 @@ public sealed class Tank : Part {
         // cylinder of the same volume centred where the full compartment is, filled from its aft end.
         double barrel = CrossSection;
         double dome = DomeVolume;
-        double oxidiserCentre = (dome * 0.625 * h + barrel * (bulkhead - h) * 0.5 * (h + bulkhead) - dome * (bulkhead - 0.375 * h)) / OxidiserVolume;
+        double oxidiserCentre = (AftDomeVolume * 0.625 * aft + barrel * (bulkhead - aft) * 0.5 * (aft + bulkhead) - dome * (bulkhead - 0.375 * h)) / OxidiserVolume;
         double fuelCentre = (barrel * (top - bulkhead) * 0.5 * (bulkhead + top) + dome * (bulkhead - 0.375 * h) + dome * (top + 0.375 * h)) / FuelVolume;
 
         sum = AddLiquid(sum, Oxidiser, OxidiserCapacity, OxidiserVolume, oxidiserCentre);

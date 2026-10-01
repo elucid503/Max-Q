@@ -1,0 +1,10 @@
+Vessel art and where it comes from. Credit travels with the files.
+
+merlin_vacuum.glb
+    "Merlin 1D Vacuum" by MartianDays, https://sketchfab.com/3d-models/merlin-1d-vacuum-f20ebb6e857b405cbdc66568d48d2fcb
+    Licensed CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Renamed; otherwise unmodified.
+
+dragon_2.glb
+    "SpaceX - Dragon 2" by KUBAHA, https://sketchfab.com/3d-models/spacex-dragon-2-1b125e30a2cb442288580290536fbe5d
+    Licensed CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Renamed; in game its trunk is hidden and its
+    materials redone.

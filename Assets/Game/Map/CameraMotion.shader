@@ -31,6 +31,9 @@ Shader "Hidden/MaxQ/CameraMotion" {
             float3 _MotionShift;
             float4x4 _MotionTurn;
 
+            // Nearer than this (scene units) is a vessel, whose object motion URP has drawn; left as it is.
+            float _MotionKeep;
+
             float2 ScreenUv(float4 clip) {
 
                 #if UNITY_UV_STARTS_AT_TOP
@@ -45,6 +48,12 @@ Shader "Hidden/MaxQ/CameraMotion" {
 
                 int2 pixel = int2(input.positionCS.xy);
                 ViewRay ray = ViewRayThrough((pixel + 0.5) * _SceneSize.zw, LOAD_TEXTURE2D_X(_SceneDepth, pixel).r);
+
+                if (!ray.sky && ray.distance < _MotionKeep) {
+
+                    discard;
+
+                }
 
                 // The sky stands still in the scene's axes; everything else rides with the body.
                 float4 here = float4(ray.direction, 0.0);

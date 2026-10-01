@@ -44,6 +44,41 @@ public readonly struct QuaternionD {
 
     }
 
+    /// <summary>The rotation taking the unit axes to the given orthonormal, right-handed axes.</summary>
+    public static QuaternionD FromBasis(Vector3d x, Vector3d y, Vector3d z) {
+
+        double trace = x.X + y.Y + z.Z;
+
+        if (trace > 0.0) {
+
+            double s = 0.5 / Math.Sqrt(trace + 1.0);
+
+            return new QuaternionD(0.25 / s, (y.Z - z.Y) * s, (z.X - x.Z) * s, (x.Y - y.X) * s);
+
+        }
+
+        if (x.X > y.Y && x.X > z.Z) {
+
+            double s = 2.0 * Math.Sqrt(1.0 + x.X - y.Y - z.Z);
+
+            return new QuaternionD((y.Z - z.Y) / s, 0.25 * s, (y.X + x.Y) / s, (z.X + x.Z) / s);
+
+        }
+
+        if (y.Y > z.Z) {
+
+            double s = 2.0 * Math.Sqrt(1.0 + y.Y - x.X - z.Z);
+
+            return new QuaternionD((z.X - x.Z) / s, (y.X + x.Y) / s, 0.25 * s, (z.Y + y.Z) / s);
+
+        }
+
+        double t = 2.0 * Math.Sqrt(1.0 + z.Z - x.X - y.Y);
+
+        return new QuaternionD((x.Y - y.X) / t, (z.X + x.Z) / t, (z.Y + y.Z) / t, 0.25 * t);
+
+    }
+
     public static QuaternionD operator *(QuaternionD a, QuaternionD b) => new QuaternionD(
 
         a.W * b.W - a.X * b.X - a.Y * b.Y - a.Z * b.Z,

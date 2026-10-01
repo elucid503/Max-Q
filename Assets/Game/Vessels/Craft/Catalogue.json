@@ -1,0 +1,213 @@
+{
+    "propellants": [
+        {
+            "name": "Kerolox",
+            "mixtureRatio": 2.36,
+            "oxidiserDensity": 1141.0,
+            "fuelDensity": 820.0
+        }
+    ],
+    "engines": [
+        {
+            "name": "Merlin Vacuum",
+            "fit": {
+                "model": "merlin_vacuum",
+                "scale": 0.011457,
+                "offset": [0.0, 0.0, 2.927],
+                "turn": 0.0,
+                "hide": [],
+                "finishes": []
+            },
+            "thrust": 981000.0,
+            "specificImpulse": 348.0,
+            "mixtureRatio": 2.36,
+            "minimumThrottle": 0.39,
+            "ignitionDelaySeconds": 0.5,
+            "spoolUpSeconds": 0.35,
+            "spoolDownSeconds": 0.2,
+            "gimbalRange": 0.0873,
+            "gimbalRate": 0.1745,
+            "mass": 550.0,
+            "length": 5.683,
+            "exitRadius": 1.65,
+            "centreOfMassHeight": 4.4,
+            "mountRadius": 1.05,
+            "mountDrop": 1.9,
+            "exhaust": {
+                "bellDepth": 4.7,
+                "length": 302.0,
+                "fan": 1.1,
+                "core": {
+                    "radius": 0.85,
+                    "width": 0.25,
+                    "brightness": 2.42,
+                    "reach": 28.0,
+                    "startTint": [1.0, 0.82, 0.6],
+                    "endTint": [1.0, 0.6, 0.36]
+                },
+                "expansion": {
+                    "radius": 0.6,
+                    "width": 0.5,
+                    "brightness": 1.1,
+                    "reach": 113.0,
+                    "startTint": [1.0, 0.6, 0.36],
+                    "endTint": [0.6, 0.2, 0.16]
+                },
+                "noise": 0.7,
+                "tilesAcross": 3.0,
+                "tileLength": 7.0,
+                "speed": 22.0
+            },
+            "light": {
+                "height": 1.2,
+                "range": 4.5,
+                "intensity": 3.0,
+                "colour": [1.0, 0.58, 0.28]
+            }
+        }
+    ],
+    "capsules": [
+        {
+            "name": "Dragon",
+            "fit": {
+                "model": "dragon_2",
+                "scale": 10.0,
+                "offset": [0.0, 0.0, -0.46],
+                "turn": 0.0,
+                "hide": ["Object_4", "Object_5", "Object_6", "Object_7"],
+                "finishes": [
+                    { "material": "BIALY.001", "finish": "paint" },
+                    { "material": "czarny", "finish": "dark" },
+                    { "material": "METAL", "finish": "shield" },
+                    { "material": "okno", "finish": "glass" },
+                    { "material": "plastic", "finish": "paint" }
+                ]
+            },
+            "mass": 7700.0,
+            "length": 4.42,
+            "radius": 2.0,
+            "centreOfMassHeight": 1.1,
+            "hydrazine": 400.0,
+            "thrust": 400.0,
+            "specificImpulse": 230.0,
+            "ports": [
+                { "position": [1.1809, 1.5344, 1.87], "direction": [-0.7071, 0.7071, 0.0] },
+                { "position": [1.5344, 1.1809, 1.87], "direction": [0.7071, -0.7071, 0.0] },
+                { "position": [1.3576, 1.3576, 2.12], "direction": [0.0, 0.0, 1.0] },
+                { "position": [1.3576, 1.3576, 1.62], "direction": [0.0, 0.0, -1.0] },
+                { "position": [-1.5344, 1.1809, 1.87], "direction": [-0.7071, -0.7071, 0.0] },
+                { "position": [-1.1809, 1.5344, 1.87], "direction": [0.7071, 0.7071, 0.0] },
+                { "position": [-1.3576, 1.3576, 2.12], "direction": [0.0, 0.0, 1.0] },
+                { "position": [-1.3576, 1.3576, 1.62], "direction": [0.0, 0.0, -1.0] },
+                { "position": [-1.1809, -1.5344, 1.87], "direction": [0.7071, -0.7071, 0.0] },
+                { "position": [-1.5344, -1.1809, 1.87], "direction": [-0.7071, 0.7071, 0.0] },
+                { "position": [-1.3576, -1.3576, 2.12], "direction": [0.0, 0.0, 1.0] },
+                { "position": [-1.3576, -1.3576, 1.62], "direction": [0.0, 0.0, -1.0] },
+                { "position": [1.5344, -1.1809, 1.87], "direction": [0.7071, 0.7071, 0.0] },
+                { "position": [1.1809, -1.5344, 1.87], "direction": [-0.7071, -0.7071, 0.0] },
+                { "position": [1.3576, -1.3576, 2.12], "direction": [0.0, 0.0, 1.0] },
+                { "position": [1.3576, -1.3576, 1.62], "direction": [0.0, 0.0, -1.0] }
+            ],
+            "plume": [
+                {
+                    "name": "jet",
+                    "radius": 0.045,
+                    "length": 2.4,
+                    "spread": 0.3,
+                    "bounded": 0.3,
+                    "falloff": 2.2,
+                    "fadeIn": 0.01,
+                    "brightness": 1.6,
+                    "startTint": [1.0, 0.86, 0.82],
+                    "endTint": [0.85, 0.88, 0.95],
+                    "tintFalloff": 0.7,
+                    "fresnel": 2.5,
+                    "fresnelInvert": 0.0,
+                    "noise": 2.4,
+                    "tilesAround": 5.0,
+                    "tilesAlong": 3.0,
+                    "speed": 7.0
+                },
+                {
+                    "name": "core",
+                    "radius": 0.04,
+                    "length": 0.7,
+                    "spread": 0.08,
+                    "bounded": 0.05,
+                    "falloff": 3.0,
+                    "fadeIn": 0.0,
+                    "brightness": 2.5,
+                    "startTint": [1.0, 0.95, 0.9],
+                    "endTint": [1.0, 0.85, 0.8],
+                    "tintFalloff": 1.0,
+                    "fresnel": 0.4,
+                    "fresnelInvert": 1.0,
+                    "noise": 0.8,
+                    "tilesAround": 3.0,
+                    "tilesAlong": 2.0,
+                    "speed": 9.0
+                }
+            ]
+        }
+    ],
+    "rcsPods": [
+        {
+            "name": "Hydrazine quad",
+            "podMass": 25.0,
+            "thrust": 445.0,
+            "specificImpulse": 225.0,
+            "housingWidth": 0.36,
+            "housingHeight": 0.5,
+            "housingDepth": 0.16,
+            "throatRadius": 0.012,
+            "exitRadius": 0.05,
+            "bellLength": 0.14,
+            "ports": [
+                { "position": [0.08, 0.32, 0.0], "direction": [0.0, 1.0, 0.0] },
+                { "position": [0.08, -0.32, 0.0], "direction": [0.0, -1.0, 0.0] },
+                { "position": [0.08, 0.0, 0.39], "direction": [0.0, 0.0, 1.0] },
+                { "position": [0.08, 0.0, -0.39], "direction": [0.0, 0.0, -1.0] }
+            ],
+            "plume": [
+                {
+                    "name": "jet",
+                    "radius": 0.045,
+                    "length": 2.4,
+                    "spread": 0.3,
+                    "bounded": 0.3,
+                    "falloff": 2.2,
+                    "fadeIn": 0.01,
+                    "brightness": 1.6,
+                    "startTint": [1.0, 0.86, 0.82],
+                    "endTint": [0.85, 0.88, 0.95],
+                    "tintFalloff": 0.7,
+                    "fresnel": 2.5,
+                    "fresnelInvert": 0.0,
+                    "noise": 2.4,
+                    "tilesAround": 5.0,
+                    "tilesAlong": 3.0,
+                    "speed": 7.0
+                },
+                {
+                    "name": "core",
+                    "radius": 0.04,
+                    "length": 0.7,
+                    "spread": 0.08,
+                    "bounded": 0.05,
+                    "falloff": 3.0,
+                    "fadeIn": 0.0,
+                    "brightness": 2.5,
+                    "startTint": [1.0, 0.95, 0.9],
+                    "endTint": [1.0, 0.85, 0.8],
+                    "tintFalloff": 1.0,
+                    "fresnel": 0.4,
+                    "fresnelInvert": 1.0,
+                    "noise": 0.8,
+                    "tilesAround": 3.0,
+                    "tilesAlong": 2.0,
+                    "speed": 9.0
+                }
+            ]
+        }
+    ]
+}

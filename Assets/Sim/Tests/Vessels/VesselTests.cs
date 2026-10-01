@@ -54,7 +54,8 @@ public sealed class VesselTests {
 
         Vessel vessel = Drifting();
 
-        Hold(vessel, 2.0, Full);
+        // Past the ignition delay, short of the retry.
+        Hold(vessel, 1.2, Full);
 
         Engine engine = vessel.Engines[0];
 
@@ -81,17 +82,16 @@ public sealed class VesselTests {
     }
 
     [Test]
-    public void FailedStartWaitsForTheThrottleToBeCut() {
+    public void FailedStartRetriesOnceTheRcsSettlesThePropellant() {
 
         Vessel vessel = Drifting();
 
         Hold(vessel, 2.0, Full);
+
+        Assert.That(vessel.Engines[0].StartFailed, Is.True);
+
+        // Throttle held open while the RCS pushes: a retry lights it as soon as the propellant lies settled.
         Hold(vessel, 5.0, new Controls(1.0, Vector3d.Zero, Vector3d.UnitZ));
-
-        Assert.That(vessel.Engines[0].Phase, Is.EqualTo(EnginePhase.Off));
-
-        Hold(vessel, 0.1, Ullage);
-        Hold(vessel, 3.0, Full);
 
         Assert.That(vessel.Engines[0].Phase, Is.EqualTo(EnginePhase.Running));
 

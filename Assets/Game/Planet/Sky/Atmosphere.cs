@@ -26,6 +26,7 @@ public sealed class Atmosphere : IDisposable {
     private static readonly int FogTopId = Shader.PropertyToID("_FogTop");
     private static readonly int FogDensityId = Shader.PropertyToID("_FogDensity");
     private static readonly int SkyViewId = Shader.PropertyToID("_SkyViewLut");
+    private static readonly int ExposureId = Shader.PropertyToID("_Exposure");
 
     // The composite shader's pass that renders the sky-view table, and the table's size; matches SKY_VIEW_SIZE in Atmosphere.hlsl.
     private const int SkyViewPass = 1;
@@ -91,6 +92,9 @@ public sealed class Atmosphere : IDisposable {
 
         _exposure = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 1, sizeof(float));
         _exposure.SetData(new[] { 1.0f });
+
+        // Transparents draw after the composite and apply the exposure themselves.
+        Shader.SetGlobalBuffer(ExposureId, _exposure);
         _histogram = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 64, sizeof(uint));
         _histogram.SetData(new uint[64]);
 

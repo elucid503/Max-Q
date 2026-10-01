@@ -30,6 +30,23 @@ public sealed class QuaternionDTests {
 
     }
 
+    [TestCase(0.3, -1.1, 0.7)]
+    [TestCase(3.0, 0.1, 0.0)]
+    [TestCase(0.0, 3.1, 0.2)]
+    [TestCase(0.1, 0.0, -3.1)]
+    public void BasisRoundTrips(double x, double y, double z) {
+
+        QuaternionD q = QuaternionD.FromRotationVector(new Vector3d(x, y, z));
+        QuaternionD rebuilt = QuaternionD.FromBasis(q.Rotate(Vector3d.UnitX), q.Rotate(Vector3d.UnitY), q.Rotate(Vector3d.UnitZ));
+
+        foreach (Vector3d axis in new[] { Vector3d.UnitX, Vector3d.UnitY, Vector3d.UnitZ }) {
+
+            Assert.That(Vector3d.Distance(rebuilt.Rotate(axis), q.Rotate(axis)), Is.LessThan(1e-12));
+
+        }
+
+    }
+
     [Test]
     public void InverseRotateUndoesRotate() {
 

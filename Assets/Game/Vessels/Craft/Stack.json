@@ -1,0 +1,11 @@
+{
+    "name": "Max-Q",
+    "parts": [
+        { "part": "engine", "entry": "Merlin Vacuum" },
+        { "part": "tank", "name": "Tank", "propellant": "Kerolox", "radius": 2.0, "barrelLength": 6.1, "domeRatio": 0.7, "flatBottom": true, "wallArealDensity": 14.0 },
+        { "part": "skirt", "name": "Forward skirt", "bottomRadius": 2.0, "topRadius": 2.0, "length": 1.6, "arealDensity": 12.0 },
+        { "part": "rcs", "entry": "Hydrazine quad", "offset": -0.7, "ringRadius": 2.0, "count": 4, "phase": 0.7854, "hydrazine": 120.0 },
+        { "part": "decoupler", "name": "Separation ring", "radius": 2.0, "length": 0.15, "mass": 120.0, "impulse": 2000.0 },
+        { "part": "capsule", "entry": "Dragon" }
+    ]
+}
