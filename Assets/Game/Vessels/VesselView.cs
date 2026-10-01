@@ -25,8 +25,8 @@ public sealed class VesselView : IDisposable {
 
     private readonly GameObject _root;
     private readonly List<Mesh> _meshes = new List<Mesh>();
-    private readonly List<(Engine Engine, Transform Pivot, ExhaustRenderer Exhaust, Light Light, float Intensity)> _engines =
-        new List<(Engine, Transform, ExhaustRenderer, Light, float)>();
+    private readonly List<(Engine Engine, Transform Pivot, ExhaustRenderer Exhaust, NozzleGlow Glow, Light Light, float Intensity)> _engines =
+        new List<(Engine, Transform, ExhaustRenderer, NozzleGlow, Light, float)>();
     private readonly List<(Thruster Thruster, PlumeRenderer Puff)> _puffs = new List<(Thruster, PlumeRenderer)>();
 
     public Vessel Vessel { get; }
@@ -130,10 +130,16 @@ public sealed class VesselView : IDisposable {
 
         _root.transform.SetPositionAndRotation(MapSpace.ToScene(Vessel.Body.PositionAt(Vessel.Time) + Vessel.Datum), new Quaternion((float)-q.X, (float)-q.Z, (float)-q.Y, (float)q.W));
 
-        foreach ((Engine engine, Transform pivot, ExhaustRenderer exhaust, Light light, float intensity) in _engines) {
+        foreach ((Engine engine, Transform pivot, ExhaustRenderer exhaust, NozzleGlow glow, Light light, float intensity) in _engines) {
 
             pivot.localRotation = Quaternion.FromToRotation(Vector3.up, ToScene(engine.Direction));
             exhaust.Strength = (float)engine.Chamber;
+
+            if (glow != null) {
+
+                glow.Temperature = (float)engine.NozzleTemperature;
+
+            }
 
             if (light != null) {
 
@@ -175,7 +181,14 @@ public sealed class VesselView : IDisposable {
         pivot.SetParent(holder, false);
         pivot.localPosition = new Vector3(0.0f, length, 0.0f);
 
-        AddModel(entry.fit, pivot, new Vector3(0.0f, -length, 0.0f), art);
+        GameObject model = AddModel(entry.fit, pivot, new Vector3(0.0f, -length, 0.0f), art);
+        NozzleGlow glow = entry.extension == null ? null : new NozzleGlow(art.NozzleGlow, pivot, model, engine.Length, entry.extension);
+
+        if (glow != null) {
+
+            _meshes.Add(glow.Mesh);
+
+        }
 
         ExhaustRenderer exhaust = new ExhaustRenderer(art.Exhaust, pivot, entry);
 
@@ -185,27 +198,28 @@ public sealed class VesselView : IDisposable {
         Light light = null;
         float intensity = 0.0f;
 
-        // The exhaust lights its own bell from inside. URP's inverse square runs in scene units (km): a strength given at
-        // a metre is a millionth of that at a kilometre.
-        if (entry.light is { } glow) {
+        // The exhaust lights its own bell from inside, its walls about an exit radius off. URP's inverse square runs in
+        // scene units (km): a strength given at a metre is a millionth of that at a kilometre.
+        if (entry.light is { } inside) {
 
             light = new GameObject("Exhaust Light").AddComponent<Light>();
             light.transform.SetParent(pivot, false);
-            light.transform.localPosition = new Vector3(0.0f, (float)(glow.height - engine.Length), 0.0f);
+            light.transform.localPosition = new Vector3(0.0f, (float)(inside.height - engine.Length), 0.0f);
             light.type = LightType.Point;
-            light.range = (float)(glow.range / MapSpace.MetresPerUnit);
-            light.color = glow.colour is { Length: 3 } ? new Color((float)glow.colour[0], (float)glow.colour[1], (float)glow.colour[2]) : Color.white;
+            light.range = (float)(Math.Max(inside.range, VesselLight.NearbyRange) / MapSpace.MetresPerUnit);
+            // A light's colour is sRGB; the catalogue's is linear.
+            light.color = inside.colour is { Length: 3 } ? new Color((float)inside.colour[0], (float)inside.colour[1], (float)inside.colour[2]).gamma : Color.white;
             light.shadows = LightShadows.None;
             light.enabled = false;
-            intensity = (float)(glow.intensity / (MapSpace.MetresPerUnit * MapSpace.MetresPerUnit));
+            intensity = VesselLight.Nearby(engine.ExitRadius) * (float)(inside.intensity / (MapSpace.MetresPerUnit * MapSpace.MetresPerUnit));
 
         }
 
-        _engines.Add((engine, pivot, exhaust, light, intensity));
+        _engines.Add((engine, pivot, exhaust, glow, light, intensity));
 
     }
 
-    private static void AddModel(ModelFit fit, Transform parent, Vector3 origin, VesselArt art) {
+    private static GameObject AddModel(ModelFit fit, Transform parent, Vector3 origin, VesselArt art) {
 
         // The fit goes on a holder: an imported model's root carries its own turn and offset, which must stay.
         Transform holder = new GameObject("Fit").transform;
@@ -248,6 +262,8 @@ public sealed class VesselView : IDisposable {
             renderer.sharedMaterials = materials;
 
         }
+
+        return model;
 
     }
 

@@ -283,6 +283,12 @@ public sealed class Vessel {
 
         }
 
+        foreach (Engine engine in _engines) {
+
+            engine.Cool(time - Time);
+
+        }
+
         State = new RigidState(position, velocity, attitude, spin);
         Time = time;
 

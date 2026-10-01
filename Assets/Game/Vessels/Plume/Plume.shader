@@ -1,7 +1,8 @@
 // One layer of an exhaust plume, after KSP's Waterfall: an open tube flared in the vertex stage by a linear spread and a
 // bounded one, lit additively in the fragment stage. Light fades along the tube as a power of what is left of it, so the
 // gas thins into space with no end to see; the fresnel weighs the faces toward the eye (or, inverted, the axis), the tint
-// runs from the exit's to the tail's, and periodic noise streams downstream for the flow. Each renderer carries its
+// runs from the exit's to the tail's, and periodic noise streams downstream for the flow. Most of a jet's light is light
+// it scatters, so it dims with the sun and the sunlit body round it; only its glow shows in the dark. Each renderer carries its
 // layer's values (see PlumeLayer in Catalogue.cs); transparents draw after the air's composite, so the exposure is applied
 // here.
 Shader "MaxQ/Plume" {
@@ -32,6 +33,9 @@ Shader "MaxQ/Plume" {
             // enough that the gas inside a bell still fills it.
             #define SOFT_DEPTH 0.0004
 
+            // The sun's light at full strength, as VesselLight sets it.
+            #define FULL_SUN 2.4
+
             // radius (m), length (m), spread (m per m), bounded (m)
             float4 _PlumeShape;
             // where the layer starts downstream of the exit (m; negative inside the nozzle)
@@ -44,6 +48,8 @@ Shader "MaxQ/Plume" {
             float4 _PlumeFlow;
             float4 _PlumeStartTint;
             float4 _PlumeEndTint;
+            // share of the brightness the gas gives off itself
+            float _PlumeGlow;
             float _PlumeStrength;
 
             StructuredBuffer<float> _Exposure;
@@ -166,7 +172,12 @@ Shader "MaxQ/Plume" {
                 float scene = LinearEyeDepth(SampleSceneDepth(input.positionCS.xy / _ScaledScreenParams.xy), _ZBufferParams);
                 float soft = smoothstep(near, 2.0 * near, eye) * saturate((scene - eye) / SOFT_DEPTH);
 
-                float3 radiance = tint * glow * fade * body * soft * _PlumeLight.w * _PlumeStrength;
+                // Gas scatters light from every side alike: the sun's, and the mean radiance round it (the ambient probe's
+                // constant term) from all 4 pi, as a share of full sun.
+                float3 surround = float3(unity_SHAr.w, unity_SHAg.w, unity_SHAb.w) + float3(unity_SHBr.z, unity_SHBg.z, unity_SHBb.z) / 3.0;
+                float3 lit = lerp((_MainLightColor.rgb + 4.0 * surround) / FULL_SUN, 1.0, _PlumeGlow);
+
+                float3 radiance = tint * lit * glow * fade * body * soft * _PlumeLight.w * _PlumeStrength;
 
                 return float4(radiance * _Exposure[0], 0.0);
 

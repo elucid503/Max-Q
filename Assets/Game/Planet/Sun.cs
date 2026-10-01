@@ -31,6 +31,13 @@ public sealed class Sun {
 
     }
 
+    /// <summary>The sunlight's colour on the vessel, sRGB: white above the air, reddened through it.</summary>
+    public Color Colour {
+
+        set => _light.color = value;
+
+    }
+
     /// <summary><paramref name="direction"/> points at the sun, in scene axes.</summary>
     public Sun(Vector3 direction) {
 

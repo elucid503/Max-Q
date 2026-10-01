@@ -40,6 +40,9 @@ public static class ReferenceCraft {
         Length = 4.2,
         ExitRadius = 1.6,
         CentreOfMassHeight = 3.4,
+        ExtensionTemperature = 1_600.0,
+        ExtensionEmissivity = 0.85,
+        ExtensionHeatCapacity = 2_655.0,
 
     };
 

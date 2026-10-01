@@ -27,6 +27,9 @@ public sealed class VesselArt {
     /// <summary>Every engine's exhaust volume, likewise.</summary>
     public Material Exhaust;
 
+    /// <summary>Every radiatively cooled nozzle extension's glow.</summary>
+    public Material NozzleGlow;
+
     public Material Finish(string name) => name switch {
 
         "paint" => Finishes[0],

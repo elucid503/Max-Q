@@ -64,10 +64,12 @@ public sealed class PlumeLayer {
     public double spread;
     public double bounded;
 
-    // Light: the power it fades by along its length, the share of it that fades in from the exit, and its brightness.
+    // Light: the power it fades by along its length, the share of it that fades in from the exit, its brightness in full
+    // sun, and the share of that the gas gives off itself; the rest is light it scatters, gone in the dark.
     public double falloff = 1.0;
     public double fadeIn;
     public double brightness = 1.0;
+    public double glow;
     public double[] startTint;
     public double[] endTint;
     public double tintFalloff = 1.0;
@@ -128,6 +130,18 @@ public sealed class ExhaustLight {
 
 }
 
+/// <summary>A radiatively cooled nozzle extension: where it meets the cooled nozzle (m above the exit), its hottest
+/// temperature at full chamber there (K), its emissivity, and its heat capacity per area (J/m^2/K).</summary>
+[Serializable]
+public sealed class NozzleExtension {
+
+    public double joint;
+    public double temperature;
+    public double emissivity;
+    public double heatCapacity;
+
+}
+
 [Serializable]
 public sealed class PropellantEntry {
 
@@ -159,6 +173,7 @@ public sealed class EngineEntry {
 
     public ExhaustPlume exhaust;
     public ExhaustLight light;
+    public NozzleExtension extension;
 
     /// <summary>Where the thrust structure's shroud ends round the engine: a radius that clears its body through the gimbal's
     /// swing, and how far below the gimbal pivot.</summary>

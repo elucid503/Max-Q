@@ -93,6 +93,7 @@ public sealed class Capture : MonoBehaviour {
         ("vessel-burn-bell-40m", 31.0, 24.0, 55.0, 10.5, 20.0, 12.0, 40.0, Act.Burn),
         ("vessel-burn-sunward-80m", 10.0, -30.0, 90.0, 16.5, 180.0, 5.0, 80.0, Act.Burn),
         ("vessel-night-burn-60m", 0.0, 60.0, 90.0, 0.5, 160.0, 10.0, 60.0, Act.Burn),
+        ("vessel-night-side-40m", 0.0, 60.0, 90.0, 0.5, 90.0, 5.0, 40.0, Act.Burn),
         ("vessel-rcs-25m", 31.0, 24.0, 55.0, 10.5, 230.0, 10.0, 25.0, Act.Pulse),
         ("vessel-separation-40m", 31.0, 24.0, 55.0, 10.5, 110.0, 10.0, 40.0, Act.Separate),
         ("vessel-terminator-50m", 20.0, 100.0, 90.0, 18.4, 200.0, 10.0, 50.0, Act.Coast),
@@ -221,7 +222,8 @@ public sealed class Capture : MonoBehaviour {
 
                 view.ScriptedControls = new Controls(1.0, Vector3d.Zero, Vector3d.Zero);
 
-                yield return Wait(3.0f);
+                // Long enough for a radiatively cooled extension to reach its glow.
+                yield return Wait(25.0f);
 
                 break;
 

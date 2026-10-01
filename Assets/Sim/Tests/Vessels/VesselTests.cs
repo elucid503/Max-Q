@@ -82,6 +82,33 @@ public sealed class VesselTests {
     }
 
     [Test]
+    public void NozzleExtensionHeatsUnderPowerAndCoolsInTheCoast() {
+
+        Vessel vessel = Drifting();
+        Engine engine = vessel.Engines[0];
+
+        Hold(vessel, 5.0, Ullage);
+        Hold(vessel, 60.0, Full);
+
+        Assert.That(engine.NozzleTemperature, Is.EqualTo(engine.ExtensionTemperature).Within(10.0));
+
+        Hold(vessel, 2.0, default);
+
+        double shutdown = engine.NozzleTemperature;
+
+        // Coasting from here on: 1 / T^3 grows by 3 eps sigma / C a second.
+        Hold(vessel, 30.0, default);
+
+        double rate = engine.ExtensionEmissivity * 5.670_374e-8 / engine.ExtensionHeatCapacity;
+        double expected = Math.Pow(Math.Pow(shutdown, -3.0) + 3.0 * rate * 30.0, -1.0 / 3.0);
+
+        Assert.That(vessel.Current, Is.Not.Null);
+        Assert.That(engine.NozzleTemperature, Is.EqualTo(expected).Within(1e-6 * expected));
+        Assert.That(engine.NozzleTemperature, Is.LessThan(1_000.0));
+
+    }
+
+    [Test]
     public void FailedStartRetriesOnceTheRcsSettlesThePropellant() {
 
         Vessel vessel = Drifting();

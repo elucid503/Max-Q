@@ -77,6 +77,10 @@ namespace MaxQ.Game.Map {
         private const double DuskStart = 0.02;
         private const double DuskEnd = -0.05;
 
+        // Chasing the vessel through Terra's shadow, the eye opens up as the sun leaves it, enough for what the plume and
+        // the sunlit limb light; the starless dark beyond needs no more.
+        private const float ShadowStops = 3.0f;
+
         // Sunlight above the air, in the renderer's units: sunlit ground of albedo a shows as a * 2.4 before the air dims
         // it. The air gives the sun its colour, so above it the light is white.
         private static readonly Color SunIlluminance = Color.white * (2.4f * Mathf.PI);
@@ -246,6 +250,12 @@ namespace MaxQ.Game.Map {
                 double night = Math.Clamp((sunUp - DuskStart) / (DuskEnd - DuskStart), 0.0, 1.0);
 
                 airlessStops = Mathf.Lerp(DayStops, NightStops, (float)(night * night * (3.0 - 2.0 * night)));
+
+            } else if (_flying && _vesselLight.Sunlit < 1.0) {
+
+                double shade = 1.0 - _vesselLight.Sunlit;
+
+                airlessStops = ShadowStops * (float)(shade * shade * (3.0 - 2.0 * shade));
 
             }
 

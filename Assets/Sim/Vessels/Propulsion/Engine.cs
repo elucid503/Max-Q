@@ -31,6 +31,9 @@ public sealed class Engine : Part {
     /// <summary>After a failed start, the engine tries again this long later while the throttle stays open.</summary>
     public const double RetrySeconds = 1.0;
 
+    // W/m^2/K^4.
+    private const double StefanBoltzmann = 5.670_374e-8;
+
     private double _phaseSeconds;
 
     /// <summary>Vacuum thrust at full throttle, N.</summary>
@@ -60,12 +63,24 @@ public sealed class Engine : Part {
     public double ExitRadius { get; init; }
     public double CentreOfMassHeight { get; init; }
 
+    /// <summary>Hottest temperature of the radiatively cooled nozzle extension at full chamber, K; no extension without a
+    /// heat capacity.</summary>
+    public double ExtensionTemperature { get; init; }
+
+    /// <summary>The extension's emissivity, and its heat capacity per area, J/m^2/K.</summary>
+    public double ExtensionEmissivity { get; init; }
+    public double ExtensionHeatCapacity { get; init; }
+
     public override double Height => Length;
 
     public EnginePhase Phase { get; private set; }
 
     /// <summary>Chamber pressure as a fraction of full: what the plume and the sound follow.</summary>
     public double Chamber { get; private set; }
+
+    /// <summary>The extension's hottest temperature now, K: heated by the gas in step with the chamber, radiating to the
+    /// dark (the sun's warmth is left out; it glows at neither).</summary>
+    public double NozzleTemperature { get; private set; }
 
     /// <summary>Thrust delivered over the last step, N.</summary>
     public double Output { get; private set; }
@@ -167,10 +182,43 @@ public sealed class Engine : Part {
         Output = fed ? Chamber * Thrust * (1.0 - (1.0 - Math.Min(settled, 1.0)) * Chug(time)) : 0.0;
 
         Steer(dt, Phase == EnginePhase.Running ? steer : Vector3d.Zero);
+        Radiate(dt);
+
+    }
+
+    /// <summary>Lets the extension cool over a coast, radiating to the dark: 1 / T^3 grows by 3 times the rate a second.</summary>
+    internal void Cool(double seconds) {
+
+        if (ExtensionHeatCapacity <= 0.0 || NozzleTemperature <= 0.0) {
+
+            return;
+
+        }
+
+        NozzleTemperature = Math.Pow(Math.Pow(NozzleTemperature, -3.0) + 3.0 * RadiationRate * seconds, -1.0 / 3.0);
 
     }
 
     internal override MassProperties AddTo(MassProperties sum) => sum.AddCylinder(Mass, Station + CentreOfMassHeight, 0.5 * ExitRadius, Length);
+
+    private double RadiationRate => ExtensionEmissivity * StefanBoltzmann / ExtensionHeatCapacity;
+
+    // The gas heats the extension in step with the chamber, to its full temperature at full chamber, and it radiates as a
+    // grey body.
+    private void Radiate(double dt) {
+
+        if (ExtensionHeatCapacity <= 0.0) {
+
+            return;
+
+        }
+
+        double full = ExtensionTemperature * ExtensionTemperature;
+        double now = NozzleTemperature * NozzleTemperature;
+
+        NozzleTemperature = Math.Max(NozzleTemperature + dt * RadiationRate * (Chamber * full * full - now * now), 0.0);
+
+    }
 
     private void Enter(EnginePhase phase) {
 

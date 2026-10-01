@@ -1,5 +1,6 @@
 using System;
 
+using MaxQ.Game.Map;
 using MaxQ.Game.Vessels.Craft;
 using MaxQ.Game.Vessels.Hull;
 
@@ -17,6 +18,9 @@ internal sealed class ExhaustRenderer {
     // The hull stands this many of the wider lobe's widths off the axis, where its light is all but gone.
     private const float HullWidths = 3.5f;
 
+    // Steps summing the gas's light down the axis, and the lights standing in for it.
+    private const int GlowSteps = 2_000;
+    private const int GlowLights = 3;
 
     private static readonly int ShapeId = Shader.PropertyToID("_ExhaustShape");
     private static readonly int HullId = Shader.PropertyToID("_ExhaustHull");
@@ -34,6 +38,8 @@ internal sealed class ExhaustRenderer {
     private readonly Transform _transform;
     private readonly MeshRenderer _renderer;
     private readonly MaterialPropertyBlock _block = new MaterialPropertyBlock();
+    private readonly Light[] _lights;
+    private readonly float _intensity;
     private float _strength = -1.0f;
 
     public ExhaustRenderer(Material material, Transform parent, EngineEntry engine) {
@@ -66,6 +72,41 @@ internal sealed class ExhaustRenderer {
         SetLobe(ExpansionId, ExpansionStartId, ExpansionEndId, exhaust.expansion);
         _block.SetVector(FlowId, new Vector4((float)exhaust.noise, (float)exhaust.tilesAcross, (float)exhaust.tileLength, (float)exhaust.speed));
 
+        // The gas lights the stack as it leaves the bell: lights round the fan's edge an exit radius downstream, so they
+        // reach the tank's walls as well as its aft end, and together as bright at the engine's mount as all the gas down
+        // the axis is. No shadows, so the bell does not hide the nearest gas from the aft end as it would.
+        double near = engine.length;
+        double coreNear = Seen(exhaust.core, length, near);
+        double expansionNear = Seen(exhaust.expansion, length, near);
+        double atNear = coreNear + expansionNear;
+        Vector4 colour = (float)(coreNear / atNear) * Mean(exhaust.core) + (float)(expansionNear / atNear) * Mean(exhaust.expansion);
+        double drop = engine.exitRadius;
+        double spread = drop * (1.0 + Math.Tan(exhaust.fan));
+        double toMount = near + drop;
+
+        // Each light's illuminance on the axis at the mount, per unit intensity: its cosine over its distance squared.
+        double share = GlowLights * toMount / Math.Pow(spread * spread + toMount * toMount, 1.5);
+
+        _lights = new Light[GlowLights];
+
+        for (int i = 0; i < GlowLights; i++) {
+
+            float around = 2.0f * Mathf.PI * i / GlowLights;
+            Light light = new GameObject("Exhaust Glow").AddComponent<Light>();
+
+            light.transform.SetParent(_transform, false);
+            light.transform.localPosition = new Vector3((float)spread * Mathf.Cos(around), (float)drop, (float)spread * Mathf.Sin(around));
+            light.type = LightType.Point;
+            light.range = (float)(3.0 * (toMount + 2.0 * VesselView.Reach) / MapSpace.MetresPerUnit);
+            light.color = new Color(colour.x, colour.y, colour.z).gamma;
+            light.shadows = LightShadows.None;
+            _lights[i] = light;
+
+        }
+
+        // Illuminance over pi, as URP's Lit has none, and its inverse square in scene units (km).
+        _intensity = (float)(atNear / Math.PI / share / (MapSpace.MetresPerUnit * MapSpace.MetresPerUnit));
+
         Strength = 0.0f;
 
     }
@@ -86,6 +127,13 @@ internal sealed class ExhaustRenderer {
             _block.SetFloat(StrengthId, value);
             _renderer.SetPropertyBlock(_block);
 
+            foreach (Light light in _lights) {
+
+                light.enabled = _renderer.enabled;
+                light.intensity = _intensity * value;
+
+            }
+
         }
 
     }
@@ -104,6 +152,28 @@ internal sealed class ExhaustRenderer {
         _block.SetVector(endId, Colour(lobe.endTint));
 
     }
+
+    // Illuminance on the axis at a height above the exit from a lobe as a line of light: its Gaussian summed across gives
+    // sqrt(2 pi) times its brightness and width per metre, falling by e every reach.
+    private static double Seen(ExhaustLobe lobe, double length, double height) {
+
+        double step = length / GlowSteps;
+        double sum = 0.0;
+
+        for (int i = 0; i < GlowSteps; i++) {
+
+            double x = (i + 0.5) * step;
+
+            sum += Math.Exp(-x / lobe.reach) / ((height + x) * (height + x));
+
+        }
+
+        return Math.Sqrt(2.0 * Math.PI) * lobe.brightness * lobe.radius * sum * step;
+
+    }
+
+    // A lobe's tint averaged over its light, which cools from start to end as it dims.
+    private static Vector4 Mean(ExhaustLobe lobe) => 0.5f * (Colour(lobe.startTint) + Colour(lobe.endTint));
 
     private static Vector4 Colour(double[] rgb) => rgb is { Length: 3 } ? new Vector4((float)rgb[0], (float)rgb[1], (float)rgb[2], 0.0f) : Vector4.one;
 

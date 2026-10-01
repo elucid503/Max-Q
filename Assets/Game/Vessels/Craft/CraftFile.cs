@@ -92,6 +92,9 @@ public sealed class CraftFile {
         Length = entry.length,
         ExitRadius = entry.exitRadius,
         CentreOfMassHeight = entry.centreOfMassHeight,
+        ExtensionTemperature = entry.extension?.temperature ?? 0.0,
+        ExtensionEmissivity = entry.extension?.emissivity ?? 0.0,
+        ExtensionHeatCapacity = entry.extension?.heatCapacity ?? 0.0,
 
     };
 

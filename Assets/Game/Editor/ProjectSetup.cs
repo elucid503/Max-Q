@@ -79,6 +79,7 @@ public static class ProjectSetup {
         // Every jet layer shares one material, and every engine's exhaust another; their looks come from the catalogue.
         Material plume = SaveMaterial(new Material(Shader.Find("MaxQ/Plume")), "Plume");
         Material exhaust = SaveMaterial(new Material(Shader.Find("MaxQ/Exhaust")), "Exhaust");
+        Material nozzleGlow = SaveMaterial(new Material(Shader.Find("MaxQ/NozzleGlow")), "Nozzle Glow");
 
         // Stars dimmed so only the brightest show at daylight exposure.
         Material sky = new Material(Shader.Find("Skybox/Panoramic"));
@@ -87,7 +88,7 @@ public static class ProjectSetup {
         sky.SetFloat("_Exposure", 0.05f);
         sky = SaveMaterial(sky, "Sky");
 
-        BuildScene(sky, ground, water, rock, grass, tree, regolith, boulder, finishes, shield, glass, plume, exhaust);
+        BuildScene(sky, ground, water, rock, grass, tree, regolith, boulder, finishes, shield, glass, plume, exhaust, nozzleGlow);
 
         AssetDatabase.SaveAssets();
         Debug.Log("Max-Q setup complete");
@@ -108,6 +109,8 @@ public static class ProjectSetup {
         pipeline.mainLightShadowmapResolution = 4096;
         pipeline.shadowDepthBias = 1.0f;
         pipeline.shadowNormalBias = 1.0f;
+        // An engine lights its stage with its bell, its exhaust and its glowing extension: seven lights on one part.
+        pipeline.maxAdditionalLightsCount = 8;
 
         SerializedObject settings = new SerializedObject(pipeline);
         settings.FindProperty("m_MainLightShadowsSupported").boolValue = true;
@@ -203,7 +206,7 @@ public static class ProjectSetup {
     }
 
     private static void BuildScene(Material sky, Material ground, Material water, Material rock, Material grass, Material tree, Material regolith, Material boulder,
-        Material[] finishes, Material shield, Material glass, Material plume, Material exhaust) {
+        Material[] finishes, Material shield, Material glass, Material plume, Material exhaust, Material nozzleGlow) {
 
         EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
@@ -259,6 +262,7 @@ public static class ProjectSetup {
         art.FindPropertyRelative("Glass").objectReferenceValue = glass;
         art.FindPropertyRelative("Plume").objectReferenceValue = plume;
         art.FindPropertyRelative("Exhaust").objectReferenceValue = exhaust;
+        art.FindPropertyRelative("NozzleGlow").objectReferenceValue = nozzleGlow;
         Fill(art.FindPropertyRelative("Finishes"), finishes);
         Fill(art.FindPropertyRelative("Models"), VesselModels());
 

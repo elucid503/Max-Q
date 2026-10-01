@@ -28,6 +28,7 @@ internal sealed class PlumeRenderer {
     private static readonly int FlowId = Shader.PropertyToID("_PlumeFlow");
     private static readonly int StartTintId = Shader.PropertyToID("_PlumeStartTint");
     private static readonly int EndTintId = Shader.PropertyToID("_PlumeEndTint");
+    private static readonly int GlowId = Shader.PropertyToID("_PlumeGlow");
     private static readonly int StrengthId = Shader.PropertyToID("_PlumeStrength");
 
     private static Mesh _tube;
@@ -74,6 +75,7 @@ internal sealed class PlumeRenderer {
             block.SetVector(FlowId, new Vector4(Mathf.Max(1.0f, Mathf.Round((float)layer.tilesAround)), (float)layer.tilesAlong, (float)layer.speed, 0.0f));
             block.SetVector(StartTintId, Colour(layer.startTint));
             block.SetVector(EndTintId, Colour(layer.endTint));
+            block.SetFloat(GlowId, (float)layer.glow);
 
             _layers.Add((renderer, block));
 
