@@ -14,24 +14,38 @@ using UnityEngine;
 
 namespace MaxQ.Game.Vessels;
 
-/// <summary>Draws one vessel: a root at its stack datum in kilometre scene units holding each part in metres, the engine
-/// swinging on its gimbal, its plume, and a puff at every RCS nozzle that fires.</summary>
+/// <summary>Draws one vessel: a root at its stack datum in kilometre scene units holding each part in metres, every engine
+/// swinging on its gimbal, their plumes, and a puff at every RCS nozzle that fires.</summary>
 public sealed class VesselView : IDisposable {
-
-    /// <summary>How far a stack reaches from its centre of mass, metres; cameras and shadows keep it in view.</summary>
-    public const double Reach = 12.0;
 
     private const float MetresToScene = (float)(1.0 / MapSpace.MetresPerUnit);
 
+    // What a stack's reach adds beyond its ends: nozzles swung out, the capsule's nose.
+    private const double ReachMargin = 2.0;
+
     private readonly GameObject _root;
     private readonly List<Mesh> _meshes = new List<Mesh>();
-    private readonly List<(Engine Engine, Transform Pivot, ExhaustRenderer Exhaust, NozzleGlow Glow, Light Light, float Intensity)> _engines =
-        new List<(Engine, Transform, ExhaustRenderer, NozzleGlow, Light, float)>();
+    private readonly List<(Engine Engine, int Nozzle, Transform Pivot, NozzleGlow Glow, Light Light, float Intensity)> _engines =
+        new List<(Engine, int, Transform, NozzleGlow, Light, float)>();
+    private readonly List<(Engine Engine, ExhaustRenderer Exhaust)> _exhausts = new List<(Engine, ExhaustRenderer)>();
     private readonly List<(Thruster Thruster, PlumeRenderer Puff)> _puffs = new List<(Thruster, PlumeRenderer)>();
 
     public Vessel Vessel { get; }
 
-    public VesselView(Vessel vessel, Catalogue catalogue, VesselArt art) {
+    /// <summary>How far the stack reaches from its centre of mass, metres; cameras and shadows keep it in view.</summary>
+    public double Reach {
+
+        get {
+
+            double centre = Vessel.MassProperties.CentreOfMass;
+
+            return Math.Max(centre - Vessel.Bottom, Vessel.Top - centre) + ReachMargin;
+
+        }
+
+    }
+
+    public VesselView(Vessel vessel, Catalogue catalogue, CraftFile craft, VesselArt art) {
 
         Vessel = vessel;
         _root = new GameObject(vessel.Name);
@@ -50,7 +64,15 @@ public sealed class VesselView : IDisposable {
 
                 case Engine engine:
 
-                    AddEngine(engine, catalogue.Engine(engine.Name), holder, art);
+                    Transform[] pivots = new Transform[engine.Count];
+
+                    for (int i = 0; i < engine.Count; i++) {
+
+                        pivots[i] = AddEngine(engine, i, catalogue.Engine(engine.Name), holder, art);
+
+                    }
+
+                    AddExhaust(engine, catalogue.Engine(engine.Name), engine.Count == 1 ? pivots[0] : holder, art);
 
                     break;
 
@@ -62,19 +84,21 @@ public sealed class VesselView : IDisposable {
 
                 case Tank tank:
 
-                    AddMesh(HullMesh.Tank(tank, below is Engine hung ? catalogue.Engine(hung.Name) : null), holder, art);
+                    Engine hung = below as Engine;
+
+                    AddMesh(HullMesh.Tank(tank, hung == null ? null : catalogue.Engine(hung.Name), hung), holder, art);
 
                     break;
 
                 case Skirt skirt:
 
-                    AddMesh(HullMesh.Skirt(skirt), holder, art);
+                    AddMesh(HullMesh.Skirt(skirt, Finish(craft.Line(skirt).finish)), holder, art);
 
                     break;
 
                 case Decoupler ring:
 
-                    AddMesh(HullMesh.Decoupler(ring), holder, art);
+                    AddMesh(HullMesh.Decoupler(ring, craft.Line(ring).open), holder, art);
 
                     break;
 
@@ -130,10 +154,9 @@ public sealed class VesselView : IDisposable {
 
         _root.transform.SetPositionAndRotation(MapSpace.ToScene(Vessel.Body.PositionAt(Vessel.Time) + Vessel.Datum), new Quaternion((float)-q.X, (float)-q.Z, (float)-q.Y, (float)q.W));
 
-        foreach ((Engine engine, Transform pivot, ExhaustRenderer exhaust, NozzleGlow glow, Light light, float intensity) in _engines) {
+        foreach ((Engine engine, int nozzle, Transform pivot, NozzleGlow glow, Light light, float intensity) in _engines) {
 
-            pivot.localRotation = Quaternion.FromToRotation(Vector3.up, ToScene(engine.Direction));
-            exhaust.Strength = (float)engine.Chamber;
+            pivot.localRotation = Quaternion.FromToRotation(Vector3.up, ToScene(engine.Direction(nozzle)));
 
             if (glow != null) {
 
@@ -145,6 +168,28 @@ public sealed class VesselView : IDisposable {
 
                 light.enabled = engine.Chamber > 0.01;
                 light.intensity = intensity * (float)engine.Chamber;
+
+            }
+
+        }
+
+        foreach ((Engine engine, ExhaustRenderer exhaust) in _exhausts) {
+
+            exhaust.Strength = (float)engine.Chamber;
+            exhaust.Pressure = (float)engine.AmbientPressure;
+
+            // A cluster's one exhaust leaves along the engines' mean thrust; a single engine's swings on its own gimbal.
+            if (engine.Count > 1) {
+
+                Vector3d thrust = Vector3d.Zero;
+
+                for (int i = 0; i < engine.Count; i++) {
+
+                    thrust += engine.Direction(i);
+
+                }
+
+                exhaust.Place(Vector3.zero, Quaternion.FromToRotation(Vector3.down, -ToScene(thrust.Normalized)) * Downstream);
 
             }
 
@@ -173,16 +218,53 @@ public sealed class VesselView : IDisposable {
     /// <summary>A body-frame vector in the stack's scene axes.</summary>
     private static Vector3 ToScene(Vector3d v) => new Vector3((float)v.X, (float)v.Z, (float)v.Y);
 
-    private void AddEngine(Engine engine, EngineEntry entry, Transform holder, VesselArt art) {
+    private static int Finish(string name) => name switch {
+
+        null or "paint" => HullMesh.Paint,
+        "metal" => HullMesh.Metal,
+        "dark" => HullMesh.Dark,
+        _ => throw new InvalidOperationException($"No hull finish named '{name}'."),
+
+    };
+
+    // Turns an exhaust's +Y downstream, out of the exit; it takes the holder's Z to -Z.
+    private static readonly Quaternion Downstream = Quaternion.Euler(180.0f, 0.0f, 0.0f);
+
+    // One exhaust for the engine or the whole cluster: on a single engine's gimbal at its exit, or at a cluster's exit plane.
+    private void AddExhaust(Engine engine, EngineEntry entry, Transform parent, VesselArt art) {
+
+        Vector2[] nozzles = new Vector2[engine.Count];
+
+        for (int i = 0; i < nozzles.Length && engine.Count > 1; i++) {
+
+            Vector3 exit = Downstream * ToScene(engine.Nozzles[i]);
+
+            nozzles[i] = new Vector2(exit.x, exit.z);
+
+        }
+
+        ExhaustRenderer exhaust = new ExhaustRenderer(art.Exhaust, parent, entry, nozzles, Reach);
+
+        exhaust.Place(engine.Count > 1 ? Vector3.zero : new Vector3(0.0f, -(float)engine.Length, 0.0f), Downstream);
+        _exhausts.Add((engine, exhaust));
+
+    }
+
+    private Transform AddEngine(Engine engine, int nozzle, EngineEntry entry, Transform holder, VesselArt art) {
 
         float length = (float)engine.Length;
         Transform pivot = new GameObject("Gimbal").transform;
 
         pivot.SetParent(holder, false);
-        pivot.localPosition = new Vector3(0.0f, length, 0.0f);
+        pivot.localPosition = ToScene(engine.Nozzles[nozzle]) + new Vector3(0.0f, length, 0.0f);
 
-        GameObject model = AddModel(entry.fit, pivot, new Vector3(0.0f, -length, 0.0f), art);
-        NozzleGlow glow = entry.extension == null ? null : new NozzleGlow(art.NozzleGlow, pivot, model, engine.Length, entry.extension);
+        // Off the axis, each engine is turned so whatever stands out from its side points round the cluster, not out of it.
+        Vector3d offset = engine.Nozzles[nozzle];
+        double turn = offset.Length > 1e-6 ? Math.Atan2(offset.Y, offset.X) + 0.5 * Math.PI : 0.0;
+        GameObject model = AddModel(entry.fit, pivot, new Vector3(0.0f, -length, 0.0f), art, turn);
+
+        // JsonUtility fills absent entries with zeros rather than leaving them null.
+        NozzleGlow glow = entry.extension is { heatCapacity: > 0.0 } ? new NozzleGlow(art.NozzleGlow, pivot, model, engine.Length, entry.extension) : null;
 
         if (glow != null) {
 
@@ -190,17 +272,12 @@ public sealed class VesselView : IDisposable {
 
         }
 
-        ExhaustRenderer exhaust = new ExhaustRenderer(art.Exhaust, pivot, entry);
-
-        // The exit hangs a nozzle's length below the pivot; the exhaust's own +Y is downstream.
-        exhaust.Place(new Vector3(0.0f, -length, 0.0f), Quaternion.Euler(180.0f, 0.0f, 0.0f));
-
         Light light = null;
         float intensity = 0.0f;
 
         // The exhaust lights its own bell from inside, its walls about an exit radius off. URP's inverse square runs in
         // scene units (km): a strength given at a metre is a millionth of that at a kilometre.
-        if (entry.light is { } inside) {
+        if (entry.light is { intensity: > 0.0 } inside) {
 
             light = new GameObject("Exhaust Light").AddComponent<Light>();
             light.transform.SetParent(pivot, false);
@@ -215,18 +292,20 @@ public sealed class VesselView : IDisposable {
 
         }
 
-        _engines.Add((engine, pivot, exhaust, glow, light, intensity));
+        _engines.Add((engine, nozzle, pivot, glow, light, intensity));
+
+        return pivot;
 
     }
 
-    private static GameObject AddModel(ModelFit fit, Transform parent, Vector3 origin, VesselArt art) {
+    private static GameObject AddModel(ModelFit fit, Transform parent, Vector3 origin, VesselArt art, double turn = 0.0) {
 
         // The fit goes on a holder: an imported model's root carries its own turn and offset, which must stay.
         Transform holder = new GameObject("Fit").transform;
 
         holder.SetParent(parent, false);
         holder.localPosition = origin + HullMesh.Scene(fit.offset);
-        holder.localRotation = Quaternion.AngleAxis((float)(-fit.turn * Mathf.Rad2Deg), Vector3.up);
+        holder.localRotation = Quaternion.AngleAxis((float)(-(fit.turn + turn) * Mathf.Rad2Deg), Vector3.up);
         holder.localScale = Vector3.one * (float)fit.scale;
 
         GameObject model = UnityEngine.Object.Instantiate(art.Model(fit.model), holder, false);

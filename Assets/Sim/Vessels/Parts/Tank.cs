@@ -45,6 +45,8 @@ public sealed class Tank : Part {
 
     public override double Height => AftDomeDepth + BarrelLength;
 
+    internal override double OuterRadius => Radius;
+
     /// <summary>Height of the common bulkhead's rim above the bottom node.</summary>
     public double BulkheadHeight => AftDomeDepth + (OxidiserVolume - AftDomeVolume + DomeVolume) / CrossSection;
 

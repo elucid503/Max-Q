@@ -1,0 +1,6 @@
+Launch site materials and where they come from.
+
+concrete_*.png
+    "Concrete Floor 02" by Rob Tuytel, https://polyhaven.com/a/concrete_floor_02, CC0 1.0 Universal.
+    2k maps repacked for URP Lit: albedo as published, normal as published (OpenGL), mask with smoothness
+    (1 - roughness) in alpha and no metal. The texture spans 2 m.

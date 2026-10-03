@@ -59,7 +59,6 @@ public sealed class VesselLight : IDisposable {
     internal const double NearbyRange = 2.0 * FlatWithin;
 
     private const int CubeSize = 64;
-    private const int RefreshFrames = 8;
 
     private static readonly CubemapFace[] Faces = {
 
@@ -74,6 +73,7 @@ public sealed class VesselLight : IDisposable {
     private readonly Vector3d _sunward;
     private readonly Cubemap _environment;
     private readonly Color[] _face = new Color[CubeSize * CubeSize];
+    private readonly SphericalHarmonicsL2[] _faceAmbients = new SphericalHarmonicsL2[6];
     private int _frame;
 
     /// <summary>The sunlight reaching the vessel as a share of full sun, by luminance, 0 to 1.</summary>
@@ -113,11 +113,8 @@ public sealed class VesselLight : IDisposable {
         // A light's colour is sRGB.
         _sun.Colour = peak > 0.0f ? new Color(sunlight.x / peak, sunlight.y / peak, sunlight.z / peak).gamma : Color.white;
 
-        if (_frame++ % RefreshFrames == 0) {
-
-            Surround(position - near.PositionAt(time), near, time);
-
-        }
+        // One face a frame: inside the air every texel marches it, too much for one frame.
+        Surround(position - near.PositionAt(time), near, _frame++ % Faces.Length);
 
     }
 
@@ -158,6 +155,15 @@ public sealed class VesselLight : IDisposable {
         if (distance <= radius) {
 
             return Vector3.zero;
+
+        }
+
+        // Within the air, a sun standing over the horizon shines down through the air above.
+        double over = Vector3d.Dot(-toBody / distance, _sunward);
+
+        if (distance - radius < AirHeight * 1_000.0 && over > 0.0) {
+
+            return Transmitted((distance - radius) / 1_000.0, over);
 
         }
 
@@ -219,8 +225,8 @@ public sealed class VesselLight : IDisposable {
         Refractivity * Math.Sqrt(2.0 * Math.PI * radius / (RayleighScaleHeight * 1_000.0)) * Math.Exp(-height / (RayleighScaleHeight * 1_000.0));
 
     // The body as a Lambert sphere lit through its air, ringed by the sunlit air at its limb, in an otherwise black sky;
-    // into the cubemap and the ambient probe, in scene axes.
-    private void Surround(Vector3d fromBody, CelestialBody body, double time) {
+    // into one face of the cubemap and its share of the ambient probe, in scene axes.
+    private void Surround(Vector3d fromBody, CelestialBody body, int f) {
 
         bool airy = body == _airy;
         Vector3 tint = airy ? TerraTint * (float)TerraAlbedo : Vector3.one * (float)SeleneAlbedo;
@@ -229,59 +235,64 @@ public sealed class VesselLight : IDisposable {
         SphericalHarmonicsL2 ambient = new SphericalHarmonicsL2();
         double texel = 2.0 / CubeSize;
 
-        for (int f = 0; f < Faces.Length; f++) {
+        for (int y = 0; y < CubeSize; y++) {
 
-            for (int y = 0; y < CubeSize; y++) {
+            for (int x = 0; x < CubeSize; x++) {
 
-                for (int x = 0; x < CubeSize; x++) {
+                float u = (x + 0.5f) * (float)texel - 1.0f;
+                float v = (y + 0.5f) * (float)texel - 1.0f;
+                Vector3 scene = Direction(Faces[f], u, v);
+                float solidAngle = 4.0f / Mathf.Pow(1.0f + u * u + v * v, 1.5f) * (float)(texel * texel / 4.0);
+                Vector3d ray = new Vector3d(scene.x, scene.z, scene.y).Normalized;
+                Vector3 l = Vector3.zero;
 
-                    float u = (x + 0.5f) * (float)texel - 1.0f;
-                    float v = (y + 0.5f) * (float)texel - 1.0f;
-                    Vector3 scene = Direction(Faces[f], u, v);
-                    float solidAngle = 4.0f / Mathf.Pow(1.0f + u * u + v * v, 1.5f) * (float)(texel * texel / 4.0);
-                    Vector3d ray = new Vector3d(scene.x, scene.z, scene.y).Normalized;
-                    Vector3 l = Vector3.zero;
+                // Nearest hit of the ray from the vessel with the body's ground, then with its air's top.
+                double b = Vector3d.Dot(from, ray);
+                double groundDisc = b * b - from.LengthSquared + radius * radius;
+                double top = radius + AirHeight;
+                double topDisc = b * b - from.LengthSquared + top * top;
 
-                    // Nearest hit of the ray from the vessel with the body's ground, then with its air's top.
-                    double b = Vector3d.Dot(from, ray);
-                    double groundDisc = b * b - from.LengthSquared + radius * radius;
-                    double top = radius + AirHeight;
-                    double topDisc = b * b - from.LengthSquared + top * top;
+                if (groundDisc >= 0.0 && -b - Math.Sqrt(groundDisc) > 0.0) {
 
-                    if (groundDisc >= 0.0 && -b - Math.Sqrt(groundDisc) > 0.0) {
+                    Vector3d normal = (from + ray * (-b - Math.Sqrt(groundDisc))) / radius;
+                    double mu = Vector3d.Dot(normal, _sunward);
+                    Vector3 lit = mu <= 0.0 ? Vector3.zero : (airy ? Transmitted(0.0, mu) : Vector3.one) * (float)mu;
 
-                        Vector3d normal = (from + ray * (-b - Math.Sqrt(groundDisc))) / radius;
-                        double mu = Vector3d.Dot(normal, _sunward);
-                        Vector3 lit = mu <= 0.0 ? Vector3.zero : (airy ? Transmitted(0.0, mu) : Vector3.one) * (float)mu;
+                    l = Vector3.Scale(tint, lit) * SunIntensity;
 
-                        l = Vector3.Scale(tint, lit) * SunIntensity;
+                } else if (airy && topDisc > 0.0 && -b + Math.Sqrt(topDisc) > 0.0) {
 
-                    } else if (airy && topDisc > 0.0 && -b + Math.Sqrt(topDisc) > 0.0) {
-
-                        l = Limb(from, ray, Math.Max(-b - Math.Sqrt(topDisc), 0.0), -b + Math.Sqrt(topDisc), radius);
-
-                    }
-
-                    Color radiance = new Color(l.x, l.y, l.z);
-
-                    if (l != Vector3.zero) {
-
-                        ambient.AddDirectionalLight(scene.normalized, radiance, solidAngle / Mathf.PI);
-
-                    }
-
-                    _face[y * CubeSize + x] = radiance;
+                    l = Limb(from, ray, Math.Max(-b - Math.Sqrt(topDisc), 0.0), -b + Math.Sqrt(topDisc), radius);
 
                 }
 
+                Color radiance = new Color(l.x, l.y, l.z);
+
+                if (l != Vector3.zero) {
+
+                    ambient.AddDirectionalLight(scene.normalized, radiance, solidAngle / Mathf.PI);
+
+                }
+
+                _face[y * CubeSize + x] = radiance;
+
             }
 
-            _environment.SetPixels(_face, Faces[f]);
+        }
+
+        _environment.SetPixels(_face, Faces[f]);
+        _faceAmbients[f] = ambient;
+
+        SphericalHarmonicsL2 sum = new SphericalHarmonicsL2();
+
+        foreach (SphericalHarmonicsL2 face in _faceAmbients) {
+
+            sum += face;
 
         }
 
         _environment.Apply(true);
-        RenderSettings.ambientProbe = ambient;
+        RenderSettings.ambientProbe = sum;
 
     }
 

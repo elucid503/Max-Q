@@ -41,8 +41,15 @@ public static class HullMesh {
     // The thrust structure's shroud: a thin shell, open underneath.
     private const float ShroudThickness = 0.04f;
 
-    /// <summary>The tank; with an engine hung below it, the thrust structure's shroud round the engine's body.</summary>
-    public static Mesh Tank(Tank tank, EngineEntry engine) {
+    // A cluster's heat shield: edges round each engine's hole, and the boot closing the hole round the engine, rising this
+    // far to this share of the hole's radius.
+    private const int CellSegments = 96;
+    private const float BootRise = 0.35f;
+    private const float BootWaist = 0.55f;
+
+    /// <summary>The tank; with an engine hung below it, the thrust structure's shroud round the engine's body, or round a
+    /// cluster the engine section's skirt and heat shield.</summary>
+    public static Mesh Tank(Tank tank, EngineEntry entry, Engine engine) {
 
         MeshBuilder mesh = new MeshBuilder(Finishes);
         float radius = (float)tank.Radius;
@@ -85,9 +92,26 @@ public static class HullMesh {
 
         Raceway(mesh, radius, depth + 0.1f, top);
 
-        if (engine != null) {
+        // The forward dome, inside whatever stands above; it shows where an open interstage is left behind.
+        List<Vector2> forward = new List<Vector2>();
 
-            ThrustStructure(mesh, (float)engine.mountRadius, (float)engine.mountDrop, radius, depth);
+        for (int i = 0; i <= DomeRings; i++) {
+
+            float t = 0.5f * Mathf.PI * i / DomeRings;
+
+            forward.Add(new Vector2(radius * Mathf.Cos(t), top + (float)tank.DomeDepth * Mathf.Sin(t)));
+
+        }
+
+        mesh.Lathe(forward, Segments, Dark);
+
+        if (engine is { Count: > 1 }) {
+
+            EngineSection(mesh, engine, (float)entry.mountRadius, (float)entry.mountDrop, radius, depth);
+
+        } else if (engine != null) {
+
+            ThrustStructure(mesh, (float)entry.mountRadius, (float)entry.mountDrop, radius, depth);
 
         }
 
@@ -95,7 +119,8 @@ public static class HullMesh {
 
     }
 
-    public static Mesh Skirt(Skirt skirt) {
+    /// <summary>A skirt's shell in a finish, stringered outside and dark within, as an open interstage shows.</summary>
+    public static Mesh Skirt(Skirt skirt, int finish) {
 
         MeshBuilder mesh = new MeshBuilder(Finishes);
         float bottom = (float)skirt.BottomRadius;
@@ -120,16 +145,20 @@ public static class HullMesh {
 
         };
 
-        mesh.Lathe(new[] { shell[0], shell[1], shell[2], shell[3] }, Segments, Paint);
-        mesh.Lathe(new[] { shell[3], frameTop[0] }, Stringers * 4, Paint, StringerBump);
-        mesh.Lathe(frameTop, Segments, Paint);
+        mesh.Lathe(new[] { shell[0], shell[1], shell[2], shell[3] }, Segments, finish);
+        mesh.Lathe(new[] { shell[3], frameTop[0] }, Stringers * 4, finish, StringerBump);
+        mesh.Lathe(frameTop, Segments, finish);
+
+        // Listed top to bottom, so it faces in.
+        mesh.Lathe(new[] { new Vector2(top - FrameDepth, length), new Vector2(bottom - FrameDepth, 0.0f) }, Segments, Dark);
 
         return mesh.Build(skirt.Name);
 
     }
 
-    /// <summary>The separation ring: a bare band split by its joint, with a dark deck closing the stage below it.</summary>
-    public static Mesh Decoupler(Decoupler ring) {
+    /// <summary>The separation ring: a bare band split by its joint, with a dark deck closing the stage below it unless it is
+    /// <paramref name="open"/> for an engine nested through it.</summary>
+    public static Mesh Decoupler(Decoupler ring, bool open) {
 
         MeshBuilder mesh = new MeshBuilder(Finishes);
         float radius = (float)ring.Radius;
@@ -149,7 +178,11 @@ public static class HullMesh {
 
         }, Segments, Metal);
 
-        mesh.Disc(0.0f, radius, joint, true, Segments / 4, Dark);
+        if (!open) {
+
+            mesh.Disc(0.0f, radius, joint, true, Segments / 4, Dark);
+
+        }
 
         return mesh.Build(ring.Name);
 
@@ -231,6 +264,65 @@ public static class HullMesh {
         mesh.Lathe(new[] { bottom, top }, Segments, Dark);
         mesh.Lathe(new[] { top - inset, bottom - inset }, Segments, Dark);
         mesh.Disc(mount - ShroudThickness, mount, -drop, false, Segments, Dark);
+
+    }
+
+    // Under a cluster, as on Falcon 9's octaweb: the stage's own skirt carried down past the gimbals, closed by a dark heat
+    // shield with a hole round each engine, each hole closed by a boot gathering in towards the engine. The shield is cut into
+    // a cell per engine, the points nearer it than any other, so each cell is a band from its hole out to its edge.
+    private static void EngineSection(MeshBuilder mesh, Engine engine, float mount, float drop, float radius, float depth) {
+
+        mesh.Lathe(new[] { new Vector2(radius, -drop), new Vector2(radius, depth) }, Segments, Paint);
+
+        Vector2[] sites = new Vector2[engine.Count];
+
+        for (int i = 0; i < sites.Length; i++) {
+
+            sites[i] = new Vector2((float)engine.Nozzles[i].X, (float)engine.Nozzles[i].Y);
+
+        }
+
+        for (int k = 0; k < sites.Length; k++) {
+
+            Vector2 site = sites[k];
+            List<Vector3> hole = new List<Vector3>();
+            List<Vector3> edge = new List<Vector3>();
+
+            for (int s = 0; s < CellSegments; s++) {
+
+                float angle = 2.0f * Mathf.PI * s / CellSegments;
+                Vector2 ray = new Vector2(Mathf.Cos(angle), Mathf.Sin(angle));
+                float along = Vector2.Dot(site, ray);
+                float reach = -along + Mathf.Sqrt(along * along - site.sqrMagnitude + radius * radius);
+
+                for (int j = 0; j < sites.Length; j++) {
+
+                    Vector2 apart = sites[j] - site;
+                    float toward = Vector2.Dot(ray, apart);
+
+                    if (j != k && toward > 1e-6f) {
+
+                        reach = Mathf.Min(reach, 0.5f * apart.sqrMagnitude / toward);
+
+                    }
+
+                }
+
+                // Sim X and Y are scene X and Z.
+                hole.Add(new Vector3(site.x + mount * ray.x, -drop, site.y + mount * ray.y));
+                edge.Add(new Vector3(site.x + reach * ray.x, -drop, site.y + reach * ray.y));
+
+            }
+
+            mesh.Band(hole, edge, Vector3.down, Dark);
+
+            int boot = mesh.VertexCount;
+
+            // Top to bottom, so it faces down into the hole.
+            mesh.Lathe(new[] { new Vector2(BootWaist * mount, BootRise - drop), new Vector2(mount, -drop) }, Segments / 4, Dark);
+            mesh.Transform(boot, new Vector3(site.x, 0.0f, site.y), Quaternion.identity);
+
+        }
 
     }
 

@@ -215,7 +215,7 @@ public sealed class VesselTests {
         Hold(vessel, 5.0, Ullage);
         Hold(vessel, 3.0, new Controls(1.0, Vector3d.UnitX, Vector3d.Zero));
 
-        Assert.That(vessel.Engines[0].Deflection.Y, Is.GreaterThan(0.0));
+        Assert.That(vessel.Engines[0].Deflections[0].Y, Is.GreaterThan(0.0));
         Assert.That(vessel.State.AngularVelocity.X, Is.GreaterThan(0.0));
 
     }

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 
+using MaxQ.Sim.Numerics;
 using MaxQ.Sim.Vessels.Parts;
 using MaxQ.Sim.Vessels.Propulsion;
 
@@ -16,6 +17,15 @@ public sealed class PartLine {
     public string part;
     public string name;
     public string entry;
+
+    // Engine: a cluster of count round ringRadius from phase, with one more on the axis when centred; nested hangs it
+    // inside the interstage below.
+    public bool centred;
+    public bool nested;
+
+    // Skirt: its finish (paint by default). Separation ring: open leaves out the deck, for an engine to pass through.
+    public string finish;
+    public bool open;
 
     // Tank.
     public string propellant;
@@ -49,18 +59,35 @@ public sealed class CraftFile {
     public string name;
     public PartLine[] parts;
 
-    public static CraftFile Parse(string json) => JsonUtility.FromJson<CraftFile>(json);
+    // The line each built part came from, for how it is drawn.
+    [NonSerialized]
+    private Dictionary<Part, PartLine> _lines = new Dictionary<Part, PartLine>();
+
+    public static CraftFile Parse(string json) {
+
+        CraftFile craft = JsonUtility.FromJson<CraftFile>(json);
+
+        craft._lines = new Dictionary<Part, PartLine>();
+
+        return craft;
+
+    }
+
+    /// <summary>The line a part built from this craft came from.</summary>
+    public PartLine Line(Part part) => _lines.TryGetValue(part, out PartLine line) ? line : throw new InvalidOperationException($"Part '{part.Name}' is not from craft '{name}'.");
 
     /// <summary>Fresh sim parts for one vessel.</summary>
     public List<Part> Build(Catalogue catalogue) {
 
         List<Part> built = new List<Part>();
 
+        _lines.Clear();
+
         foreach (PartLine line in parts ?? Array.Empty<PartLine>()) {
 
-            built.Add(line.part switch {
+            Part part = line.part switch {
 
-                "engine" => Engine(catalogue.Engine(line.entry)),
+                "engine" => Engine(line, catalogue.Engine(line.entry)),
                 "tank" => Tank(line, catalogue.Propellant(line.propellant)),
                 "skirt" => new Skirt { Name = line.name, BottomRadius = line.bottomRadius, TopRadius = line.topRadius, Length = line.length, ArealDensity = line.arealDensity },
                 "decoupler" => new Decoupler { Name = line.name, Radius = line.radius, Length = line.length, Mass = line.mass, Impulse = line.impulse },
@@ -68,7 +95,10 @@ public sealed class CraftFile {
                 "capsule" => Capsule(catalogue.Capsule(line.entry)),
                 _ => throw new InvalidOperationException($"Craft '{name}' has a part of unknown kind '{line.part}'."),
 
-            });
+            };
+
+            _lines[part] = line;
+            built.Add(part);
 
         }
 
@@ -76,9 +106,11 @@ public sealed class CraftFile {
 
     }
 
-    private static Engine Engine(EngineEntry entry) => new Engine {
+    private static Engine Engine(PartLine line, EngineEntry entry) => new Engine {
 
         Name = entry.name,
+        Nozzles = Nozzles(line),
+        Nested = line.nested,
         Thrust = entry.thrust,
         SpecificImpulse = entry.specificImpulse,
         MixtureRatio = entry.mixtureRatio,
@@ -97,6 +129,35 @@ public sealed class CraftFile {
         ExtensionHeatCapacity = entry.extension?.heatCapacity ?? 0.0,
 
     };
+
+    // A single engine on the axis, or a ring of them round it.
+    private static Vector3d[] Nozzles(PartLine line) {
+
+        if (line.count <= 0) {
+
+            return new[] { Vector3d.Zero };
+
+        }
+
+        List<Vector3d> nozzles = new List<Vector3d>();
+
+        if (line.centred) {
+
+            nozzles.Add(Vector3d.Zero);
+
+        }
+
+        for (int i = 0; i < line.count; i++) {
+
+            double angle = line.phase + 2.0 * Math.PI * i / line.count;
+
+            nozzles.Add(new Vector3d(line.ringRadius * Math.Cos(angle), line.ringRadius * Math.Sin(angle), 0.0));
+
+        }
+
+        return nozzles.ToArray();
+
+    }
 
     private static Tank Tank(PartLine line, PropellantEntry propellant) => new Tank {
 

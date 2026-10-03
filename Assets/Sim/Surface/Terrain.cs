@@ -66,6 +66,13 @@ public readonly unsafe struct Terrain {
     private readonly double _surveyRadius;
     private readonly double _spacing;
 
+    // A site levelled for building: its unit body-fixed direction, its height (m), and the radii (m) within which the
+    // ground lies flat and out to which it blends back; no site while the blend is zero.
+    private readonly Vector3d _site;
+    private readonly double _siteHeight;
+    private readonly double _siteFlat;
+    private readonly double _siteBlend;
+
     public double Radius { get; }
 
     /// <summary>Bounds on the ground's height (m), relief included.</summary>
@@ -94,6 +101,10 @@ public readonly unsafe struct Terrain {
         Radius = radius;
         Lowest = deepest * VerticalScale - ReliefMargin - (maria == IntPtr.Zero ? 0.0 : Craters.Deepest);
         Highest = highest * VerticalScale + ReliefMargin;
+        _site = Vector3d.Zero;
+        _siteHeight = 0.0;
+        _siteFlat = 0.0;
+        _siteBlend = 0.0;
 
     }
 
@@ -110,12 +121,62 @@ public readonly unsafe struct Terrain {
     /// <summary>Metres on the body per real-world metre of the survey across the ground.</summary>
     public double HorizontalScale => Radius / _surveyRadius;
 
+    // The same ground with a site levelled on it.
+    private Terrain(Terrain ground, Vector3d site, double height, double flat, double blend) {
+
+        this = ground;
+        _site = site;
+        _siteHeight = height;
+        _siteFlat = flat;
+        _siteBlend = blend;
+
+    }
+
+    /// <summary>This ground with a site levelled at <paramref name="height"/> metres round a unit body-fixed
+    /// <paramref name="direction"/>: flat within <paramref name="flat"/> metres, blending back by <paramref name="blend"/>.</summary>
+    public Terrain WithSite(Vector3d direction, double height, double flat, double blend) => new Terrain(this, direction, height, flat, blend);
+
+    /// <summary>How much of the ground at a unit body-fixed direction a levelled site has cleared, 0 to 1: nothing grows or
+    /// lies where it is whole.</summary>
+    public double Clearing(Vector3d direction) {
+
+        if (_siteBlend <= 0.0) {
+
+            return 0.0;
+
+        }
+
+        double distance = Radius * (direction - _site).Length;
+        double t = Math.Min(Math.Max((_siteFlat + _siteBlend - distance) / _siteBlend, 0.0), 1.0);
+
+        return t * t * (3.0 - 2.0 * t);
+
+    }
+
     /// <summary>Ground height above the reference radius, metres, at a unit body-fixed direction. <paramref name="footprint"/>
     /// is the spacing the caller samples at; the ground keeps no detail finer than it. Zero is full detail.</summary>
     public double HeightAt(Vector3d direction, double footprint) => HeightAt(direction, footprint, out _);
 
     /// <summary>The same, with the young-crater ejecta there (0 to 1; 0 off cratered bodies).</summary>
     public double HeightAt(Vector3d direction, double footprint, out double freshness) {
+
+        double cleared = Clearing(direction);
+
+        if (cleared >= 1.0) {
+
+            freshness = 0.0;
+
+            return _siteHeight;
+
+        }
+
+        double natural = NaturalHeightAt(direction, footprint, out freshness);
+
+        return natural + (_siteHeight - natural) * cleared;
+
+    }
+
+    private double NaturalHeightAt(Vector3d direction, double footprint, out double freshness) {
 
         GridPosition(direction, out double row, out double column);
 

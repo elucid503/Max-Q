@@ -8,6 +8,7 @@ public enum PatchEnd {
     Escape,
     Encounter,
     Impact,
+    Atmosphere,
     Maneuver,
 
 }

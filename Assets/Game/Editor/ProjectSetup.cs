@@ -81,6 +81,10 @@ public static class ProjectSetup {
         Material exhaust = SaveMaterial(new Material(Shader.Find("MaxQ/Exhaust")), "Exhaust");
         Material nozzleGlow = SaveMaterial(new Material(Shader.Find("MaxQ/NozzleGlow")), "Nozzle Glow");
 
+        // The pad: Poly Haven's concrete on a 2 m square, and grey-painted steel.
+        Material concrete = SaveMaterial(Concrete(), "Concrete");
+        Material padSteel = SaveMaterial(Hull(new Color(0.3f, 0.31f, 0.32f), 0.4f, 0.35f, detailAlbedo, detailNormal), "Pad Steel");
+
         // Stars dimmed so only the brightest show at daylight exposure.
         Material sky = new Material(Shader.Find("Skybox/Panoramic"));
         sky.SetTexture("_MainTex", AssetDatabase.LoadAssetAtPath<Texture2D>($"{Art}/Sky/stars.png"));
@@ -88,7 +92,7 @@ public static class ProjectSetup {
         sky.SetFloat("_Exposure", 0.05f);
         sky = SaveMaterial(sky, "Sky");
 
-        BuildScene(sky, ground, water, rock, grass, tree, regolith, boulder, finishes, shield, glass, plume, exhaust, nozzleGlow);
+        BuildScene(sky, ground, water, rock, grass, tree, regolith, boulder, finishes, shield, glass, plume, exhaust, nozzleGlow, concrete, padSteel);
 
         AssetDatabase.SaveAssets();
         Debug.Log("Max-Q setup complete");
@@ -210,7 +214,7 @@ public static class ProjectSetup {
     }
 
     private static void BuildScene(Material sky, Material ground, Material water, Material rock, Material grass, Material tree, Material regolith, Material boulder,
-        Material[] finishes, Material shield, Material glass, Material plume, Material exhaust, Material nozzleGlow) {
+        Material[] finishes, Material shield, Material glass, Material plume, Material exhaust, Material nozzleGlow, Material concrete, Material padSteel) {
 
         EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
@@ -271,6 +275,8 @@ public static class ProjectSetup {
         view.FindProperty("_waterCopy").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>($"{Water}/Surface/WaterCopy.shader");
         view.FindProperty("_skyMaterial").objectReferenceValue = sky;
         view.FindProperty("_cameraMotion").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Shader>("Assets/Game/Map/CameraMotion.shader");
+        view.FindProperty("_concreteMaterial").objectReferenceValue = concrete;
+        view.FindProperty("_padSteelMaterial").objectReferenceValue = padSteel;
 
         SerializedProperty art = view.FindProperty("_vesselArt");
         art.FindPropertyRelative("Catalogue").objectReferenceValue = AssetDatabase.LoadAssetAtPath<TextAsset>($"{Vessels}/Craft/Catalogue.json");
@@ -310,6 +316,42 @@ public static class ProjectSetup {
         }
 
         return material;
+
+    }
+
+    // URP's Lit with the concrete maps from Art/Site: albedo, OpenGL normals, and smoothness in the mask's alpha.
+    private static Material Concrete() {
+
+        Material material = new Material(Shader.Find("Universal Render Pipeline/Lit"));
+
+        material.SetColor("_BaseColor", Color.white);
+        material.SetTexture("_BaseMap", SiteTexture("concrete_albedo", TextureImporterType.Default, true));
+        material.SetTexture("_BumpMap", SiteTexture("concrete_normal", TextureImporterType.NormalMap, false));
+        material.SetTexture("_MetallicGlossMap", SiteTexture("concrete_mask", TextureImporterType.Default, false));
+        material.SetFloat("_Smoothness", 1.0f);
+        material.SetTextureScale("_BaseMap", new Vector2(0.5f, 0.5f));
+        material.EnableKeyword("_NORMALMAP");
+        material.EnableKeyword("_METALLICSPECGLOSSMAP");
+
+        return material;
+
+    }
+
+    private static Texture2D SiteTexture(string name, TextureImporterType type, bool colour) {
+
+        string path = $"{Art}/Site/{name}.png";
+        TextureImporter importer = (TextureImporter)AssetImporter.GetAtPath(path);
+
+        importer.textureType = type;
+        importer.sRGBTexture = colour;
+        importer.mipmapEnabled = true;
+        importer.maxTextureSize = 2048;
+        importer.anisoLevel = 8;
+        importer.wrapMode = TextureWrapMode.Repeat;
+        importer.textureCompression = TextureImporterCompression.CompressedHQ;
+        importer.SaveAndReimport();
+
+        return AssetDatabase.LoadAssetAtPath<Texture2D>(path);
 
     }
 

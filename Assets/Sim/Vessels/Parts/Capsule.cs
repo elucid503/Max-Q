@@ -27,6 +27,8 @@ public sealed class Capsule : Part {
 
     public override double Height => Length;
 
+    internal override double OuterRadius => Radius;
+
     public override IReadOnlyList<Thruster> Thrusters {
 
         get {

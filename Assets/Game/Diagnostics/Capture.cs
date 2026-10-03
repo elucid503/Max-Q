@@ -73,15 +73,44 @@ public sealed class Capture : MonoBehaviour {
     };
 
     // What the pilot does before a vessel shot: nothing, settle the propellant on the RCS and light the engine, pulse the
-    // RCS, or stage and back the capsule away.
+    // RCS, or stage and back the capsule away; on the pad, light the engines against the clamps, fly up holding the
+    // attitude for a while, or fly the first stage dry, stage and light the second.
     private enum Act {
 
         Coast,
         Burn,
         Pulse,
         Separate,
+        Ignite,
+        Climb,
+        Stage,
 
     }
+
+    // Seconds the second stage's tanks are settled on the RCS before its engine is lit, and it burns before the shot.
+    private const float UllageSeconds = 3.0f;
+    private const float SecondBurnSeconds = 5.0f;
+
+    // The longest the first stage is flown waiting for it to run dry.
+    private const float FirstBurnLimit = 240.0f;
+
+    // The stack on its pad: the local solar time (hours), where the chase camera sits (degrees round from the motion and
+    // down, metres off), what the pilot does first and for how long (s).
+    private static readonly (string Name, double SolarHour, double Heading, double Pitch, double Distance, Act Act, float Seconds)[] PadShots = {
+
+        ("pad-120m", 15.0, 20.0, 4.0, 120.0, Act.Coast, 0.0f),
+        ("pad-low-50m", 15.0, 300.0, -10.0, 50.0, Act.Coast, 0.0f),
+        ("pad-dusk-90m", 18.6, 200.0, 3.0, 90.0, Act.Coast, 0.0f),
+        ("pad-ignition-60m", 15.0, 40.0, 2.0, 60.0, Act.Ignite, 1.8f),
+        ("liftoff-90m", 15.0, 30.0, 0.0, 90.0, Act.Climb, 8.0f),
+        ("ascent-30s-200m", 15.0, 160.0, 10.0, 200.0, Act.Climb, 30.0f),
+        ("ascent-down-20s-120m", 15.0, 0.0, 60.0, 120.0, Act.Climb, 20.0f),
+        ("ascent-down-60s-150m", 15.0, 0.0, 75.0, 150.0, Act.Climb, 60.0f),
+        ("ascent-60s-150m", 15.0, 90.0, 5.0, 150.0, Act.Climb, 60.0f),
+        ("ascent-110s-250m", 15.0, 90.0, 5.0, 250.0, Act.Climb, 110.0f),
+        ("staging-80m", 15.0, 110.0, 10.0, 80.0, Act.Stage, 0.0f),
+
+    };
 
     // Vessels 150 km up: where over Terra and which way they travel (degrees), the local solar time (hours), where the chase
     // camera sits (degrees round from the motion and down, metres off), and what the pilot does first.
@@ -111,8 +140,12 @@ public sealed class Capture : MonoBehaviour {
         ("clouds", (view, shown) => view.Clouds.Enabled = shown),
         ("shadows", (view, shown) => view.Sun.Shadows = shown),
         ("water", (view, shown) => view.Water.Hidden = !shown),
+        ("exhaust", (view, shown) => view.Art.Exhaust.SetShaderPassEnabled("UniversalForward", shown)),
 
     };
+
+    // The longest frame while an act played out, s: hitches the mean frame rate hides.
+    private static float _worstFrame;
 
     private string _directory;
     private string[] _only;
@@ -182,28 +215,21 @@ public sealed class Capture : MonoBehaviour {
 
             }
 
-            void Fly() => view.Fly(latitude, longitude, azimuth, solarHour, heading, pitch, distance);
+            void Fly() => view.FlyInOrbit(latitude, longitude, azimuth, solarHour, heading, pitch, distance);
 
-            Fly();
+            yield return Shoot(view, name, Fly, act, 0.0f);
 
-            yield return Settle(view);
+        }
 
-            double[] gpu = new double[1];
+        foreach ((string name, double solarHour, double heading, double pitch, double distance, Act act, float seconds) in PadShots) {
 
-            yield return MeasureGpu(gpu);
-            _timings.Add($"{name}: frame {gpu[0]:F2} ms GPU; settled in {_settleSeconds:F1} s");
+            if (_only != null && !Array.Exists(_only, name.Contains)) {
 
-            // From the start again, so the act plays out the same however long the timing took.
-            Fly();
+                continue;
 
-            yield return Perform(view, act);
+            }
 
-            ScreenCapture.CaptureScreenshot(Path.Combine(_directory, name + ".png"));
-
-            yield return null;
-            yield return null;
-
-            view.ScriptedControls = null;
+            yield return Shoot(view, name, () => view.Launch(solarHour, heading, pitch, distance), act, seconds);
 
         }
 
@@ -212,9 +238,82 @@ public sealed class Capture : MonoBehaviour {
 
     }
 
-    private static IEnumerator Perform(MapView view, Act act) {
+    // Times a vessel shot once the ground has streamed in, then plays its act out from a fresh start and takes it.
+    private IEnumerator Shoot(MapView view, string name, Action start, Act act, float seconds) {
+
+        start();
+
+        yield return Settle(view);
+
+        double[] gpu = new double[1];
+
+        yield return MeasureGpu(gpu);
+        _timings.Add($"{name}: frame {gpu[0]:F2} ms GPU; settled in {_settleSeconds:F1} s");
+
+        // From the start again, so the act plays out the same however long the timing took.
+        start();
+
+        _worstFrame = 0.0f;
+
+        double started = view.Vessel.Time;
+
+        yield return Perform(view, act, seconds);
+
+        Vessel vessel = view.Vessel;
+
+        _timings.Add($"{name}: altitude {vessel.Altitude:F0} m, airspeed {vessel.Airspeed.Length:F0} m/s, q {vessel.DynamicPressure:F0} Pa, " +
+            $"held {vessel.IsHeld}, {vessel.Time - started:F1} s flown, worst frame {_worstFrame * 1_000.0f:F1} ms");
+        ScreenCapture.CaptureScreenshot(Path.Combine(_directory, name + ".png"));
+
+        yield return null;
+        yield return null;
+
+        // What the act's own frame costs, its engines still running.
+        List<string> costs = new List<string>();
+
+        yield return Cost(view, costs);
+        _timings.Add($"{name} in the act: {string.Join(", ", costs)}");
+
+        view.ScriptedControls = null;
+
+    }
+
+    private static IEnumerator Perform(MapView view, Act act, float seconds) {
 
         switch (act) {
+
+            case Act.Ignite:
+            case Act.Climb:
+
+                view.ScriptedControls = new Controls(1.0, Vector3d.Zero, Vector3d.Zero, Hold.Attitude);
+
+                yield return Wait(seconds);
+
+                break;
+
+            case Act.Stage:
+
+                view.ScriptedControls = new Controls(1.0, Vector3d.Zero, Vector3d.Zero, Hold.Attitude);
+
+                float end = Time.realtimeSinceStartup + FirstBurnLimit;
+
+                while (Time.realtimeSinceStartup < end && !view.Vessel.Engines[0].Flameout) {
+
+                    yield return null;
+
+                }
+
+                view.ScriptedControls = new Controls(0.0, Vector3d.Zero, Vector3d.Zero, Hold.Attitude);
+                view.Stage();
+                view.ScriptedControls = new Controls(0.0, Vector3d.Zero, Vector3d.UnitZ, Hold.Attitude);
+
+                yield return Wait(UllageSeconds);
+
+                view.ScriptedControls = new Controls(1.0, Vector3d.Zero, Vector3d.Zero, Hold.Attitude);
+
+                yield return Wait(SecondBurnSeconds);
+
+                break;
 
             case Act.Burn:
 
@@ -265,6 +364,8 @@ public sealed class Capture : MonoBehaviour {
         while (Time.realtimeSinceStartup < end) {
 
             yield return null;
+
+            _worstFrame = Mathf.Max(_worstFrame, Time.unscaledDeltaTime);
 
         }
 
@@ -319,13 +420,15 @@ public sealed class Capture : MonoBehaviour {
     }
 
     // Retakes the shot's place and time just before the screenshot, so the sun, sky and sea are the same run to run.
-    private IEnumerator Save(MapView view, string name, Action retake) {
+    // The whole frame's GPU time, then what each part in Parts costs, into costs.
+    private IEnumerator Cost(MapView view, List<string> costs) {
 
         double[] gpu = new double[1];
 
         yield return MeasureGpu(gpu);
         double frame = gpu[0];
-        List<string> costs = new List<string> { $"frame {frame:F2} ms GPU" };
+
+        costs.Add($"frame {frame:F2} ms GPU");
 
         foreach ((string part, Action<MapView, bool> show) in Parts) {
 
@@ -336,6 +439,14 @@ public sealed class Capture : MonoBehaviour {
             costs.Add($"{part} {frame - gpu[0]:F2} ms");
 
         }
+
+    }
+
+    private IEnumerator Save(MapView view, string name, Action retake) {
+
+        List<string> costs = new List<string>();
+
+        yield return Cost(view, costs);
 
         // The eye readapts to the whole view after the timings hid parts of it.
         for (int i = 0; i < AdaptFrames; i++) {

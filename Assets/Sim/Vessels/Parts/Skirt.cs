@@ -17,6 +17,8 @@ public sealed class Skirt : Part {
 
     public override double Height => Length;
 
+    internal override double OuterRadius => Math.Max(BottomRadius, TopRadius);
+
     public double Mass {
 
         get {

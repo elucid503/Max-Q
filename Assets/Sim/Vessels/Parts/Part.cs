@@ -32,6 +32,9 @@ public abstract class Part {
 
     public virtual IReadOnlyList<Thruster> Thrusters => Array.Empty<Thruster>();
 
+    /// <summary>How far the part's outline reaches from the stack axis: what the air meets.</summary>
+    internal virtual double OuterRadius => 0.0;
+
     /// <summary>Which stage the part belongs to, counting up from the bottom; a decoupler closes its stage.</summary>
     internal int Segment { get; set; }
 

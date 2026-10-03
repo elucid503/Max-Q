@@ -77,12 +77,14 @@ public static class Trajectory {
         PatchEnd end = PatchEnd.None;
         CelestialBody next = null;
 
-        double? impact = CrossingTime(orbit, body.Radius, startTime, outbound: false);
+        // A conic ends where it meets the air, or the ground of an airless body.
+        double top = body.Air?.Top ?? 0.0;
+        double? impact = CrossingTime(orbit, body.Radius + top, startTime, outbound: false);
 
         if (impact.HasValue) {
 
             endTime = impact.Value;
-            end = PatchEnd.Impact;
+            end = top > 0.0 ? PatchEnd.Atmosphere : PatchEnd.Impact;
 
         }
 

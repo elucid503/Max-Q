@@ -23,6 +23,9 @@ public sealed class ChaseCamera {
     // Matches the free camera: past this far-to-near ratio the sun's cascades fall apart.
     private const double DepthRange = 1_000_000.0;
 
+    // The camera keeps this far over the ground (m) when swung low near it.
+    private const double GroundClearance = 2.0;
+
     private readonly Camera _camera;
 
     private double _heading = 200.0;
@@ -47,7 +50,8 @@ public sealed class ChaseCamera {
     /// <summary>Where the camera is, relative to the root body.</summary>
     public Vector3d Position { get; private set; }
 
-    public void Update(Vessel vessel) {
+    /// <summary>Follows the vessel, whose parts reach <paramref name="reach"/> metres from its centre of mass.</summary>
+    public void Update(Vessel vessel, double reach) {
 
         Mouse mouse = Mouse.current;
 
@@ -84,6 +88,23 @@ public sealed class ChaseCamera {
         Vector3d look = (along * Math.Cos(heading) + side * Math.Sin(heading)) * Math.Cos(pitch) - up * Math.Sin(pitch);
 
         Position = vessel.RootPosition - look * _distance;
+
+        // Never under the ground: on the pad the view can swing below the horizon.
+        if (vessel.Body.Terrain is { } terrain) {
+
+            Vector3d centre = vessel.Body.PositionAt(vessel.Time);
+            Vector3d offset = Position - centre;
+            double floor = vessel.Body.Radius + terrain.HeightAt(vessel.Body.ToBodyFixed(offset, vessel.Time).Normalized, 0.0) + GroundClearance;
+
+            if (offset.Length < floor) {
+
+                Position = centre + offset.Normalized * floor;
+                look = (vessel.RootPosition - Position).Normalized;
+
+            }
+
+        }
+
         MapSpace.Origin = Position;
 
         _camera.transform.SetPositionAndRotation(Vector3.zero, Quaternion.LookRotation(MapSpace.Direction(look), MapSpace.Direction(up)));
@@ -94,7 +115,7 @@ public sealed class ChaseCamera {
         double radius = vessel.Body.Radius;
         double height = Math.Max((Position - vessel.Body.PositionAt(vessel.Time)).Length - radius, 1.0);
         double horizon = 1.2 * Math.Sqrt(height * (2.0 * radius + height)) + 100_000.0;
-        double near = Math.Max(horizon / DepthRange, 0.5 * (_distance - VesselView.Reach));
+        double near = Math.Max(horizon / DepthRange, 0.5 * (_distance - reach));
 
         _camera.fieldOfView = FieldOfView;
         _camera.nearClipPlane = (float)(near / MapSpace.MetresPerUnit);

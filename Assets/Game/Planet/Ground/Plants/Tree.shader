@@ -291,8 +291,12 @@ Shader "MaxQ/Tree" {
 
             flat = dot(flat, flat) > 1e-6 ? normalize(flat) : float3(0.0, 0.0, 1.0);
 
+            // Seen from above, the canopy shows as deep as it is wide: the card leans the rest of the way to the viewer and
+            // reaches back to its width, so a wide grove never thins to a sliver across the line of sight.
+            float overhead = saturate(toward.y);
             float3 across = float3(flat.z, 0.0, -flat.x);
-            float3 lean = normalize(lerp(float3(0.0, 1.0, 0.0), cross(toward, across), LEAN));
+            float3 lean = normalize(lerp(float3(0.0, 1.0, 0.0), cross(toward, across), lerp(LEAN, 1.0, overhead)));
+            float reach = lerp(height, max(height, width), overhead * overhead);
             float3 ground = mul(frame, Rotate(_PatchRotation, Unfold(plant.shape.zw)));
             float slope = grove ? clamp(-dot(ground, across) / max(ground.y, 0.2), -1.5, 1.5) : 0.0;
             float x = (uv.x - 0.5) * width;
@@ -300,7 +304,7 @@ Shader "MaxQ/Tree" {
             Card card;
             card.across = across;
             card.along = float3(0.0, 1.0, 0.0);
-            card.position = across * x + lean * (uv.y * height) + float3(0.0, x * slope - STAND_SINK, 0.0);
+            card.position = across * x + lean * (uv.y * reach) + float3(0.0, x * slope - STAND_SINK, 0.0);
             card.normal = flat;
             card.uv = float3(uv, (grove ? GROVE_SLICE : STAND_SLICE) + (needles ? 1.0 : 0.0));
             card.occlusion = 1.0;

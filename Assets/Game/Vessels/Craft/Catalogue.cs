@@ -84,37 +84,93 @@ public sealed class PlumeLayer {
 
 }
 
-/// <summary>One lobe of an engine's exhaust: gas spread about the axis by a Gaussian of the given radius (m) at the exit, widening steadily downstream at the given angle (rad), as bright seen across it at the exit,
-/// dimming and cooling by e every reach (m) downstream. Colours linear.</summary>
-[Serializable]
-public sealed class ExhaustLobe {
+/// <summary>A number that follows the air round the exit, as Waterfall's atmosphereDepth modifiers do: (pressure share of
+/// sea level, value) pairs, ascending, held flat past either end. One value is a constant; none is the default.</summary>
+public static class AirCurve {
 
-    public double radius;
-    public double width;
-    public double brightness = 1.0;
-    public double reach;
+    public static double At(double[] keys, double air, double fallback) {
+
+        if (keys == null || keys.Length == 0) {
+
+            return fallback;
+
+        }
+
+        if (keys.Length == 1 || air <= keys[0]) {
+
+            return keys.Length == 1 ? keys[0] : keys[1];
+
+        }
+
+        for (int i = 2; i < keys.Length; i += 2) {
+
+            if (air <= keys[i]) {
+
+                double t = (air - keys[i - 2]) / (keys[i] - keys[i - 2]);
+
+                return keys[i - 1] + (keys[i + 1] - keys[i - 1]) * t;
+
+            }
+
+        }
+
+        return keys[^1];
+
+    }
+
+}
+
+/// <summary>One layer of an exhaust, after one of Waterfall's EFFECTs: gas glowing about an axis downstream from the exit,
+/// its width growing as radius + linear x + square x^2 + bounded (1 - e^(-3 x / length)) metres x metres past the exit,
+/// fading along its length as (1 - share)^falloff, fading in and out over shares of it, as bright seen across it at the exit
+/// and dimming as it widens, tinted from start to end by the fade to the tintFalloff power. Sharpness (1 a Gaussian)
+/// flattens its profile and crisps its edge; hollow (0 to 1) gathers its light into the shear layer round its edge. The
+/// streaming noise varies its light by noise and ripples its edge by ragged shares of its width, more the further it has
+/// faded, as Waterfall's texture is stronger toward the tail; diamond is the contrast of the shock diamonds in it. Each
+/// engine of a cluster has its own, unless it is merged: one round the whole cluster's axis. Every number is an
+/// <see cref="AirCurve"/>; colours are linear.</summary>
+[Serializable]
+public sealed class ExhaustLayer {
+
+    public string name;
+    public bool merged;
+
+    public double[] radius;
+    public double[] linear;
+    public double[] square;
+    public double[] bounded;
+    public double[] length;
+    public double[] falloff;
+    public double[] fadeIn;
+    public double[] fadeOut;
+    public double[] brightness;
+    public double[] tintFalloff;
+    public double[] sharpness;
+    public double[] hollow;
+    public double[] noise;
+    public double[] ragged;
+    public double[] diamond;
     public double[] startTint;
     public double[] endTint;
 
 }
 
-/// <summary>An engine's exhaust in vacuum, one glowing volume of a narrow core and a wide expansion, out to a length (m)
-/// past the exit. Upstream of the exit it fills the bell, whose wall run straight meets the axis at its depth (m);
-/// downstream it stays within a fan from the lip, opening at the given angle (rad). Noise of
-/// the given contrast streams out at a speed (m/s), in tiles across the expansion's width and of a length (m).</summary>
+/// <summary>An engine's exhaust as a stack of layers sharing one volume. Upstream of the exit an engine's layers fill its
+/// bell, whose wall run straight meets the axis at its depth (m). Noise streams out at a speed (m/s), in streaks
+/// tilesAcross to a width and tileLength (m) long, plus eddy metres per metre of width, laminar at the exit and turbulent
+/// past the transition (m); shock diamonds stand diamondSpacing (m) apart and fade over diamondCount of them.</summary>
 [Serializable]
 public sealed class ExhaustPlume {
 
     public double bellDepth;
-    public double length;
-    public double fan;
-    public ExhaustLobe core;
-    public ExhaustLobe expansion;
-
-    public double noise;
     public double tilesAcross = 1.0;
     public double tileLength = 1.0;
     public double speed;
+    public double eddy;
+    public double transition = 1.0;
+    public double diamondSpacing = 1.0;
+    public double diamondCount = 1.0;
+    public ExhaustLayer[] layers;
 
 }
 

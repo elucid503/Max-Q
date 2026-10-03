@@ -71,7 +71,11 @@ internal readonly struct Cover {
         // rock and broken snow rather than as hills grassed or whitened to their crests.
         terrain.Crags(direction, footprint, out double bare, out double shed);
 
-        vegetation *= 1.0 - bare;
+        // A levelled site is kept as mown grass, cleared of woods and of the crags its slopes had.
+        double cleared = terrain.Clearing(direction);
+
+        vegetation *= 1.0 - bare * (1.0 - cleared);
+        forest *= 1.0 - cleared;
         snow *= 1.0 - shed;
 
         return new Cover(vegetation, forest, arid, snow, warmth);

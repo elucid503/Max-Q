@@ -22,12 +22,16 @@ public sealed class CelestialBody {
 
     /// <summary>Surveyed ground, or null for a body drawn as a plain sphere.</summary>
     public Terrain? Terrain { get; }
+
+    /// <summary>The air, or null for an airless body.</summary>
+    public Air Air { get; }
     public IReadOnlyList<CelestialBody> Children => _children;
 
     /// <summary>Laplace sphere of influence; infinite for the root.</summary>
     public double SoiRadius { get; }
 
-    public CelestialBody(string name, double mu, double radius, double rotationPeriodSeconds, CelestialBody parent = null, Orbit orbit = null, Terrain? terrain = null) {
+    public CelestialBody(string name, double mu, double radius, double rotationPeriodSeconds, CelestialBody parent = null, Orbit orbit = null, Terrain? terrain = null,
+        Air air = null) {
 
         Name = name;
         Mu = mu;
@@ -37,6 +41,7 @@ public sealed class CelestialBody {
         Parent = parent;
         Orbit = orbit;
         Terrain = terrain;
+        Air = air;
 
         SoiRadius = parent == null ? double.PositiveInfinity : orbit.SemiMajorAxis * Math.Pow(mu / parent.Mu, 0.4);
 
@@ -45,6 +50,15 @@ public sealed class CelestialBody {
     }
 
     public double SurfaceGravity => Mu / (Radius * Radius);
+
+    /// <summary>The body's spin, rad/s about the sim frame's Z; zero for a tidally locked body, whose turn follows its orbit.</summary>
+    public double SpinRate => Orbit != null && Math.Abs(RotationPeriodSeconds - Orbit.Period) < 1.0 ? 0.0 : 2.0 * Math.PI / RotationPeriodSeconds;
+
+    /// <summary>Velocity of the air at a sim-frame position relative to the body: it turns with the ground.</summary>
+    public Vector3d AirVelocityAt(Vector3d position) => Vector3d.Cross(SpinRate * Vector3d.UnitZ, position);
+
+    /// <summary>A body-fixed attitude in the sim frame.</summary>
+    public QuaternionD FromBodyFixed(QuaternionD attitude, double time) => QuaternionD.AxisAngle(Vector3d.UnitZ, RotationAt(time)) * attitude;
 
     /// <summary>Position relative to the root body.</summary>
     public Vector3d PositionAt(double time) => Parent == null ? Vector3d.Zero : Parent.PositionAt(time) + Orbit.StateAt(time).Position;

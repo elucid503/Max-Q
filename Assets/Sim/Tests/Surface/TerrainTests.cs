@@ -180,4 +180,20 @@ public sealed class TerrainTests {
 
     }
 
+    [Test]
+    public void ALevelledSiteIsFlatAndClearedAndBlendsBack() {
+
+        Vector3d pad = At(28.6083, -80.6041);
+        Terrain levelled = Terra.WithSite(pad, 2.0, 120.0, 250.0);
+        Vector3d near = (pad + At(28.6083, -80.6041 + 0.03) * 1e-3).Normalized;
+        Vector3d far = At(28.7, -80.7);
+
+        Assert.That(levelled.HeightAt(pad, 0.0), Is.EqualTo(2.0));
+        Assert.That(levelled.HeightAt(near, 0.0), Is.EqualTo(2.0));
+        Assert.That(levelled.Clearing(pad), Is.EqualTo(1.0));
+        Assert.That(levelled.Clearing(far), Is.EqualTo(0.0));
+        Assert.That(levelled.HeightAt(far, 0.0), Is.EqualTo(Terra.HeightAt(far, 0.0)));
+
+    }
+
 }

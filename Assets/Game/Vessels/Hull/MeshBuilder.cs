@@ -182,6 +182,41 @@ internal sealed class MeshBuilder {
 
     }
 
+    /// <summary>A flat band between two closed loops of as many points, lying in a plane and facing along
+    /// <paramref name="normal"/>; UVs are the points' own X and Z in metres.</summary>
+    public void Band(IReadOnlyList<Vector3> inner, IReadOnlyList<Vector3> outer, Vector3 normal, int material) {
+
+        int first = _positions.Count;
+        int count = inner.Count;
+
+        for (int i = 0; i < count; i++) {
+
+            _positions.Add(inner[i]);
+            _positions.Add(outer[i]);
+            _normals.Add(normal);
+            _normals.Add(normal);
+            _uvs.Add(new Vector2(inner[i].x, inner[i].z));
+            _uvs.Add(new Vector2(outer[i].x, outer[i].z));
+
+        }
+
+        // Wound to face the normal, whichever way round the loops run.
+        bool flip = Vector3.Dot(Vector3.Cross(outer[0] - inner[0], inner[1 % count] - inner[0]), normal) < 0.0f;
+        List<int> triangles = _triangles[material];
+
+        for (int i = 0; i < count; i++) {
+
+            int a = first + 2 * i;
+            int b = a + 1;
+            int c = first + 2 * ((i + 1) % count);
+            int d = c + 1;
+
+            triangles.AddRange(flip ? new[] { a, c, b, b, c, d } : new[] { a, b, c, b, d, c });
+
+        }
+
+    }
+
     /// <summary>Copies what has been built so far turned and moved, as a part placed on another.</summary>
     public void Transform(int from, Vector3 offset, Quaternion rotation) {
 

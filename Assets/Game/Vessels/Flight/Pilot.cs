@@ -9,12 +9,13 @@ namespace MaxQ.Game.Vessels.Flight;
 
 /// <summary>The keyboard at the controls, KSP's layout: W/S pitch, A/D yaw, Q/E roll; H/N translate forward and back
 /// along the stack, I/K and J/L across it; shift and ctrl run the throttle up and down, Z full, X cut; space stages;
-/// period and comma step the time warp.</summary>
+/// period and comma step the time warp; T holds the attitude and Y the prograde, each toggling the assist off again.</summary>
 public sealed class Pilot {
 
     private const double ThrottleRate = 0.5;
 
     private double _throttle;
+    private Hold _hold;
 
     public bool StageRequested { get; private set; }
 
@@ -32,7 +33,7 @@ public sealed class Pilot {
 
         if (keys == null || !listening) {
 
-            return new Controls(_throttle, Vector3d.Zero, Vector3d.Zero);
+            return new Controls(_throttle, Vector3d.Zero, Vector3d.Zero, _hold);
 
         }
 
@@ -50,6 +51,18 @@ public sealed class Pilot {
 
         }
 
+        if (keys.tKey.wasPressedThisFrame) {
+
+            _hold = _hold == Hold.Attitude ? Hold.Off : Hold.Attitude;
+
+        }
+
+        if (keys.yKey.wasPressedThisFrame) {
+
+            _hold = _hold == Hold.Prograde ? Hold.Off : Hold.Prograde;
+
+        }
+
         StageRequested = keys.spaceKey.wasPressedThisFrame;
         WarpStep = keys.periodKey.wasPressedThisFrame ? 1 : keys.commaKey.wasPressedThisFrame ? -1 : 0;
 
@@ -59,12 +72,17 @@ public sealed class Pilot {
         Vector3d translation = new Vector3d(Axis(keys.lKey.isPressed, keys.jKey.isPressed), Axis(keys.iKey.isPressed, keys.kKey.isPressed),
             Axis(keys.hKey.isPressed, keys.nKey.isPressed));
 
-        return new Controls(_throttle, rotation, translation);
+        return new Controls(_throttle, rotation, translation, _hold);
 
     }
 
     /// <summary>Lets go of everything, as a fresh vessel starts.</summary>
-    public void Release() => _throttle = 0.0;
+    public void Release() {
+
+        _throttle = 0.0;
+        _hold = Hold.Off;
+
+    }
 
     private static double Axis(bool positive, bool negative) => (positive ? 1.0 : 0.0) - (negative ? 1.0 : 0.0);
 

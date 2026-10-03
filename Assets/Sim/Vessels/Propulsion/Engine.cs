@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 using MaxQ.Sim.Numerics;
 using MaxQ.Sim.Vessels.Motion;
@@ -15,9 +16,10 @@ public enum EnginePhase {
 
 }
 
-/// <summary>A gimballed bipropellant engine hung from the tank above it: the bottom node is the nozzle exit, the top node
-/// the gimbal pivot. It throttles between a floor and full thrust, takes time to light and to spool, and will only light
-/// on propellant settled over the outlets.</summary>
+/// <summary>A gimballed bipropellant engine, or a cluster of identical ones lit together, hung from the tank above it: the
+/// bottom node is the nozzle exits, the top node the gimbal pivots. It throttles between a floor and full thrust, takes time
+/// to light and to spool, and will only light on propellant settled over the outlets. The air pushes back on each exit, and
+/// a cluster rolls the stack by swinging its outer engines round the axis.</summary>
 public sealed class Engine : Part {
 
     public const double StandardGravity = 9.80665;
@@ -34,9 +36,18 @@ public sealed class Engine : Part {
     // W/m^2/K^4.
     private const double StefanBoltzmann = 5.670_374e-8;
 
-    private double _phaseSeconds;
+    private static readonly Vector3d[] Single = { Vector3d.Zero };
 
-    /// <summary>Vacuum thrust at full throttle, N.</summary>
+    private double _phaseSeconds;
+    private Vector3d[] _deflections;
+
+    /// <summary>Where each engine of the cluster stands off the stack axis, body X and Y, m; one on the axis by default.</summary>
+    public IReadOnlyList<Vector3d> Nozzles { get; init; } = Single;
+
+    /// <summary>Hung inside an interstage below: the engine takes no height in the stack, its pivots at the part below's top.</summary>
+    public bool Nested { get; init; }
+
+    /// <summary>Vacuum thrust of each engine at full throttle, N.</summary>
     public double Thrust { get; init; }
 
     /// <summary>Vacuum specific impulse, s.</summary>
@@ -58,6 +69,7 @@ public sealed class Engine : Part {
     public double GimbalRange { get; init; }
     public double GimbalRate { get; init; }
 
+    /// <summary>Of each engine.</summary>
     public double Mass { get; init; }
     public double Length { get; init; }
     public double ExitRadius { get; init; }
@@ -71,7 +83,27 @@ public sealed class Engine : Part {
     public double ExtensionEmissivity { get; init; }
     public double ExtensionHeatCapacity { get; init; }
 
-    public override double Height => Length;
+    public override double Height => Nested ? 0.0 : Length;
+
+    public int Count => Nozzles.Count;
+
+    internal override double OuterRadius {
+
+        get {
+
+            double reach = 0.0;
+
+            foreach (Vector3d nozzle in Nozzles) {
+
+                reach = Math.Max(reach, nozzle.Length + ExitRadius);
+
+            }
+
+            return reach;
+
+        }
+
+    }
 
     public EnginePhase Phase { get; private set; }
 
@@ -82,11 +114,17 @@ public sealed class Engine : Part {
     /// dark (the sun's warmth is left out; it glows at neither).</summary>
     public double NozzleTemperature { get; private set; }
 
-    /// <summary>Thrust delivered over the last step, N.</summary>
+    /// <summary>Thrust the whole cluster delivered over the last step, N.</summary>
     public double Output { get; private set; }
 
-    /// <summary>Deflection as tangents of the nozzle's lean towards body X and Y.</summary>
-    public Vector3d Deflection { get; private set; }
+    /// <summary>Propellant the cluster burns, kg/s: the flow its chambers pass, whatever the air does to its thrust.</summary>
+    public double MassFlow { get; private set; }
+
+    /// <summary>Pressure of the air round the exits over the last step, Pa.</summary>
+    public double AmbientPressure { get; private set; }
+
+    /// <summary>Each engine's deflection as tangents of its nozzle's lean towards body X and Y.</summary>
+    public IReadOnlyList<Vector3d> Deflections => _deflections ??= new Vector3d[Count];
 
     /// <summary>The last start died for want of settled propellant; cleared once one lights.</summary>
     public bool StartFailed { get; private set; }
@@ -94,17 +132,18 @@ public sealed class Engine : Part {
     /// <summary>The engine ran its tanks dry.</summary>
     public bool Flameout { get; private set; }
 
-    /// <summary>Gimbal pivot, body frame.</summary>
-    public Vector3d Mount => new Vector3d(0.0, 0.0, Station + Length);
+    public double ExitArea => Math.PI * ExitRadius * ExitRadius;
 
-    /// <summary>Unit vector the thrust pushes along, body frame; the plume leaves the opposite way.</summary>
-    public Vector3d Direction => new Vector3d(Deflection.X, Deflection.Y, 1.0).Normalized;
+    /// <summary>Engine <paramref name="i"/>'s gimbal pivot, body frame.</summary>
+    public Vector3d Mount(int i) => Nozzles[i] + (Station + Length) * Vector3d.UnitZ;
 
-    public double MassFlow => Output / (SpecificImpulse * StandardGravity);
+    /// <summary>Unit vector engine <paramref name="i"/>'s thrust pushes along, body frame; its plume leaves the opposite way.</summary>
+    public Vector3d Direction(int i) => new Vector3d(Deflections[i].X, Deflections[i].Y, 1.0).Normalized;
 
     /// <summary>Runs the engine for one step: <paramref name="throttle"/> 0 to 1 (0 shuts it down, anything above lights
-    /// it), <paramref name="steer"/> the wanted deflection as a fraction of full range.</summary>
-    internal void Update(double dt, double throttle, Vector3d steer, bool fed, double settled, double time) {
+    /// it), <paramref name="steer"/> the wanted deflection as a fraction of full range, <paramref name="roll"/> -1 to 1
+    /// the outer engines' swing round the axis that rolls the stack positively about body Z.</summary>
+    internal void Update(double dt, double throttle, Vector3d steer, double roll, bool fed, double settled, double time, double ambientPressure) {
 
         _phaseSeconds += dt;
 
@@ -179,9 +218,25 @@ public sealed class Engine : Part {
         Chamber += (demand - Chamber) * (1.0 - Math.Exp(-dt / Math.Max(seconds, 1e-6)));
 
         // Gas reaching the turbopumps makes the chamber chug until the engine's own thrust settles the tanks.
-        Output = fed ? Chamber * Thrust * (1.0 - (1.0 - Math.Min(settled, 1.0)) * Chug(time)) : 0.0;
+        double vacuum = fed ? Chamber * Thrust * (1.0 - (1.0 - Math.Min(settled, 1.0)) * Chug(time)) : 0.0;
 
-        Steer(dt, Phase == EnginePhase.Running ? steer : Vector3d.Zero);
+        // The air pushes back on each exit: what a nozzle loses at sea level against its vacuum thrust.
+        AmbientPressure = ambientPressure;
+        MassFlow = Count * vacuum / (SpecificImpulse * StandardGravity);
+        Output = vacuum > 0.0 ? Count * Math.Max(vacuum - ambientPressure * ExitArea, 0.0) : 0.0;
+
+        bool running = Phase == EnginePhase.Running;
+
+        for (int i = 0; i < Count; i++) {
+
+            Vector3d nozzle = Nozzles[i];
+            double across = nozzle.Length;
+            Vector3d round = across > 1e-6 ? new Vector3d(-nozzle.Y, nozzle.X, 0.0) / across : Vector3d.Zero;
+
+            Steer(i, dt, running ? steer + round * roll : Vector3d.Zero);
+
+        }
+
         Radiate(dt);
 
     }
@@ -199,7 +254,24 @@ public sealed class Engine : Part {
 
     }
 
-    internal override MassProperties AddTo(MassProperties sum) => sum.AddCylinder(Mass, Station + CentreOfMassHeight, 0.5 * ExitRadius, Length);
+    internal override MassProperties AddTo(MassProperties sum) {
+
+        double radius = 0.5 * ExitRadius;
+        double axial = 0.5 * Mass * radius * radius;
+        double transverse = Mass * (3.0 * radius * radius + Length * Length) / 12.0;
+
+        // An engine off the axis counts as its share of a ring round it, as a symmetric cluster sums to.
+        foreach (Vector3d nozzle in Nozzles) {
+
+            double across = nozzle.LengthSquared;
+
+            sum = sum.Add(Mass, Station + CentreOfMassHeight, axial + Mass * across, transverse + 0.5 * Mass * across);
+
+        }
+
+        return sum;
+
+    }
 
     private double RadiationRate => ExtensionEmissivity * StefanBoltzmann / ExtensionHeatCapacity;
 
@@ -227,8 +299,9 @@ public sealed class Engine : Part {
 
     }
 
-    private void Steer(double dt, Vector3d steer) {
+    private void Steer(int i, double dt, Vector3d steer) {
 
+        Vector3d[] deflections = _deflections ??= new Vector3d[Count];
         double range = Math.Tan(GimbalRange);
         Vector3d target = new Vector3d(steer.X, steer.Y, 0.0) * range;
 
@@ -238,10 +311,10 @@ public sealed class Engine : Part {
 
         }
 
-        Vector3d move = target - Deflection;
+        Vector3d move = target - deflections[i];
         double reach = Math.Tan(GimbalRate * dt);
 
-        Deflection = move.Length <= reach ? target : Deflection + move.Normalized * reach;
+        deflections[i] = move.Length <= reach ? target : deflections[i] + move.Normalized * reach;
 
     }
 

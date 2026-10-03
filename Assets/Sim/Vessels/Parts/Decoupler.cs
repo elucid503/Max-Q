@@ -15,6 +15,8 @@ public sealed class Decoupler : Part {
 
     public override double Height => Length;
 
+    internal override double OuterRadius => Radius;
+
     internal override MassProperties AddTo(MassProperties sum) => sum.AddShell(Mass, Station + 0.5 * Length, Radius, Length);
 
 }

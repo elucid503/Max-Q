@@ -8,3 +8,7 @@ dragon_2.glb
     "SpaceX - Dragon 2" by KUBAHA, https://sketchfab.com/3d-models/spacex-dragon-2-1b125e30a2cb442288580290536fbe5d
     Licensed CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Renamed; in game its trunk is hidden and its
     materials redone.
+
+merlin_1d.glb
+    "Merlin 1D" by MartianDays, https://sketchfab.com/3d-models/merlin-1d-088a207cae57488f876bbc16daf2148d
+    Licensed CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Renamed; otherwise unmodified.

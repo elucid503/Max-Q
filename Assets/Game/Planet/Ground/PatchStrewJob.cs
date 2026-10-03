@@ -243,7 +243,8 @@ internal struct PatchStrewJob : IJobParallelFor {
         double steep = math.saturate((math.lerp(0.8, 0.7, cover.Vegetation) - place.Upness) / 0.1);
         double open = (1.0 - steep) * (1.0 - cover.Snow);
 
-        return kind switch {
+        // Nothing grows or lies on a levelled site.
+        return (1.0 - Terrain.Clearing(place.Direction)) * kind switch {
 
             Kind.Tuft => math.saturate(1.2 * cover.Vegetation * (1.0 - cover.Forest) + 0.25 * (1.0 - cover.Vegetation) * (1.0 - cover.Arid) +
                 0.15 * cover.Vegetation * cover.Forest) * open,
