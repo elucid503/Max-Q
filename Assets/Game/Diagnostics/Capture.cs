@@ -31,6 +31,7 @@ public sealed class Capture : MonoBehaviour {
         ("lake-geneva-3km", 46.38, 6.35, 3_000.0, 80.0, -25.0, 11.0),
         ("mediterranean-400km", 36.0, 12.0, 400_000.0, 300.0, -38.0, 10.0),
         ("limb-sunset-400km", 0.0, -20.0, 400_000.0, 270.0, -30.0, 17.6),
+        ("dusk-sunward-150km", 0.0, 60.0, 150_000.0, 270.0, -33.0, 19.1),
         ("himalaya-30km", 28.2, 84.0, 30_000.0, 95.0, -10.0, 9.0),
         ("everest-2km", 27.75, 86.85, 2_000.0, 15.0, -6.0, 8.5),
         ("sahara-2km", 25.3, 8.9, 2_000.0, 210.0, -18.0, 15.0),
@@ -97,6 +98,7 @@ public sealed class Capture : MonoBehaviour {
         ("vessel-rcs-25m", 31.0, 24.0, 55.0, 10.5, 230.0, 10.0, 25.0, Act.Pulse),
         ("vessel-separation-40m", 31.0, 24.0, 55.0, 10.5, 110.0, 10.0, 40.0, Act.Separate),
         ("vessel-terminator-50m", 20.0, 100.0, 90.0, 18.4, 200.0, 10.0, 50.0, Act.Coast),
+        ("vessel-dusk-sunward-50m", 0.0, 60.0, 90.0, 19.1, 180.0, 15.0, 50.0, Act.Coast),
 
     };
 

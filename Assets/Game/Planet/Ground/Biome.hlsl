@@ -37,11 +37,16 @@ static const float3 Averages[MATERIALS] = {
 #define GREY_ROCK float3(0.13, 0.125, 0.115)
 #define DESERT_ROCK float3(0.24, 0.15, 0.09)
 
-// Metres over the water a beach reaches: a sea's surf and storms reach far up the shore, a lake's hardly; and at most
-// BEACH_WIDTH inland, so a plain lying a hand over a lake's level stays what its cover makes it. Must match PatchStrewJob.
+// Metres over the water a beach reaches: a sea's surf and storms reach far up the shore, a lake's hardly. And metres
+// inland: a sea's beaches run wide where sand is plentiful, in the deserts and the tropics, and narrow to a strand of
+// shingle elsewhere; a lake's narrower still, save in the deserts, where sand and salt ring them. So a plain lying a hand
+// over the water stays what its cover makes it. Must match PatchStrewJob.
 #define SEA_BEACH 1.0
 #define LAKE_BEACH 0.3
-#define BEACH_WIDTH 60.0
+#define SEA_BEACH_NARROW 12.0
+#define SEA_BEACH_WIDE 60.0
+#define LAKE_BEACH_NARROW 4.0
+#define LAKE_BEACH_WIDE 40.0
 
 struct GroundCover {
 
@@ -53,14 +58,15 @@ struct GroundCover {
 };
 
 // How the land lies at a spot: how far its ground faces up, how much more sky it sees than a plane of its slope would
-// (negative in hollows, near zero on crests and plains), world-anchored noise in [0, 1] that borders follow, and how
-// far it lies in the band over the water that waves and wind keep bare.
+// (negative in hollows, near zero on crests and plains), world-anchored noise in [0, 1] that borders follow, how far it
+// lies in the band over the water that waves and wind keep bare, and how much of it lies under the water.
 struct Lie {
 
     float upness;
     float convexity;
     float2 noise;
     float beach;
+    float bed;
 
 };
 
@@ -74,20 +80,47 @@ float Warmth(float3 up, float altitude) {
 
 }
 
-// How far a spot lies in the beach band, above water metres over the nearest sheet (negative under it), at altitude, its
-// ground facing up by upness; the slope tells how far inland its height over the water lies.
-float BeachAt(float aboveWater, float altitude, float upness) {
+// How sandy a shore's climate makes it, 0 to 1: the deserts' and the tropics' coral and quartz sands.
+float Sandiness(float arid, float warmth) {
+
+    return saturate(max(arid, (warmth - 0.6) / 0.3));
+
+}
+
+// Metres inland a beach reaches on a shore at altitude metres (lakes stand above the sea), under a climate; matches
+// Cover.BeachWidth.
+float BeachWidth(float altitude, float arid, float warmth) {
+
+    return lerp(lerp(SEA_BEACH_NARROW, SEA_BEACH_WIDE, Sandiness(arid, warmth)), lerp(LAKE_BEACH_NARROW, LAKE_BEACH_WIDE, arid), saturate(altitude / 5.0));
+
+}
+
+// The integral of a ramp falling from one at the waterline to nothing reach metres inland, from the waterline to x.
+float BeachArea(float x, float reach) {
+
+    float t = clamp(x, 0.0, reach);
+
+    return t - 0.5 * t * t / reach;
+
+}
+
+// How much of a pixel the beach band covers: the pixel lies inland metres from the waterline (negative offshore), spans
+// across metres of the shore and stands aboveWater metres over the water at altitude. The band fades from the waterline
+// to width metres inland, or to its rise up a steeper shore, so a pixel far wider than it shows only the share it covers.
+float BeachAt(float inland, float across, float aboveWater, float altitude, float width) {
 
     float rise = lerp(SEA_BEACH, LAKE_BEACH, saturate(altitude / 5.0));
-    float slope = sqrt(saturate(1.0 - upness * upness)) / max(upness, 0.05);
+    float reach = max(aboveWater > 0.0 && inland > 0.0 ? min(width, rise * inland / aboveWater) : width, 1e-3);
+    float side = 0.5 * max(across, 1e-4);
 
-    return saturate(1.0 - aboveWater / max(min(rise, slope * BEACH_WIDTH), 1e-3));
+    return saturate((BeachArea(inland + side, reach) - BeachArea(inland - side, reach)) / (2.0 * side));
 
 }
 
 // How much each material suits a spot: the cover says what grows there and the lie where rock breaks through it, scree
-// gathers in steep hollows, snow holds and beaches run.
-void MaterialWeights(GroundCover cover, Lie lie, out float weights[MATERIALS]) {
+// gathers in steep hollows, snow holds, beaches run and the bed lies under the water, sand where the climate makes
+// shores sandy and silt elsewhere.
+void MaterialWeights(GroundCover cover, Lie lie, float warmth, out float weights[MATERIALS]) {
 
     float2 n = lie.noise - 0.5;
     float vegetation = cover.vegetation;
@@ -123,16 +156,21 @@ void MaterialWeights(GroundCover cover, Lie lie, out float weights[MATERIALS]) {
 
     weights[SCREE] *= 1.0 - cliff;
 
-    // Flat ground in the band over the water is sand, save under snow.
-    float beach = lie.beach * saturate((lie.upness - 0.9) / 0.05) * (1.0 - snow);
+    // Flat ground in the band over the water is sand, save under snow; flat ground under it is the bed.
+    float flat = saturate((lie.upness - 0.9) / 0.05);
+    float beach = lie.beach * flat * (1.0 - snow);
+    float bed = lie.bed * flat;
+    float sandy = Sandiness(cover.arid, warmth);
 
     for (int j = 0; j < MATERIALS; j++) {
 
-        weights[j] *= 1.0 - beach;
+        weights[j] *= (1.0 - beach) * (1.0 - bed);
 
     }
 
-    weights[SAND] += 1.5 * beach;
+    weights[SAND] += 1.5 * (beach + bed * sandy);
+    weights[SOIL] += 1.5 * bed * (1.0 - sandy);
+    weights[SNOW] *= 1.0 - lie.bed;
 
 }
 
@@ -205,9 +243,10 @@ float3 CoverColour(GroundCover cover, float warmth) {
     level.convexity = 0.0;
     level.noise = 0.5;
     level.beach = 0.0;
+    level.bed = 0.0;
 
     float weights[MATERIALS];
-    MaterialWeights(cover, level, weights);
+    MaterialWeights(cover, level, warmth, weights);
 
     return Palette(weights, cover, warmth);
 

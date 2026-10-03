@@ -149,6 +149,52 @@ public sealed class ReliefTests {
 
     }
 
+    // The crags a distant view shows match the share of the full relief, sampled half a metre apart, that is too steep for
+    // plants and for snow, from plains to craggy ranges.
+    [TestCase(1.0, 0.1)]
+    [TestCase(1.0, 0.3)]
+    [TestCase(1.8, 0.2)]
+    [TestCase(0.55, 0.5)]
+    public void CragsMatchTheReliefTheyStandFor(double rugged, double slope) {
+
+        Vector3d p = new Vector3d(612_345.6, -998_765.4, 402_020.2).Normalized * 1_274_200.0;
+        Vector3d up = p.Normalized;
+        Vector3d east = Vector3d.Cross(Vector3d.UnitZ, up).Normalized;
+        Vector3d north = Vector3d.Cross(up, east);
+        Vector3d gradient = east * slope;
+        int bare = 0;
+        int shed = 0;
+        int count = 0;
+
+        double Height(Vector3d at) => Relief.Strata(at, slope * Vector3d.Dot(at - p, east) + Relief.Detail(at, 0.0, gradient, rugged), slope, 0.0, rugged);
+
+        for (int j = 0; j < 40; j++) {
+
+            for (int i = 0; i < 40; i++) {
+
+                Vector3d q = p + east * (i * 97.3) + north * (j * 101.7);
+                double here = Height(q);
+                double rise = Math.Sqrt(Math.Pow(Height(q + east * 0.5) - here, 2.0) + Math.Pow(Height(q + north * 0.5) - here, 2.0)) / 0.5;
+
+                bare += rise > 0.9 ? 1 : 0;
+                shed += rise > 1.33 ? 1 : 0;
+                count++;
+
+            }
+
+        }
+
+        Relief.Crags(slope, rugged, 5_000.0, out double bareShare, out double shedShare);
+
+        Assert.That(bareShare, Is.EqualTo((double)bare / count).Within(0.1));
+        Assert.That(shedShare, Is.EqualTo((double)shed / count).Within(0.1));
+
+        Relief.Crags(slope, rugged, Relief.CragsSeen, out double near, out _);
+
+        Assert.That(near, Is.Zero);
+
+    }
+
     [Test]
     public void CubeFacesAreOrthonormalAndCoverTheirQuadrant() {
 

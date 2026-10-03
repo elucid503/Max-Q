@@ -58,16 +58,18 @@ public sealed class Sun {
     /// <summary>Fits the cascades to a camera <paramref name="altitude"/> kilometres above the ground of a body of
     /// <paramref name="radius"/> kilometres whose tallest ground stands <paramref name="highest"/> kilometres: out to the
     /// horizon of that ground, in geometric steps from the ground below, or from <paramref name="nearest"/> kilometres
-    /// round the camera when something close by needs its own shadows.</summary>
+    /// round the camera when something close by needs its own shadows. The steps past that start where the nearest ground
+    /// could stand, so from orbit none is spent on the empty air between the vessel and the ground.</summary>
     public void Fit(double altitude, double radius, double highest, double? nearest = null) {
 
         double height = Math.Max(altitude, 0.0);
         double horizon = Math.Sqrt(height * (2.0 * radius + height)) + Math.Sqrt(2.0 * radius * highest);
         double first = Math.Min(nearest ?? Math.Max(NearestReach, 1.5 * height), 0.5 * horizon);
-        double ratio = Math.Pow(horizon / first, 1.0 / 3.0);
+        double ground = Math.Clamp(height - highest, first, 0.5 * horizon);
+        double ratio = Math.Pow(horizon / ground, 1.0 / 3.0);
 
         _pipeline.shadowDistance = (float)horizon;
-        _pipeline.cascade4Split = new Vector3((float)(1.0 / (ratio * ratio * ratio)), (float)(1.0 / (ratio * ratio)), (float)(1.0 / ratio));
+        _pipeline.cascade4Split = new Vector3((float)(first / horizon), (float)(1.0 / (ratio * ratio)), (float)(1.0 / ratio));
 
     }
 

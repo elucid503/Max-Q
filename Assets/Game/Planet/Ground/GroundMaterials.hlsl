@@ -599,9 +599,11 @@ void Canopy(inout GroundSurface surface, float share, float3 canopy, float3 metr
 
 }
 
-// The ground's surface at a pixel; dx and dy are how far its object-space metres move across the pixel, and uvDx and uvDy
-// its texture coordinates, taken where screen-space derivatives are defined.
-GroundSurface GroundMaterial(GroundVaryings input, GroundDetail detail, float3 up, float footprint, float3 dx, float3 dy, float2 uvDx, float2 uvDy) {
+// The ground's surface at a pixel; dx and dy are how far its object-space metres move across the pixel, uvDx and uvDy
+// its texture coordinates, and shore where it lies from the waterline (ShoreAt), taken where screen-space derivatives
+// are defined.
+GroundSurface GroundMaterial(GroundVaryings input, GroundDetail detail, float3 up, float footprint, float3 dx, float3 dy, float2 uvDx, float2 uvDy,
+    float2 shore) {
 
     float3 metres = input.positionOS * 1000.0;
     float3 upOS = TransformWorldToObjectDir(up);
@@ -614,12 +616,13 @@ GroundSurface GroundMaterial(GroundVaryings input, GroundDetail detail, float3 u
     lie.upness = dot(detail.normalWS, up);
     lie.convexity = detail.occlusion - (1.0 - 0.5 * (1.0 - lie.upness * lie.upness));
     lie.noise = GroundNoise(metres, upOS, footprint);
-    lie.beach = BeachAt(-detail.waterDepth, altitude, lie.upness);
+    lie.beach = BeachAt(shore.x, shore.y, -detail.waterDepth, altitude, BeachWidth(altitude, cover.arid, warmth));
+    lie.bed = saturate(0.5 - shore.x / max(shore.y, 1e-4));
 
     float weights[MATERIALS];
     float total = 0.0;
 
-    MaterialWeights(cover, lie, weights);
+    MaterialWeights(cover, lie, warmth, weights);
 
     for (int m = 0; m < MATERIALS; m++) {
 

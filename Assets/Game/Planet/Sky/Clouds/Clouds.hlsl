@@ -37,6 +37,9 @@ float4x4 _CloudNoiseFromScene;
 float3 _CloudShapeOffset;
 float3 _CloudDetailOffset;
 
+// How far the camera has climbed to an orbital view, 0 to 1 (CloudView).
+float _CloudOrbit;
+
 // Height range (km) of the weather's base, and its top's is CLOUD_TOP; match WEATHER_BASE_RANGE in CloudNoise.compute.
 #define CLOUD_BASE_RANGE 8.0
 
@@ -68,6 +71,16 @@ float3 _CloudDetailOffset;
 // Share by which the formations swell and shrink the weather's covers.
 #define CLOUD_COVER_SWELL 0.35
 
+// From orbit the eye takes in cloud systems, not single heaps, as photographs of the Earth show: once the camera has
+// climbed and a pixel spans more than CLOUD_ORBIT_FOOTPRINT_START km, the formations take CLOUD_ORBIT_FORMED of the shape,
+// leaving the heaps only to roughen their edges, and the cover's contrast steepens between CLOUD_ORBIT_SPARSE and
+// CLOUD_ORBIT_FULL, so scattered fields clear and systems close up.
+#define CLOUD_ORBIT_FOOTPRINT_START 0.1
+#define CLOUD_ORBIT_FOOTPRINT_END 0.25
+#define CLOUD_ORBIT_FORMED 0.85
+#define CLOUD_ORBIT_SPARSE 0.2
+#define CLOUD_ORBIT_FULL 0.8
+
 // Share of a layer over which cloud rises from its flat base.
 #define CLOUD_BASE_RISE 0.05
 
@@ -85,7 +98,15 @@ float3 _CloudDetailOffset;
 #define ANVIL_SHEET_LEAST 0.6
 #define ANVIL_SHEET_MOST 1.15
 #define ANVIL_UNDERSIDE 0.2
-#define ANVIL_SKIN 0.05
+
+// An anvil's top heaves with billows a few kilometres across, up to ANVIL_RELIEF km below the tropopause, thinning over
+// ANVIL_SKIN km into clear air; the same billows tear its thin edges into ragged lobes by up to ANVIL_RAGGED of its depth.
+// The winds at the tropopause draw its thickness out into streaks, read squeezed across the polar axis so they run east
+// and west, along the jets.
+#define ANVIL_RELIEF 0.6
+#define ANVIL_SKIN 0.25
+#define ANVIL_RAGGED 0.25
+#define ANVIL_STREAKS float3(1.0, 3.0, 1.0)
 
 // The second tiling of each pair is turned off the first's axes, so the two never line up into rows.
 static const float3x3 CLOUD_TURN = float3x3(0.8, 0.36, 0.48, 0.0, 0.8, -0.6, -0.6, 0.48, 0.64);
@@ -103,14 +124,18 @@ static const float3x3 CLOUD_TURN = float3x3(0.8, 0.36, 0.48, 0.0, 0.8, -0.6, -0.
 #define ANVIL_EXTINCTION 18.0
 
 // Light scattered many times diffuses through a cloud, fading with the depth toward the sun as a slab's diffuse
-// transmission does, 1 / (1 + 0.75 (1 - g) depth), rather than exponentially. Its radiance per unit extinction and sun
-// illuminance where it enters, and the fading; the second order's share; and the fringe that has yet to gather it,
-// thinner than CLOUD_GATHER (km) of the densest cloud, and its least share there.
+// transmission does, 1 / (1 + 0.75 (1 - g) depth), rather than exponentially. It also diffuses down from the top, which
+// takes in the sun's light by the sine of its height: under a low sun the long path through a flat top would otherwise
+// leave all but its sunward rims dark. Its radiance per unit extinction and sun illuminance where it enters, and the
+// fading; the second order's share; and the fringe that has yet to gather it, thinner than CLOUD_GATHER (km) of the
+// densest cloud, and its least share there. CLOUD_ROOF takes the depth to the top as this share of the point's extinction
+// over the layer above it.
 #define CLOUD_DIFFUSE 0.2
 #define CLOUD_DIFFUSION 0.07
 #define CLOUD_SECOND_ORDER 0.5
 #define CLOUD_GATHER 0.04
 #define CLOUD_FRINGE 0.3
+#define CLOUD_ROOF 0.5
 
 // View-ray steps (km): clear air grows them with distance; where cloud may lie they halve toward about one optical depth.
 #define CLOUD_MIN_STEP 0.04
@@ -126,6 +151,13 @@ static const float3x3 CLOUD_TURN = float3x3(0.8, 0.36, 0.48, 0.0, 0.8, -0.6, -0.
 #define CLOUD_STEP_DETAIL_END 0.3
 #define CLOUD_LIGHT_STEP 0.08
 #define CLOUD_SHADE_REREAD 1.5
+
+// Past the short look toward the sun, which carries the point's own weather, the light runs on for CLOUD_UPSUN_STEPS
+// steps growing by CLOUD_UPSUN_GROWTH, reading the weather afresh at each, until it clears the shell or is spent: under a
+// low sun towers and decks upsun cast shadows tens of kilometres long, which give a field of heaps its grain at dusk.
+#define CLOUD_UPSUN_STEPS 6
+#define CLOUD_UPSUN_GROWTH 1.7
+#define CLOUD_UPSUN_SPENT 8.0
 #define CLOUD_GROUND_ALBEDO 0.25
 #define CLOUD_FAR 10000.0
 
@@ -300,11 +332,15 @@ CloudColumn ColumnAt(float3 p, float footprint) {
     column.anvil = saturate(weather.a * bulge);
     column.anvilTop = Tropopause(sinLatitude);
     column.anvilDepth = 1.0 + 3.0 * weather.a;
-    column.anvilBottom = column.anvilTop - column.anvilDepth * ANVIL_SHEET_MOST * column.anvil;
+    column.anvilBottom = column.anvilTop - ANVIL_RELIEF - column.anvilDepth * ANVIL_SHEET_MOST * column.anvil;
 
     // Deep columns are storm towers; shallow ones under full cover spread into decks.
     column.deep = saturate((column.top - column.bottom - 3.0) / 5.0);
     column.cover = saturate(weather.r * bulge);
+
+    float orbit = _CloudOrbit * smoothstep(CLOUD_ORBIT_FOOTPRINT_START, CLOUD_ORBIT_FOOTPRINT_END, footprint);
+
+    column.cover = lerp(column.cover, smoothstep(CLOUD_ORBIT_SPARSE, CLOUD_ORBIT_FULL, column.cover), orbit);
 
     // Under full cover the heaps close into a deck, whose body holds whole whatever the cover's swelling, so only its edges
     // wander. Storm towers stay towers.
@@ -319,8 +355,8 @@ CloudColumn ColumnAt(float3 p, float footprint) {
     // standing apart; where it thins, lone heaps keep their own shapes.
     float crowded = lerp(CLOUD_FORMATION_SPARSE, CLOUD_FORMATION_CROWDED, smoothstep(0.35, 0.75, column.cover));
 
-    column.formed = lerp(crowded, 1.0, smoothstep(CLOUD_HEAPS_FADE_START, CLOUD_HEAPS_FADE_END, footprint));
-    column.fine = lerp(CLOUD_FINE_LEAST, CLOUD_FINE_MOST, warp.a) * (1.0 - smoothstep(CLOUD_FINE_FADE_START, CLOUD_FINE_FADE_END, footprint));
+    column.formed = lerp(lerp(crowded, CLOUD_ORBIT_FORMED, orbit), 1.0, smoothstep(CLOUD_HEAPS_FADE_START, CLOUD_HEAPS_FADE_END, footprint));
+    column.fine = lerp(CLOUD_FINE_LEAST, CLOUD_FINE_MOST, warp.a) * (1.0 - smoothstep(CLOUD_FINE_FADE_START, CLOUD_FINE_FADE_END, footprint)) * (1.0 - orbit);
     column.footprint = footprint;
 
     return column;
@@ -390,14 +426,17 @@ float TowerDensity(CloudColumn column, float h, float footprint) {
 
 }
 
-// Anvil at the column's point: one sheet whose underside the storm noise lowers and raises, flat along the tropopause.
+// Anvil at the column's point: one sheet hanging from the tropopause, thick and thin in streaks, its top heaving with
+// billows that also tear its thin edges.
 float AnvilDensity(CloudColumn column, float footprint) {
 
-    float below = (column.anvilTop - column.altitude) / column.anvilDepth;
-    float storm = ShapeNoise(column.q / CLOUD_STORM_SIZE + 0.37, ShapeLod(footprint, CLOUD_STORM_SIZE));
-    float sheet = column.anvil * lerp(ANVIL_SHEET_LEAST, ANVIL_SHEET_MOST, storm);
+    float storm = ShapeNoise(column.q * ANVIL_STREAKS / CLOUD_STORM_SIZE + 0.37, ShapeLod(footprint, CLOUD_STORM_SIZE / ANVIL_STREAKS.y));
+    float billows = ShapeNoise(HeapUvw(column.q), ShapeLod(footprint, CLOUD_SHAPE_SIZE));
+    float under = column.anvilTop - ANVIL_RELIEF * (1.0 - billows) - column.altitude;
+    float below = under / column.anvilDepth;
+    float sheet = column.anvil * lerp(ANVIL_SHEET_LEAST, ANVIL_SHEET_MOST, storm) - ANVIL_RAGGED * (1.0 - billows);
 
-    return saturate((sheet - below) / ANVIL_UNDERSIDE) * saturate(below / ANVIL_SKIN);
+    return saturate((sheet - below) / ANVIL_UNDERSIDE) * saturate(under / ANVIL_SKIN);
 
 }
 
@@ -565,6 +604,43 @@ float CloudSunDepth(CloudColumn column, float3 p, float footprint, float detail,
 
 }
 
+// How far CloudSunDepth's steps reach toward the sun.
+float CloudSunReach(int steps) {
+
+    return CLOUD_LIGHT_STEP * (pow(3.0, steps) - 1.0) * 0.5;
+
+}
+
+// Optical depth toward the sun from where CloudSunDepth's reach ends (km from p) on, the weather read at each step and the
+// noise blurred to a quarter of it, as CloudSunDepth's coarse steps are.
+float CloudUpsunDepth(float3 p, float from, float footprint, float jitter) {
+
+    float depth = 0.0;
+    float t = from;
+
+    for (int i = 0; i < CLOUD_UPSUN_STEPS && depth < CLOUD_UPSUN_SPENT; i++) {
+
+        float span = t * (CLOUD_UPSUN_GROWTH - 1.0);
+        float3 at = p + _SunDirection * (t + (0.25 + 0.5 * jitter) * span);
+
+        // Past the shell's top and still climbing, the line meets no more cloud.
+        if (length(at) > _PlanetRadius + CLOUD_TOP && dot(at, _SunDirection) > 0.0) {
+
+            break;
+
+        }
+
+        float blur = max(footprint, 0.25 * span);
+
+        depth += CloudIn(ColumnAt(at, blur), blur, 0.0, 0.0).extinction * span;
+        t += span;
+
+    }
+
+    return depth;
+
+}
+
 float HenyeyGreenstein(float g, float cosTheta) {
 
     float g2 = g * g;
@@ -593,11 +669,17 @@ float3 CloudLight(CloudColumn column, float3 p, float cosTheta, CloudPoint cloud
 
     if (any(sun > 0.0)) {
 
-        float depth = CloudSunDepth(column, p, footprint, detail, lightSteps, jitter);
+        // Clouds upsun shade the point's top as much as the point, so the light diffusing down from it fades through them too.
+        float near = CloudSunDepth(column, p, footprint, detail, lightSteps, jitter);
+        float upsun = lightSteps > 2 ? CloudUpsunDepth(p, CloudSunReach(lightSteps), footprint, jitter) : 0.0;
+        float depth = near + upsun;
         float scattered = CloudPhase(cosTheta, 1.0) * exp(-depth) + CLOUD_SECOND_ORDER * CloudPhase(cosTheta, 0.5) * exp(-0.5 * depth);
         float gathered = lerp(CLOUD_FRINGE, 1.0, 1.0 - exp(-cloud.extinction * CLOUD_GATHER));
+        float roof = column.altitude > column.top ? column.anvilTop : column.top;
+        float above = CLOUD_ROOF * cloud.extinction * max(roof - column.altitude, 0.0);
+        float diffused = max(1.0 / (1.0 + CLOUD_DIFFUSION * near), saturate(muSun) / (1.0 + CLOUD_DIFFUSION * above)) / (1.0 + CLOUD_DIFFUSION * upsun);
 
-        light = sun * (scattered + gathered * CLOUD_DIFFUSE / (1.0 + CLOUD_DIFFUSION * depth));
+        light = sun * (scattered + gathered * CLOUD_DIFFUSE * diffused);
 
     }
 

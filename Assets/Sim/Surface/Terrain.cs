@@ -30,12 +30,14 @@ public readonly unsafe struct Terrain {
     private const double ReliefFade = 5.0;
 
     // Within WanderReach of the shore (metres on the body) the coastline wanders from the survey's by noise this share
-    // of each wavelength, from WanderLongest down; slopes gentler than WanderSlope wander as far as it would.
+    // of each wavelength, from WanderLongest down; slopes gentler than WanderSlope wander as far as it would. Real coasts
+    // fold into bays and headlands a fifth of their length deep at every scale, so the survey's smooth outlines, read
+    // from orbit, break up as they do.
     private const double WanderReach = 2_500.0;
-    private const double WanderLongest = 2_048.0;
-    private const double WanderRatio = 0.12;
+    private const double WanderLongest = 4_096.0;
+    private const double WanderRatio = 0.2;
     private const double WanderSlope = 0.002;
-    private const int WanderOctaves = 8;
+    private const int WanderOctaves = 9;
 
     // Islands: in archipelagos this wide, drowned hills this wide and finer rise through sea shallower than IslandDepth
     // where their noise tops IslandThreshold, climbing IslandRise over the water for each unit of it past there, as off the
@@ -179,6 +181,24 @@ public readonly unsafe struct Terrain {
         Reach(Mip(footprint), row, column, out double level);
 
         return level;
+
+    }
+
+    /// <summary>The share of the ground round a unit body-fixed direction too steep for plants (<paramref name="bare"/>)
+    /// and for snow (<paramref name="shed"/>) in relief finer than <paramref name="footprint"/> (metres): the crags a
+    /// distant view must show without resolving them. Zero on a cratered body.</summary>
+    public void Crags(Vector3d direction, double footprint, out double bare, out double shed) {
+
+        bare = 0.0;
+        shed = 0.0;
+
+        if (IsCratered || footprint <= Relief.CragsSeen) {
+
+            return;
+
+        }
+
+        Relief.Crags(Gradient(direction).Length, Relief.Ruggedness(direction * Radius), footprint, out bare, out shed);
 
     }
 

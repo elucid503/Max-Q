@@ -46,7 +46,9 @@ Shader "MaxQ/Ground" {
             // The water's optics where the ground lies under it.
             WaterOptics OpticsHere(GroundVaryings input, GroundDetail detail) {
 
-                return OpticsOf(WaterTypeAt(input.water.y / TERRA_SCALE, detail.waterDepth / TERRA_SCALE));
+                float warmth = Warmth(normalize(input.positionWS - _PlanetCentre), 0.0);
+
+                return OpticsOf(WaterTypeAt(input.water.y / TERRA_SCALE, detail.waterDepth / TERRA_SCALE, warmth));
 
             }
 
@@ -120,10 +122,12 @@ Shader "MaxQ/Ground" {
                 GroundDetail detail = SampleDetail(input.uv, input.morph, uvDx, uvDy);
                 Sunlight light = SunlightAt(input.positionWS, footprint / 1000.0);
 
-                // The coast gives way to the water over at least a pixel, so it never steps along the pixels.
-                float coast = max(fwidth(detail.waterDepth), 0.1);
+                // The coast gives way to the water by the share of the pixel past the waterline, so from afar it neither
+                // steps along the pixels nor thins to a hard line.
+                float2 shore = ShoreAt(detail.waterDepth, metresDx, metresDy);
+                float wet = saturate(0.5 - shore.x / max(shore.y, 1e-4));
 
-                GroundSurface surface = GroundMaterial(input, detail, light.up, footprint, metresDx, metresDy, uvDx, uvDy);
+                GroundSurface surface = GroundMaterial(input, detail, light.up, footprint, metresDx, metresDy, uvDx, uvDy, shore);
 
                 // Under the sheet, the bed; the sheet covers it where its level stands over the mesh. A stand-in draws no sheet.
                 UNITY_BRANCH
@@ -149,13 +153,16 @@ Shader "MaxQ/Ground" {
                 }
 
                 UNITY_BRANCH
-                if (detail.waterDepth <= 0.0) {
+                if (wet <= 0.0) {
 
                     return float4(ground, 1.0);
 
                 }
 
-                return float4(lerp(ground, DistantWater(input, detail, light, surface, coords, coordsDx, coordsDy), saturate(detail.waterDepth / coast)), 1.0);
+                // A pixel straddling the waterline shows its water at the waterline's depth.
+                detail.waterDepth = max(detail.waterDepth, 0.0);
+
+                return float4(lerp(ground, DistantWater(input, detail, light, surface, coords, coordsDx, coordsDy), wet), 1.0);
 
             }
 

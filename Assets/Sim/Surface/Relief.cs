@@ -64,6 +64,22 @@ public static class Relief {
     // The mean of a squared ridge, taken off so ranges raise crests and cut valleys without lifting the ground.
     private const double RidgeMean = 0.6;
 
+    // Crags, fitted to this relief sampled half a metre apart (ReliefTests): the share of ground steeper than plants hold
+    // to (rise over run 0.9) and than snow holds to (1.33) climbs with the ruggedness, the survey's slope counting as
+    // CragSlope more, and levels off where cliff bands break the steepest ground into benches and faces.
+    private const double CragSlope = 0.2;
+    private const double BareMost = 0.45;
+    private const double BareFrom = 0.15;
+    private const double BareTo = 0.45;
+    private const double ShedMost = 0.35;
+    private const double ShedFrom = 0.2;
+    private const double ShedTo = 0.7;
+
+    /// <summary>Footprints (metres) over which the crags pass out of a view's sight: nearly all the steepness is in the
+    /// gullies, whose finest run 32 m apart.</summary>
+    public const double CragsSeen = 8.0;
+    private const double CragsUnseen = 64.0;
+
     /// <summary>How craggy the region round body-fixed <paramref name="position"/> is: a factor on the relief, near 1.</summary>
     public static double Ruggedness(Vector3d position) {
 
@@ -121,6 +137,20 @@ public static class Relief {
         }
 
         return sum;
+
+    }
+
+    /// <summary>The share of the ground too steep for plants (<paramref name="bare"/>) and for snow
+    /// (<paramref name="shed"/>) in the relief a <paramref name="footprint"/> (metres) drops but the nearest view keeps:
+    /// the crags and cliffs a distant view must show without resolving them. <paramref name="slope"/> is the survey's rise
+    /// over run and <paramref name="rugged"/> the region's <see cref="Ruggedness"/>.</summary>
+    public static void Crags(double slope, double rugged, double footprint, out double bare, out double shed) {
+
+        double unseenShare = SmoothStep(CragsSeen, CragsUnseen, footprint);
+        double rough = (rugged + CragSlope) * slope;
+
+        bare = BareMost * SmoothStep(BareFrom, BareTo, rough) * unseenShare;
+        shed = ShedMost * SmoothStep(ShedFrom, ShedTo, rough) * unseenShare;
 
     }
 

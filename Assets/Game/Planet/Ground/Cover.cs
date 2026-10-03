@@ -27,6 +27,12 @@ internal readonly struct Cover {
     private const double WoodsWavelength = 2_000.0;
     private const int Octaves = 5;
 
+    // Metres inland the beaches reach, narrow and wide, by the sea and by lakes; match Biome.hlsl.
+    private const double SeaBeachNarrow = 12.0;
+    private const double SeaBeachWide = 60.0;
+    private const double LakeBeachNarrow = 4.0;
+    private const double LakeBeachWide = 40.0;
+
     /// <summary>Metres: the shortest wavelength the cover varies over.</summary>
     public const double Finest = WoodsWavelength / (1 << (Octaves - 1));
 
@@ -61,7 +67,36 @@ internal readonly struct Cover {
         double arid = 1.0 - Smooth(0.05, 0.45, humid);
         double snow = Smooth(0.0, -4.0, june + 2.0 * woods);
 
+        // Seen from afar the ground keeps the share of bare crag its finer relief would show close by, so ranges read as
+        // rock and broken snow rather than as hills grassed or whitened to their crests.
+        terrain.Crags(direction, footprint, out double bare, out double shed);
+
+        vegetation *= 1.0 - bare;
+        snow *= 1.0 - shed;
+
         return new Cover(vegetation, forest, arid, snow, warmth);
+
+    }
+
+    /// <summary>How warm the year runs at a unit body-fixed <paramref name="direction"/> whose ground stands
+    /// <paramref name="height"/> metres up, as Warmth in Biome.hlsl finds it, without the noise.</summary>
+    public static double WarmthAt(Vector3d direction, double height) {
+
+        double sine = Math.Min(Math.Max(direction.Z, -1.0), 1.0);
+
+        return Saturate((-20.0 + 52.0 * Math.Sqrt(1.0 - sine * sine) - 0.0065 * Math.Max(height, 0.0) / Terrain.VerticalScale) / 30.0);
+
+    }
+
+    /// <summary>Metres inland a beach reaches on a shore whose water stands <paramref name="level"/> metres up (lakes
+    /// stand above the sea), under a climate; BeachWidth in Biome.hlsl finds the same.</summary>
+    public static double BeachWidth(double level, double arid, double warmth) {
+
+        double sandy = Saturate(Math.Max(arid, (warmth - 0.6) / 0.3));
+        double sea = SeaBeachNarrow + (SeaBeachWide - SeaBeachNarrow) * sandy;
+        double lake = LakeBeachNarrow + (LakeBeachWide - LakeBeachNarrow) * arid;
+
+        return sea + (lake - sea) * Saturate(level / 5.0);
 
     }
 

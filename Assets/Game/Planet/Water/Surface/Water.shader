@@ -178,7 +178,7 @@ Shader "MaxQ/Water" {
                 float3 fromCentre = output.positionWS - _PlanetCentre;
                 float r = max(length(fromCentre), _PlanetRadius + 1e-3);
                 float3 surfaceUp = fromCentre / length(fromCentre);
-                WaterOptics optics = OpticsOf(WaterTypeAt(input.water.y / TERRA_SCALE, wave.depth / TERRA_SCALE));
+                WaterOptics optics = OpticsOf(WaterTypeAt(input.water.y / TERRA_SCALE, wave.depth / TERRA_SCALE, Warmth(up, 0.0)));
 
                 output.sun = _SunIlluminance * SunTransmittance(surfaceUp * r, _SunDirection) * FogSunTransmittance(fromCentre, _SunDirection);
                 output.sky = _SunIlluminance * SkyIrradiance(r, dot(surfaceUp, _SunDirection));

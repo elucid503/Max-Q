@@ -100,6 +100,10 @@ public static class ProjectSetup {
         UniversalRendererData renderer = LoadOrCreate($"{Rendering}/Renderer.asset", () => ScriptableObject.CreateInstance<UniversalRendererData>());
         UniversalRenderPipelineAsset pipeline = LoadOrCreate($"{Rendering}/Pipeline.asset", () => UniversalRenderPipelineAsset.Create(renderer));
 
+        // A renderer made from script has no post-processing resources, and without them the volume's effects never run.
+        renderer.postProcessData = AssetDatabase.LoadAssetAtPath<PostProcessData>("Packages/com.unity.render-pipelines.universal/Runtime/Data/PostProcessData.asset");
+        EditorUtility.SetDirty(renderer);
+
         // Anti-aliasing is SMAA on the camera: the atmosphere composites over a resolved, single-sample target.
         pipeline.msaaSampleCount = 1;
         pipeline.supportsHDR = true;
@@ -223,14 +227,27 @@ public static class ProjectSetup {
         // Sunlit ground, a daylit sky and the sun's disk span a wide range; neutral tonemapping keeps hues.
         VolumeProfile profile = LoadOrCreate($"{Rendering}/Map Volume.asset", () => ScriptableObject.CreateInstance<VolumeProfile>());
 
-        if (!profile.TryGet(out Tonemapping tonemapping)) {
+        Override<Tonemapping>(profile).mode.Override(TonemappingMode.Neutral);
 
-            tonemapping = profile.Add<Tonemapping>();
-            AssetDatabase.AddObjectToAsset(tonemapping, profile);
+        // The sun flares in the lens wherever it shows: bloom gathers the light of everything brighter than the threshold
+        // (the sun's disk, its glint off water, a plume's core), and the lens flare mirrors it into ghosts across the
+        // frame. Both read the image, so whatever hides or reddens the sun (the limb, clouds, the air, the vessel) dims
+        // its flare to match. The clamp keeps the disk, tens of thousands of times a lit cloud, from washing out the frame.
+        Bloom bloom = Override<Bloom>(profile);
+        bloom.threshold.Override(4.0f);
+        bloom.intensity.Override(0.06f);
+        bloom.scatter.Override(0.75f);
+        bloom.clamp.Override(4000.0f);
+        bloom.highQualityFiltering.Override(true);
 
-        }
-
-        tonemapping.mode.Override(TonemappingMode.Neutral);
+        ScreenSpaceLensFlare flare = Override<ScreenSpaceLensFlare>(profile);
+        flare.intensity.Override(0.4f);
+        flare.firstFlareIntensity.Override(1.0f);
+        flare.secondaryFlareIntensity.Override(0.6f);
+        flare.warpedFlareIntensity.Override(0.4f);
+        flare.samples.Override(2);
+        flare.chromaticAbberationIntensity.Override(0.6f);
+        flare.vignetteEffect.Override(0.8f);
         EditorUtility.SetDirty(profile);
 
         Volume volume = new GameObject("Post Processing").AddComponent<Volume>();
@@ -336,6 +353,21 @@ public static class ProjectSetup {
         EditorUtility.SetDirty(existing);
 
         return existing;
+
+    }
+
+    private static T Override<T>(VolumeProfile profile) where T : VolumeComponent {
+
+        if (profile.TryGet(out T component)) {
+
+            return component;
+
+        }
+
+        component = profile.Add<T>();
+        AssetDatabase.AddObjectToAsset(component, profile);
+
+        return component;
 
     }
 

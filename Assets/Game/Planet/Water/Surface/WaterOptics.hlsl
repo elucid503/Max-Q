@@ -52,15 +52,19 @@ WaterOptics OpticsOf(float type) {
 
 }
 
-// Which water a place holds: the open ocean clear, clouding toward the coast as the shore nears and the water shallows,
-// so shelf seas, bays and lakes are greener. Distances and depths in real metres.
-float WaterTypeAt(float shoreDistance, float depth) {
+// Which water a place holds: the open ocean clearest under the warm subtropical gyres and greener toward the poles, where
+// plankton bloom, clouding toward the coast as the shore nears and the water shallows, so shelf seas, bays and lakes are
+// greener; the tropics' reef and island waters least, the silty temperate and polar coasts most. Distances and depths in
+// real metres; warmth as the ground's climate gives it (Biome.hlsl), 0 to 1.
+float WaterTypeAt(float shoreDistance, float depth, float warmth) {
 
     float coast = 1.0 - smoothstep(2e3, 80e3, -shoreDistance);
     float shallow = 1.0 - smoothstep(5.0, 60.0, depth);
     float near = max(1.0 - smoothstep(0.0, 8e3, -shoreDistance), shallow * coast);
+    float open = lerp(1.5, 0.3, warmth);
+    float coastal = lerp(lerp(2.0, 5.0, near), lerp(1.0, 2.5, near), warmth);
 
-    return lerp(0.5, lerp(1.5, 4.0, near), max(coast, shallow * 0.5));
+    return lerp(open, coastal, max(coast, shallow * 0.5));
 
 }
 

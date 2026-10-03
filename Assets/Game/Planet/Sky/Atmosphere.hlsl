@@ -175,18 +175,21 @@ float3 Transmittance(float r, float mu) {
 
 }
 
-// Sunlight reaching a point (relative to the centre): zero in the planet's shadow.
+// The sun's angular radius, and how far the air bends its light round the limb: on Earth about 35', on a planet a
+// fifth as large under the same air some 15'.
+#define SUN_ANGULAR_RADIUS 0.00465
+#define LIMB_BENDING 0.0045
+
+// Sunlight reaching a point (relative to the centre): the share of the sun's disc over the limb, the light grazing it bent
+// on round by the air, so the planet's shadow falls off over the disc's width rather than at a line, reddened by the air.
 float3 SunTransmittance(float3 position, float3 sun) {
 
-    if (RaySphere(position, sun, _PlanetRadius).x > 0.0) {
-
-        return 0.0;
-
-    }
-
     float r = length(position);
+    float mu = dot(position, sun) / r;
+    float over = asin(clamp(mu, -1.0, 1.0)) + acos(saturate(_PlanetRadius / r)) + LIMB_BENDING;
+    float shown = smoothstep(-SUN_ANGULAR_RADIUS, SUN_ANGULAR_RADIUS, over);
 
-    return Transmittance(r, dot(position, sun) / r);
+    return shown > 0.0 ? shown * Transmittance(r, mu) : 0.0;
 
 }
 

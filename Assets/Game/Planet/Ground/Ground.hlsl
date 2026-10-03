@@ -279,6 +279,25 @@ float PixelFootprint(float3 positionWS) {
 
 }
 
+// How far a pixel lies inland from the waterline (m, negative offshore) and how wide it is across the shore (m): the
+// detail interpolates water depth as its signed square root, whose zero is the waterline and whose change across the
+// pixel, laid on the ground by how far its metres move across it (dx, dy), gives the distance. Taken before any branch.
+float2 ShoreAt(float waterDepth, float3 dx, float3 dy) {
+
+    float encoded = sign(waterDepth) * sqrt(abs(waterDepth) / WATER_DEPTH_RANGE);
+    float2 change = float2(ddx(encoded), ddy(encoded));
+    float xx = dot(dx, dx);
+    float xy = dot(dx, dy);
+    float yy = dot(dy, dy);
+    float determinant = max(xx * yy - xy * xy, 1e-12);
+    float a = (yy * change.x - xy * change.y) / determinant;
+    float b = (xx * change.y - xy * change.x) / determinant;
+    float perMetre = sqrt(max(a * change.x + b * change.y, 1e-20));
+
+    return float2(-encoded / perMetre, length(change) / perMetre);
+
+}
+
 // The ground around a point on the patch, as the light it bounces sees it.
 float3 Surroundings(float2 uv, float3 positionWS) {
 

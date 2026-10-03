@@ -259,7 +259,7 @@ namespace MaxQ.Game.Map {
 
             }
 
-            _clouds.Update(_time, camera);
+            _clouds.Update(_time, _camera);
             _atmosphere.Update(_time, camera, dt, airlessStops);
             _water.Update(_time, _camera);
             _freeCamera.WaveClearance = body == _terra ? 1.25 * _water.SeaHeight : 0.0;

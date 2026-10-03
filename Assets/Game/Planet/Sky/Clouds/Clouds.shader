@@ -175,9 +175,22 @@ Shader "Hidden/MaxQ/Clouds" {
             #define CLOUD_MATCH_MARGIN 0.05
             #define CLOUD_FALLBACK 0.01
 
-            float Match(float ground, float own) {
+            // Cloud letting through less than this hides what stands behind it, so a silhouette behind it divides nothing:
+            // seen from orbit, clouds standing in front of the planet's limb would otherwise part along it.
+            #define CLOUD_MATCH_HIDDEN 0.5
 
-                float off = abs(ground - own) / (CLOUD_MATCH * own + CLOUD_MATCH_MARGIN);
+            // Where a cloud (transmittance, distance) cuts the grounds behind it.
+            float Cut(float2 cloud) {
+
+                return cloud.x < CLOUD_MATCH_HIDDEN ? cloud.y : SKY_DISTANCE;
+
+            }
+
+            float Match(float ground, float own, float2 cloud) {
+
+                float cut = Cut(cloud);
+                float reach = min(own, cut);
+                float off = abs(min(ground, cut) - reach) / (CLOUD_MATCH * reach + CLOUD_MATCH_MARGIN);
 
                 return 1.0 / (1.0 + off * off);
 
@@ -219,7 +232,7 @@ Shader "Hidden/MaxQ/Clouds" {
                     float2 depth = LOAD_TEXTURE2D(_CloudTraceDepth, tap).rg;
                     float2 tent = saturate(1.0 - abs(at - (base + offset)));
                     float bilinear = tent.x * tent.y;
-                    float match = Match(depth.y, ray.distance);
+                    float match = Match(depth.y, ray.distance, float2(light.a, depth.x));
                     float weight = (bilinear + CLOUD_FALLBACK) * match;
 
                     current += light * weight;
@@ -266,10 +279,11 @@ Shader "Hidden/MaxQ/Clouds" {
                 // Carried to this frame's camera, the history's distance keeps up instead of splitting the air short.
                 historyDepth.x += cloudDepth - length(position - _CloudPreviousCamera);
 
-                // History is dropped off screen, and where the ground behind the pixel has changed, as at a ridge line. A
-                // pixel no sample matched this frame keeps its history.
+                // History is dropped off screen, and where the ground behind the pixel has changed, as at a ridge line, unless
+                // the clouds it holds hid that ground. A pixel no sample matched this frame keeps its history.
+                float held = Cut(float2(history.a, historyDepth.x));
                 bool valid = through && _CloudHistoryValid > 0.0 && clip.w > 0.0 && all(previous >= 0.0) && all(previous <= 1.0) &&
-                    abs(historyDepth.y - ray.distance) < 0.1 * ray.distance + 0.05;
+                    abs(min(historyDepth.y, held) - min(ray.distance, held)) < 0.1 * min(ray.distance, held) + 0.05;
                 float4 spread = 0.25 * (highest - lowest);
                 float hold = lerp(1.0, CLOUD_FAR_HOLD, smoothstep(CLOUD_NEAR_FOOTPRINT, CLOUD_FAR_FOOTPRINT, cloudDepth * _CloudPixelAngle));
                 float blend = valid ? (fresh ? CLOUD_BLEND : CLOUD_SPREAD) * saturate(confidence) / hold : 1.0;

@@ -45,9 +45,6 @@ internal struct PatchStrewJob : IJobParallelFor {
     public const int PlantLength = 3 * PlantSlots;
     public const int RockLength = 3 * RockSlots;
 
-    // Metres inland the beach reaches at most; must match BEACH_WIDTH in Biome.hlsl.
-    private const double BeachWidth = 60.0;
-
     [NativeDisableUnsafePtrRestriction]
     public Terrain Terrain;
 
@@ -218,14 +215,28 @@ internal struct PatchStrewJob : IJobParallelFor {
 
         ground = float2.zero;
 
-        // Nothing grows or lies in the water or on the beach the ground's materials lay above it (see Biome.hlsl).
-        if (!double.IsNaN(level) && place.Height < level + Math.Min(math.lerp(1.0, 0.3, math.saturate(level / 5.0)), slope * BeachWidth)) {
+        if (!double.IsNaN(level) && place.Height < level) {
 
             return 0.0;
 
         }
 
         cover = Cover.At(Terrain, place.Direction, place.Height, 0.0);
+
+        // Nothing grows or lies on the beach the ground's materials lay above the water (see Biome.hlsl), as wide as the
+        // climate makes it.
+        if (!double.IsNaN(level)) {
+
+            double width = Cover.BeachWidth(level, cover.Arid, Cover.WarmthAt(place.Direction, place.Height));
+
+            if (place.Height < level + Math.Min(math.lerp(1.0, 0.3, math.saturate(level / 5.0)), slope * width)) {
+
+                return 0.0;
+
+            }
+
+        }
+
         ground = new float2(cover.Vegetation, cover.Arid);
 
         // Plants hold to about 45 degrees on vegetated ground and 35 on bare, as the ground's materials give way to rock.

@@ -26,6 +26,7 @@ public sealed class CloudView : IDisposable {
     private static readonly int ShadowOriginId = Shader.PropertyToID("_CloudShadowOrigin");
     private static readonly int ShadowRightId = Shader.PropertyToID("_CloudShadowRight");
     private static readonly int ShadowUpId = Shader.PropertyToID("_CloudShadowUp");
+    private static readonly int OrbitId = Shader.PropertyToID("_CloudOrbit");
 
     // Match CLOUD_SHAPE_TEXELS and CLOUD_DETAIL_TEXELS in Clouds.hlsl.
     private const int ShapeTexels = 128;
@@ -63,11 +64,24 @@ public sealed class CloudView : IDisposable {
     private const double CycloneCycle = 4.0 * 86_400.0;
     private const double WeatherInterval = 1.0;
 
-    // The shadow map spans ShadowSpan km round the camera on the ground, doubling as it climbs, up to ShadowMaxSpan.
+    // The shadow map spans ShadowSpan km of ground, doubling as the camera climbs, up to ShadowMaxSpan: by
+    // ShadowSpanPerAltitude for each km up to ShadowLowAltitude, where the view takes in the ground all round, and by
+    // ShadowSpanPerHighAltitude beyond. Between ShadowLookStart and ShadowLookEnd km up its centre moves from the ground
+    // below to the ground in view, which from orbit lies hundreds of kilometres ahead, so the map spends none of its texels
+    // behind the camera.
     private const int ShadowTexels = 512;
     private const double ShadowSpan = 60.0;
     private const double ShadowMaxSpan = 3_840.0;
     private const double ShadowSpanPerAltitude = 8.0;
+    private const double ShadowLowAltitude = 30.0;
+    private const double ShadowSpanPerHighAltitude = 1.5;
+    private const double ShadowLookStart = 30.0;
+    private const double ShadowLookEnd = 60.0;
+
+    // Altitudes (km) over which the camera rises from seeing the clouds round it to seeing them from orbit, where only
+    // their formations are drawn (_CloudOrbit).
+    private const double OrbitStart = 10.0;
+    private const double OrbitEnd = 40.0;
 
     // The shader's shadow and sky map passes; the sky map's width matches CLOUD_SKY_WIDTH in Atmosphere.hlsl.
     private const int ShadowPass = 2;
@@ -150,9 +164,9 @@ public sealed class CloudView : IDisposable {
 
     }
 
-    /// <summary>Turns the clouds with the planet, drifts and churns their weather and noise, and fits their shadow map round
-    /// <paramref name="camera"/>.</summary>
-    public void Update(double time, Vector3 camera) {
+    /// <summary>Turns the clouds with the planet, drifts and churns their weather and noise, and fits their shadow map to
+    /// the ground <paramref name="camera"/> sees.</summary>
+    public void Update(double time, Camera camera) {
 
         Centre = MapSpace.ToScene(_body.PositionAt(time));
         Rotation = Wrap(_body.RotationAt(time), 2.0 * Math.PI);
@@ -221,19 +235,29 @@ public sealed class CloudView : IDisposable {
 
     }
 
-    // The map's plane faces the sun through the ground below the camera, snapped to its texels about the planet's centre so
+    // The map's plane faces the sun through the ground it centres on, snapped to its texels about the planet's centre so
     // the shadows hold still as the camera moves.
-    private void FitShadow(Vector3 camera) {
+    private void FitShadow(Camera camera) {
 
-        Vector3 ground = (camera - Centre).normalized * _radius;
-        double altitude = Math.Max((camera - Centre).magnitude - _radius, 0.0);
+        Vector3 eye = camera.transform.position - Centre;
+        double altitude = Math.Max(eye.magnitude - _radius, 0.0);
+        double reach = ShadowSpan + ShadowSpanPerAltitude * Math.Min(altitude, ShadowLowAltitude) + ShadowSpanPerHighAltitude * Math.Max(altitude - ShadowLowAltitude, 0.0);
         double span = ShadowSpan;
 
-        while (span < ShadowMaxSpan && span < ShadowSpan + ShadowSpanPerAltitude * altitude) {
+        while (span < ShadowMaxSpan && span < reach) {
 
             span *= 2.0;
 
         }
+
+        Shader.SetGlobalFloat(OrbitId, Mathf.SmoothStep(0.0f, 1.0f, (float)((altitude - OrbitStart) / (OrbitEnd - OrbitStart))));
+
+        // The ground in view lies between where the bottom of the view and its middle meet the planet, or the horizon.
+        Transform view = camera.transform;
+        Vector3 bottom = Quaternion.AngleAxis(0.5f * camera.fieldOfView, view.right) * view.forward;
+        Vector3 inView = Vector3.Slerp(Seen(eye, bottom), Seen(eye, view.forward), 0.5f);
+        float ahead = Mathf.SmoothStep(0.0f, 1.0f, (float)((altitude - ShadowLookStart) / (ShadowLookEnd - ShadowLookStart)));
+        Vector3 ground = Vector3.Slerp(eye.normalized, inView, ahead) * _radius;
 
         float texel = (float)(span / ShadowTexels);
         float right = Mathf.Round(Vector3.Dot(ground, _shadowRight) / texel) * texel;
@@ -243,6 +267,28 @@ public sealed class CloudView : IDisposable {
         Shader.SetGlobalVector(ShadowOriginId, new Vector4(origin.x, origin.y, origin.z, Enabled ? (float)(1.0 / span) : 0.0f));
         Shader.SetGlobalVector(ShadowRightId, _shadowRight);
         Shader.SetGlobalVector(ShadowUpId, _shadowUp);
+
+    }
+
+    // Where a ray from eye (relative to the centre) meets the ground, as a direction from the centre; a ray that misses
+    // gives the horizon under its heading.
+    private Vector3 Seen(Vector3 eye, Vector3 direction) {
+
+        float distance = eye.magnitude;
+        Vector3 up = eye / distance;
+        float b = Vector3.Dot(eye, direction);
+        float discriminant = b * b - (distance * distance - _radius * _radius);
+
+        if (discriminant >= 0.0f && -b - Mathf.Sqrt(discriminant) > 0.0f) {
+
+            return (eye + direction * (-b - Mathf.Sqrt(discriminant))).normalized;
+
+        }
+
+        Vector3 level = direction - up * Vector3.Dot(direction, up);
+        float horizon = Mathf.Acos(Mathf.Min(_radius / distance, 1.0f));
+
+        return level.sqrMagnitude > 1e-8f ? up * Mathf.Cos(horizon) + level.normalized * Mathf.Sin(horizon) : up;
 
     }
 
